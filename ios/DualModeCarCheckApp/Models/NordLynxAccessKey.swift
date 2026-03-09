@@ -16,7 +16,7 @@ nonisolated struct NordLynxAccessKey: Identifiable, Sendable, Equatable, Hashabl
     static let poli = NordLynxAccessKey(
         id: "poli",
         name: "Poli",
-        key: "e9f2ab075820d8ccc3362eadc4bbadb335571961002b5d5d606cbe4083680625",
+        key: "e9f2ab92d0403a4715baf19e67d70b5ebc2b860c4f17bb5396085bb10dedf579",
         isPreset: true
     )
 
