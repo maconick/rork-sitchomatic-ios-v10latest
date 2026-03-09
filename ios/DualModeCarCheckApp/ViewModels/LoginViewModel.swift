@@ -106,7 +106,9 @@ class LoginViewModel {
     private var credentialsSaveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var connectionTestTask: Task<Void, Never>?
-    private let sessionHeartbeatTimeout: TimeInterval = 90
+    private var sessionHeartbeatTimeout: TimeInterval {
+        TimeoutResolver.resolveHeartbeatTimeout(max(90, testTimeout))
+    }
 
     init() {
         engine.onScreenshot = { [weak self] screenshot in
@@ -373,8 +375,8 @@ class LoginViewModel {
         log("Using \(currentTarget.rawValue) network mode: \(currentMode.label)")
 
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 20
+        config.timeoutIntervalForRequest = TimeoutResolver.resolveRequestTimeout(15)
+        config.timeoutIntervalForResource = TimeoutResolver.resolveResourceTimeout(20)
         config.waitsForConnectivity = false
 
         if automationSettings.useAssignedNetworkForTests && currentMode == .proxy {
@@ -396,7 +398,7 @@ class LoginViewModel {
         let urlSession = URLSession(configuration: config)
         defer { urlSession.invalidateAndCancel() }
 
-        var request = URLRequest(url: testURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
+        var request = URLRequest(url: testURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: TimeoutResolver.resolveRequestTimeout(15))
         request.httpMethod = "GET"
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
@@ -452,7 +454,7 @@ class LoginViewModel {
         session.stealthEnabled = stealthEnabled
         session.setUp(wipeAll: true)
 
-        let loaded = await session.loadPage(timeout: 20)
+        let loaded = await session.loadPage(timeout: TimeoutResolver.resolvePageLoadTimeout(20))
         if loaded {
             let verification = await session.verifyLoginFieldsExist()
             if verification.found == 2 {

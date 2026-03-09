@@ -557,7 +557,7 @@ struct IPScoreTestView: View {
         let delegate = IPScoreWebViewDelegate(session: session)
         delegate.onNeedRetry = { [weak webView, weak session] in
             guard let webView, let session else { return }
-            let request = URLRequest(url: session.url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 30)
+            let request = URLRequest(url: session.url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: TimeoutResolver.resolveRequestTimeout(30))
             webView.load(request)
             self.logger.log("IPScoreTest: S\(session.index) retrying with \(session.usedSite)", category: .automation, level: .info)
         }
@@ -565,7 +565,7 @@ struct IPScoreTestView: View {
         delegates[session.id] = delegate
         session.webView = webView
 
-        let request = URLRequest(url: session.url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 30)
+        let request = URLRequest(url: session.url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: TimeoutResolver.resolveRequestTimeout(30))
         webView.load(request)
 
         logger.log("IPScoreTest: S\(session.index) loading \(session.usedSite) via \(session.networkConfig.label)", category: .automation, level: .debug)

@@ -111,8 +111,8 @@ class NetworkSessionFactory {
 
     func buildURLSessionConfiguration(for config: ActiveNetworkConfig) -> URLSessionConfiguration {
         let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.timeoutIntervalForRequest = 30
-        sessionConfig.timeoutIntervalForResource = 60
+        sessionConfig.timeoutIntervalForRequest = TimeoutResolver.resolveRequestTimeout(30)
+        sessionConfig.timeoutIntervalForResource = TimeoutResolver.resolveResourceTimeout(60)
         sessionConfig.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         sessionConfig.httpShouldSetCookies = false
         sessionConfig.httpCookieAcceptPolicy = .never

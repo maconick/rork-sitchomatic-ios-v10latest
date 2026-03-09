@@ -111,7 +111,8 @@ class LoginWebSession: NSObject {
         return false
     }
 
-    func loadPage(timeout: TimeInterval = 30) async -> Bool {
+    func loadPage(timeout: TimeInterval = 90) async -> Bool {
+        let timeout = TimeoutResolver.resolvePageLoadTimeout(timeout)
         guard let webView else {
             lastNavigationError = "WebView not initialized"
             logger.log("LoginWebSession: loadPage failed — webView nil", category: .webView, level: .error)

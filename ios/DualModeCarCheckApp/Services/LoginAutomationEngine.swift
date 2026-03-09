@@ -40,7 +40,8 @@ class LoginAutomationEngine {
         activeSessions < maxConcurrency
     }
 
-    func runLoginTest(_ attempt: LoginAttempt, targetURL: URL, timeout: TimeInterval = 45) async -> LoginOutcome {
+    func runLoginTest(_ attempt: LoginAttempt, targetURL: URL, timeout: TimeInterval = 90) async -> LoginOutcome {
+        let timeout = TimeoutResolver.resolveTestTimeout(timeout, userSetting: automationSettings.pageLoadTimeout)
         activeSessions += 1
         defer { activeSessions -= 1 }
 

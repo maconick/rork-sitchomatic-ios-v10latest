@@ -109,7 +109,9 @@ class PPSRAutomationViewModel {
     private var settingsSaveTask: Task<Void, Never>?
     private var cardsSaveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
-    private let sessionHeartbeatTimeout: TimeInterval = 90
+    private var sessionHeartbeatTimeout: TimeInterval {
+        TimeoutResolver.resolveHeartbeatTimeout(max(90, testTimeout))
+    }
 
     init() {
         engine.onScreenshot = { [weak self] screenshot in
@@ -317,7 +319,7 @@ class PPSRAutomationViewModel {
         session.setUp()
         defer { session.tearDown() }
 
-        let loaded = await session.loadPage(timeout: 30)
+        let loaded = await session.loadPage(timeout: TimeoutResolver.resolvePageLoadTimeout(30))
         guard loaded else {
             connectionStatus = .error
             let errorDetail = session.lastNavigationError ?? "Unknown error"
@@ -415,9 +417,10 @@ class PPSRAutomationViewModel {
                     log("Auto-heal: Stealth ON, concurrency reduced to \(maxConcurrency)", level: .success)
                 } else if step.detail.contains("timed out") {
                     log("Auto-heal: Connection timeout — increasing test timeout", level: .info)
-                    if testTimeout < 45 {
-                        testTimeout = 45
-                        log("Auto-heal: Test timeout increased to 45s", level: .success)
+                    let healCap = TimeoutResolver.resolveAutoHealCap(testTimeout)
+                    if testTimeout < healCap {
+                        testTimeout = healCap
+                        log("Auto-heal: Test timeout increased to \(Int(healCap))s", level: .success)
                     }
                 }
 
