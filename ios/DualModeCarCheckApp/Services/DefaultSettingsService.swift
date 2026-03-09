@@ -17,11 +17,9 @@ class DefaultSettingsService {
         let blacklistService = BlacklistService.shared
 
         let disabledJoeURLs: Set<String> = [
-            "https://static.joefortune.com/login",
             "https://static.joefortune.eu/login",
             "https://static.joefortune.club/login",
             "https://static.joefortune.eu.com/login",
-            "https://static.joefortune.fun/login",
             "https://static.joefortune.lv/login",
             "https://static.joefortune.ooo/login",
             "https://joefortune24.com/login",

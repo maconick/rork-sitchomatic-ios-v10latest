@@ -16,6 +16,7 @@ class DisabledCheckService {
 
     private var checkTask: Task<Void, Never>?
     private let forgotPasswordURL = URL(string: "https://www.joefortuneonlinepokies.net/forgot-password")!
+    private let blockedDomains: Set<String> = ["ignitionpoker.com", "ignitionpoker.eu", "joefortune.com", "joefortune.fun"]
 
     private let stealthService = PPSRStealthService.shared
     private let proxyService = ProxyRotationService.shared

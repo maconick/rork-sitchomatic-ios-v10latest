@@ -63,7 +63,12 @@ class NetworkSessionFactory {
                 logger.log("NetworkFactory: assigned WG \(wg.displayString) for \(target.rawValue)", category: .vpn, level: .debug)
                 return .wireGuardDNS(wg)
             }
-            logger.log("NetworkFactory: no enabled WG config for \(target.rawValue) — falling back to SOCKS5", category: .vpn, level: .warning)
+            logger.log("NetworkFactory: no enabled WG config for \(target.rawValue) — falling back to OpenVPN", category: .vpn, level: .warning)
+            if let ovpn = nextOVPNConfig(for: target) {
+                logger.log("NetworkFactory: WG fallback → OVPN \(ovpn.displayString) for \(target.rawValue)", category: .vpn, level: .info)
+                return .openVPNProxy(ovpn)
+            }
+            logger.log("NetworkFactory: no OVPN available for \(target.rawValue) — falling back to SOCKS5", category: .vpn, level: .warning)
             if let proxy = proxyService.nextWorkingProxy(for: target) {
                 logger.log("NetworkFactory: WG fallback → SOCKS5 \(proxy.displayString) for \(target.rawValue)", category: .proxy, level: .info)
                 return .socks5(proxy)

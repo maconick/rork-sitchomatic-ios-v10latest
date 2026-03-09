@@ -56,6 +56,7 @@ class LoginAutomationEngine {
 
         let session = LoginSiteWebSession(targetURL: targetURL, networkConfig: netConfig)
         session.stealthEnabled = stealthEnabled
+        session.fingerprintValidationEnabled = automationSettings.fingerprintValidationEnabled
         session.onFingerprintLog = { [weak self] msg, level in
             attempt.logs.append(PPSRLogEntry(message: msg, level: level))
             self?.onLog?(msg, level)
@@ -125,7 +126,7 @@ class LoginAutomationEngine {
         var loaded = false
         for attemptNum in 1...3 {
             logger.startTimer(key: "\(sessionId)_pageload_\(attemptNum)")
-            loaded = await session.loadPage(timeout: 30)
+            loaded = await session.loadPage(timeout: automationSettings.pageLoadTimeout)
             let loadMs = logger.stopTimer(key: "\(sessionId)_pageload_\(attemptNum)")
             if loaded {
                 logger.log("Page load attempt \(attemptNum)/3 SUCCESS", category: .webView, level: .success, sessionId: sessionId, durationMs: loadMs)
@@ -155,6 +156,12 @@ class LoginAutomationEngine {
             onConnectionFailure?("Page load failed: \(errorDetail)")
             await captureDebugScreenshot(session: session, attempt: attempt, step: "page_load_failed", note: "Failed to load", autoResult: .unknown)
             return .connectionFailure
+        }
+
+        let extraDelay = automationSettings.pageLoadExtraDelayMs
+        if extraDelay > 0 {
+            attempt.logs.append(PPSRLogEntry(message: "Waiting \(extraDelay)ms for page stabilization...", level: .info))
+            try? await Task.sleep(for: .milliseconds(extraDelay))
         }
 
         let pageTitle = await session.getPageTitle()
@@ -315,6 +322,12 @@ class LoginAutomationEngine {
             }
 
             advanceTo(.submitting, attempt: attempt, message: "Cycle \(cycle)/\(maxSubmitCycles) — evaluating submit...")
+
+            let submitWaitDelay = automationSettings.submitButtonWaitDelayMs
+            if submitWaitDelay > 0 {
+                attempt.logs.append(PPSRLogEntry(message: "Waiting \(submitWaitDelay)ms for submit button readiness...", level: .info))
+                try? await Task.sleep(for: .milliseconds(submitWaitDelay))
+            }
 
             if !patternResult.submitTriggered {
                 attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): pattern submit failed — trying debug button → calibrated → legacy click strategies", level: .warning))

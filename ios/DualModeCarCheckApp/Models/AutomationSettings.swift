@@ -23,7 +23,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var trueDetectionIgnoreClassNames: Bool = true
 
     // MARK: - Page Loading
-    var pageLoadTimeout: TimeInterval = 30
+    var pageLoadTimeout: TimeInterval = 90
     var pageLoadRetries: Int = 3
     var retryBackoffMultiplier: Double = 2.0
     var waitForJSRenderMs: Int = 4000
@@ -91,6 +91,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Stealth
     var stealthJSInjection: Bool = true
+    var fingerprintValidationEnabled: Bool = false
     var fingerprintSpoofing: Bool = true
     var userAgentRotation: Bool = true
     var viewportRandomization: Bool = true
@@ -150,6 +151,8 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var loginButtonScrollIntoView: Bool = true
     var loginButtonWaitForEnabled: Bool = true
     var loginButtonWaitForEnabledTimeoutMs: Int = 5000
+    var pageLoadExtraDelayMs: Int = 2000
+    var submitButtonWaitDelayMs: Int = 2000
     var loginButtonVisibilityCheck: Bool = true
     var loginButtonFocusBeforeClick: Bool = false
     var loginButtonHoverBeforeClick: Bool = true
@@ -192,6 +195,8 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var sessionCooldownDelayMs: Int = 0
     var proxyRotationDelayMs: Int = 500
     var vpnReconnectDelayMs: Int = 2000
+    var autoFallbackWGtoOVPN: Bool = true
+    var autoFallbackOVPNtoSOCKS5: Bool = true
     var delayRandomizationEnabled: Bool = true
     var delayRandomizationPercent: Int = 25
 

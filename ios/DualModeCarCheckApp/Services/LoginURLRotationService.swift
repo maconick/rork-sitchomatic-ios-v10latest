@@ -65,11 +65,9 @@ class LoginURLRotationService {
     }
 
     static let joeBaseDomains: [String] = [
-        "joefortune.com",
         "joefortune.eu",
         "joefortune.club",
         "joefortune.eu.com",
-        "joefortune.fun",
         "joefortune.lv",
         "joefortune.ooo",
         "joefortune24.com",
@@ -103,8 +101,7 @@ class LoginURLRotationService {
         "https://static.ignition231.com/?overlay=login",
         "https://static.ignition165.com/?overlay=login",
         "https://static.ignition551.com/?overlay=login",
-        "https://static.ignitionpoker.eu/?overlay=login",
-        "https://static.ignitionpoker.com/?overlay=login",
+
         "https://static.ignitioncasino.lv/?overlay=login",
         "https://static.ignitioncasino.eu/?overlay=login",
         "https://static.ignitioncasino.eu.com/?overlay=login",

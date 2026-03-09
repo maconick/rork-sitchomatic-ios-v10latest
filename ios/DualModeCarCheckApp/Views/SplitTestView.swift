@@ -3,6 +3,12 @@ import SwiftUI
 struct SplitTestView: View {
     @State private var vm = LoginViewModel()
     @State private var initialSetupDone: Bool = false
+    @State private var selectedJoeURL: String = ""
+    @State private var selectedIgnitionURL: String = ""
+    @State private var showURLPicker: Bool = false
+    @State private var showImportSheet: Bool = false
+    @State private var importText: String = ""
+    @State private var showAutomationSettings: Bool = false
 
     var body: some View {
         GeometryReader { geo in
@@ -29,8 +35,31 @@ struct SplitTestView: View {
                 vm.setSiteMode(.dual)
             }
         }
+        .safeAreaInset(edge: .top) {
+            splitTopBar
+        }
         .safeAreaInset(edge: .bottom) {
             splitControlBar
+        }
+        .sheet(isPresented: $showURLPicker) {
+            urlPickerSheet
+        }
+        .sheet(isPresented: $showImportSheet) {
+            splitImportSheet
+        }
+        .sheet(isPresented: $showAutomationSettings) {
+            NavigationStack {
+                AutomationSettingsView(vm: vm)
+                    .navigationTitle("Automation Settings")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Done") { showAutomationSettings = false }
+                        }
+                    }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
         .withBatchAlerts(
             showBatchResult: $vm.showBatchResultPopup,
@@ -181,6 +210,208 @@ struct SplitTestView: View {
             SplitMiniStat(value: "\(failed)", label: "FAIL", color: .red)
             SplitMiniStat(value: "\(active)", label: "LIVE", color: color)
         }
+    }
+
+    private var splitTopBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                showURLPicker = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "link")
+                        .font(.system(size: 10, weight: .bold))
+                    Text("URLs")
+                        .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                }
+                .foregroundStyle(.cyan)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.cyan.opacity(0.12))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            if !selectedJoeURL.isEmpty {
+                Text(URL(string: selectedJoeURL)?.host ?? "")
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.green.opacity(0.7))
+                    .lineLimit(1)
+            }
+
+            Button {
+                showImportSheet = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 10, weight: .bold))
+                    Text("IMPORT")
+                        .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                }
+                .foregroundStyle(.white.opacity(0.85))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                showAutomationSettings = true
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.purple.opacity(0.9))
+                    .frame(width: 32, height: 32)
+                    .background(.purple.opacity(0.12))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
+    }
+
+    private var urlPickerSheet: some View {
+        NavigationStack {
+            List {
+                Section {
+                    let joeURLs = vm.urlRotation.joeURLs
+                    if joeURLs.isEmpty {
+                        Text("No Joe Fortune URLs configured")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(joeURLs) { urlEntry in
+                            Button {
+                                selectedJoeURL = urlEntry.urlString
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: selectedJoeURL == urlEntry.urlString ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(selectedJoeURL == urlEntry.urlString ? .green : .secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(urlEntry.host)
+                                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                            .foregroundStyle(.primary)
+                                        if urlEntry.totalAttempts > 0 {
+                                            Text("\(urlEntry.formattedSuccessRate) success · \(urlEntry.formattedAvgResponse) avg")
+                                                .font(.system(size: 9, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Circle()
+                                        .fill(urlEntry.isEnabled ? .green : .red)
+                                        .frame(width: 6, height: 6)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Label("Joe Fortune URLs", systemImage: "suit.spade.fill")
+                }
+
+                Section {
+                    let ignURLs = vm.urlRotation.ignitionURLs
+                    if ignURLs.isEmpty {
+                        Text("No Ignition URLs configured")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(ignURLs) { urlEntry in
+                            Button {
+                                selectedIgnitionURL = urlEntry.urlString
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: selectedIgnitionURL == urlEntry.urlString ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(selectedIgnitionURL == urlEntry.urlString ? .orange : .secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(urlEntry.host)
+                                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                            .foregroundStyle(.primary)
+                                        if urlEntry.totalAttempts > 0 {
+                                            Text("\(urlEntry.formattedSuccessRate) success · \(urlEntry.formattedAvgResponse) avg")
+                                                .font(.system(size: 9, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Circle()
+                                        .fill(urlEntry.isEnabled ? .green : .red)
+                                        .frame(width: 6, height: 6)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Label("Ignition URLs", systemImage: "flame.fill")
+                }
+
+                Section {
+                    Button {
+                        selectedJoeURL = ""
+                        selectedIgnitionURL = ""
+                    } label: {
+                        Label("Use Auto-Rotation (Default)", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                } footer: {
+                    Text("Select specific URLs or leave on auto-rotation for best performance.")
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("URL Selection")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { showURLPicker = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var splitImportSheet: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                Text("Paste credentials (email:password per line)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $importText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 150)
+                    .padding(8)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 10))
+
+                Button {
+                    vm.smartImportCredentials(importText)
+                    importText = ""
+                    showImportSheet = false
+                } label: {
+                    Text("Import")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(LinearGradient(colors: [.green, .orange], startPoint: .leading, endPoint: .trailing))
+                        .foregroundStyle(.black)
+                        .clipShape(.rect(cornerRadius: 12))
+                }
+                .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding()
+            .navigationTitle("Import Credentials")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { showImportSheet = false }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 
     private func splitEmptyState(color: Color) -> some View {

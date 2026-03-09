@@ -131,8 +131,10 @@ class LoginSiteWebSession: NSObject {
         _ = await executeJS(js)
     }
 
+    var fingerprintValidationEnabled: Bool = false
+
     func validateFingerprint(maxRetries: Int = 2) async -> Bool {
-        guard stealthEnabled, let wv = webView, let profile = stealthProfile else { return true }
+        guard fingerprintValidationEnabled, stealthEnabled, let wv = webView, let profile = stealthProfile else { return true }
 
         for attempt in 0..<maxRetries {
             let score = await FingerprintValidationService.shared.validate(in: wv, profileSeed: profile.seed)

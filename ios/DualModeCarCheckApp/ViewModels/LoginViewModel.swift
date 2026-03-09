@@ -20,7 +20,7 @@ class LoginViewModel {
     var stealthEnabled: Bool = true
     var targetSite: LoginTargetSite = .joefortune
     var appearanceMode: AppAppearanceMode = .dark
-    var testTimeout: TimeInterval = 45
+    var testTimeout: TimeInterval = 90
     var showBatchResultPopup: Bool = false
     var lastBatchResult: BatchResult?
     var consecutiveUnusualFailures: Int = 0
