@@ -1,0 +1,9 @@
+{
+  "apps": [
+    {
+      "name": "DualModeCarCheckApp",
+      "path": "ios",
+      "framework": "swift"
+    }
+  ]
+}
