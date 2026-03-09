@@ -19,6 +19,7 @@ struct DeviceNetworkSettingsView: View {
     private let proxyService = ProxyRotationService.shared
     private let nordService = NordVPNService.shared
     private let deviceProxy = DeviceProxyService.shared
+    private let localProxy = LocalProxyServer.shared
     private let logger = DebugLogger.shared
     @State private var rotationTimerTick: Int = 0
     @State private var rotationTickTimer: Timer?
@@ -27,6 +28,9 @@ struct DeviceNetworkSettingsView: View {
         List {
             deviceWideBanner
             unifiedIPSection
+            if deviceProxy.isEnabled {
+                localProxySection
+            }
             connectionModeSection
             ignitionRegionSection
             nordVPNSection
@@ -310,6 +314,122 @@ struct DeviceNetworkSettingsView: View {
         } footer: {
             Text("When enabled, the entire app uses a single IP at a time instead of per-session rotation. The active endpoint rotates automatically based on your selected schedule.")
         }
+    }
+
+    // MARK: - Local Proxy Server
+
+    private var localProxySection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { deviceProxy.localProxyEnabled },
+                set: { deviceProxy.localProxyEnabled = $0 }
+            )) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(localProxy.isRunning ? Color.green.opacity(0.15) : Color.gray.opacity(0.1))
+                            .frame(width: 36, height: 36)
+                        Image(systemName: "server.rack")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(localProxy.isRunning ? .green : .secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Local Proxy Server")
+                            .font(.subheadline.bold())
+                        Text("Routes all traffic through localhost")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .tint(.green)
+
+            if deviceProxy.localProxyEnabled {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(localProxy.isRunning ? .green : .red)
+                        .frame(width: 8, height: 8)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(localProxy.statusMessage)
+                            .font(.system(.caption, design: .monospaced, weight: .bold))
+                            .foregroundStyle(localProxy.isRunning ? .green : .red)
+                        if localProxy.isRunning {
+                            Text("127.0.0.1:\(localProxy.listeningPort)")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if localProxy.isRunning {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(localProxy.stats.activeConnections) active")
+                                .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                .foregroundStyle(.cyan)
+                            Text("\(localProxy.stats.totalConnections) total")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+
+                if localProxy.isRunning {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.cyan)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Upstream")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(localProxy.upstreamLabel)
+                                .font(.system(.caption, design: .monospaced, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text(formatBytes(localProxy.stats.bytesRelayed))
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(Color.green.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+
+                    if localProxy.stats.upstreamErrors > 0 {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            Text("\(localProxy.stats.upstreamErrors) upstream errors")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Image(systemName: "server.rack")
+                Text("Local Proxy Server")
+                Spacer()
+                if localProxy.isRunning {
+                    Text("RUNNING")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.green.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+            }
+        } footer: {
+            Text("The local proxy server runs on localhost and forwards all WebView traffic through the active upstream SOCKS5 proxy. Upstream rotation happens transparently without reconfiguring WebViews.")
+        }
+    }
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
+        if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / (1024 * 1024)) }
+        return String(format: "%.2f GB", Double(bytes) / (1024 * 1024 * 1024))
     }
 
     // MARK: - Connection Mode

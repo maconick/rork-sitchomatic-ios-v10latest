@@ -45,8 +45,14 @@ class NetworkSessionFactory {
     private var ignitionOVPNIndex: Int = 0
     private var ppsrOVPNIndex: Int = 0
 
+    private let localProxy = LocalProxyServer.shared
+
     func nextConfig(for target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {
         if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
+            if let localConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
+                logger.log("NetworkFactory: using local proxy 127.0.0.1:\(localConfig.port) → upstream \(config.label) for \(target.rawValue)", category: .network, level: .debug)
+                return .socks5(localConfig)
+            }
             logger.log("NetworkFactory: using unified IP → \(config.label) for \(target.rawValue)", category: .network, level: .debug)
             return config
         }

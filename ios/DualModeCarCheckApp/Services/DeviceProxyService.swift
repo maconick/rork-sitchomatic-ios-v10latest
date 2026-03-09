@@ -59,7 +59,22 @@ class DeviceProxyService {
     static let shared = DeviceProxyService()
 
     private let proxyService = ProxyRotationService.shared
+    private let localProxy = LocalProxyServer.shared
     private let logger = DebugLogger.shared
+
+    var localProxyEnabled: Bool = true {
+        didSet {
+            persistSettings()
+            if isEnabled {
+                if localProxyEnabled {
+                    localProxy.start()
+                } else {
+                    localProxy.stop()
+                }
+                syncLocalProxyUpstream()
+            }
+        }
+    }
 
     var isEnabled: Bool = false {
         didSet {
@@ -138,9 +153,12 @@ class DeviceProxyService {
     }
 
     private func activateUnifiedMode() {
+        if localProxyEnabled {
+            localProxy.start()
+        }
         performRotation(reason: "Activated")
         restartRotationTimer()
-        logger.log("DeviceProxy: Unified IP mode ENABLED", category: .network, level: .info)
+        logger.log("DeviceProxy: Unified IP mode ENABLED (localProxy: \(localProxyEnabled))", category: .network, level: .info)
     }
 
     private func deactivateUnifiedMode() {
@@ -152,6 +170,7 @@ class DeviceProxyService {
         activeConnectionType = "None"
         activeSince = nil
         isActive = false
+        localProxy.stop()
         logger.log("DeviceProxy: Unified IP mode DISABLED", category: .network, level: .info)
     }
 
@@ -208,9 +227,32 @@ class DeviceProxyService {
             nextRotationDate = Date().addingTimeInterval(interval)
         }
 
+        syncLocalProxyUpstream()
+
         isRotating = false
 
         logger.log("DeviceProxy: rotated → \(activeEndpointLabel ?? "Unknown") (reason: \(reason))", category: .network, level: .info)
+    }
+
+    private func syncLocalProxyUpstream() {
+        guard localProxyEnabled else {
+            localProxy.updateUpstream(nil)
+            return
+        }
+        switch activeConfig {
+        case .socks5(let proxy):
+            localProxy.updateUpstream(proxy)
+        default:
+            localProxy.updateUpstream(nil)
+        }
+    }
+
+    var effectiveProxyConfig: ProxyConfig? {
+        guard isEnabled, isActive, localProxyEnabled, localProxy.isRunning else { return nil }
+        if case .socks5 = activeConfig {
+            return localProxy.localProxyConfig
+        }
+        return nil
     }
 
     private func resolveNextConfig() -> ActiveNetworkConfig {
@@ -251,6 +293,7 @@ class DeviceProxyService {
             "interval": rotationInterval.rawValue,
             "rotateOnBatch": rotateOnBatchStart,
             "rotateOnFingerprint": rotateOnFingerprintDetection,
+            "localProxy": localProxyEnabled,
         ]
         UserDefaults.standard.set(dict, forKey: settingsKey)
     }
@@ -262,5 +305,6 @@ class DeviceProxyService {
            let parsed = RotationInterval(rawValue: interval) { rotationInterval = parsed }
         if let batch = dict["rotateOnBatch"] as? Bool { rotateOnBatchStart = batch }
         if let fp = dict["rotateOnFingerprint"] as? Bool { rotateOnFingerprintDetection = fp }
+        if let lp = dict["localProxy"] as? Bool { localProxyEnabled = lp }
     }
 }
