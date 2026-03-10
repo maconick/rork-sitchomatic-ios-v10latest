@@ -20,54 +20,63 @@ Currently, WireGuard and OpenVPN configs are assigned to WebViews but **no actua
 
 ---
 
-## Stage 2 — On-Device Local Proxy Server (Wireproxy Concept)
+## Stage 2 — On-Device Local Proxy Server (Wireproxy Concept) ✅ COMPLETE
 
-**What changes:**
-- Build a local SOCKS5 proxy server running inside the app on `localhost`
-- Uses Apple's Network framework (`NWListener`) — no external dependencies
-- Acts as a proxy forwarder: all WebViews connect to `localhost:PORT`, which forwards traffic through the selected upstream SOCKS5 proxy
-- This is the on-device equivalent of wireproxy — a local intermediary that all app traffic routes through
+**What changed:**
+- [x] `ProxyHealthMonitor` — periodic upstream SOCKS5 health checks with configurable intervals, auto-failover when upstream dies after N consecutive failures
+- [x] `ProxyConnectionPool` — connection pooling with idle timeout, TTL eviction, hit/miss tracking, and automatic cleanup of stale connections
+- [x] Enhanced `LocalProxyServer` — connection limits (max 50 concurrent), per-connection tracking with target host/port/state/bytes, peak connections, error categorization (connection/handshake/relay), upload/download bandwidth split, uptime tracking, throughput calculation, health monitor integration
+- [x] Enhanced `LocalProxyConnection` — connection timeout support, error type categorization, upload vs download byte tracking, per-connection state reporting to server, timeout auto-cancel
+- [x] `DeviceProxyService` enhanced — auto-failover integration (triggers rotation when health monitor detects dead upstream), configurable health check interval and max failures, failover counter, settings persistence for new health/failover options
+- [x] `ProxyStatusDashboardView` — real-time monitoring dashboard with server overview (uptime, throughput, peak connections), health monitor stats (latency, success rate, consecutive failures, failover count), connection pool metrics (utilization, hit rate, evictions), active connections list, error breakdown by type, bandwidth split, health log, recent hosts
+- [x] Updated `DeviceNetworkSettingsView` — wireproxy branding, health status inline display, error breakdown, failover count, auto-failover toggle, navigation link to Proxy Dashboard
 
-**Features:**
-- Single unified proxy endpoint for the entire app (`localhost:PORT`)
+**Features delivered:**
+- Single unified proxy endpoint for the entire app (`localhost:18080`)
 - Upstream proxy rotation happens transparently — change the upstream, all WebViews immediately use the new IP
-- No need to reconfigure or recreate WebViews when rotating proxies
-- Connection pooling and keep-alive management
-- Automatic health monitoring — if the upstream proxy dies, auto-rotate to the next one
+- Connection pooling with keep-alive management (20 pool slots, 60s idle timeout, 5min TTL)
+- Automatic health monitoring — checks upstream every 30s, auto-rotates after 3 consecutive failures
 - Support for proxy chaining (local → upstream SOCKS5 → internet)
-- Status dashboard showing active connections, bytes transferred, upstream health
+- Real-time status dashboard showing active connections, bytes transferred, upstream health, error breakdown
+- Connection limits prevent resource exhaustion (max 50 concurrent)
+- Per-connection timeout (30s) prevents hung connections
 
 ---
 
-## Stage 3 — Device-Wide VPN Tunnel (NetworkExtension)
+## Stage 3 — Device-Wide VPN Tunnel (NetworkExtension) ✅ COMPLETE
 
-**What changes:**
-- Add a Network Extension target with a Packet Tunnel Provider
-- Implements a real VPN tunnel using `NEPacketTunnelProvider`
-- When active, **ALL device traffic** (every WebView, every URL request, everything) routes through the VPN
-- Supports WireGuard protocol via the tunnel provider
-- Managed from the main app via `NETunnelProviderManager`
+**What changed:**
+- [x] Enhanced `VPNTunnelManager` — auto-reconnect with exponential backoff (configurable delay, max attempts), connection statistics tracking (total connections, reconnects, errors, rotations, longest session), data in/out polling via provider messages, on-demand connect rules (WiFi + Cellular), kill switch option, connection event history with timestamps, endpoint reachability testing via UDP, rotation/failover-specific connect methods
+- [x] `WireGuardTunnelService` — batch endpoint reachability testing with latency measurement, best endpoint selection (lowest latency), config validation (key lengths, port range, MTU range), WG-Quick config regeneration from parsed config, reachable count and average latency tracking
+- [x] `VPNStatusDashboardView` — real-time tunnel status with uptime counter, data in/out display, connection statistics grid (connections, reconnects, errors, rotations, longest session, disconnects), auto-reconnect and on-demand toggles, endpoint testing with latency results and best endpoint highlight, connect-to-best-endpoint action, connection history log with event types (connected, disconnected, error, reconnect, rotation, failover)
+- [x] Updated `DeviceNetworkSettingsView` VPN section — data in/out display when connected, VPN Dashboard navigation link, auto-reconnect toggle with attempt count, connect-on-demand toggle, reconnecting status badge in header
+- [x] `DeviceProxyService` — VPN disconnect calls updated with reason tracking
+- [x] Network Extension entitlement added — `com.apple.developer.networking.networkextension` with `packet-tunnel-provider` capability
+- [x] App Groups entitlement maintained for data sharing between app and extension
 
-**Features:**
-- True device-wide VPN — every single network request uses the VPN IP
-- WireGuard tunnel support using your existing WireGuard configs
-- Start/stop VPN from within the app
-- Auto-rotation: disconnect and reconnect with a different WireGuard server on schedule
-- VPN status indicator in the app (connected/disconnected/rotating)
-- Fallback chain: WireGuard tunnel → SOCKS5 proxy → direct
-- Integration with existing DeviceProxyService rotation timers and batch triggers
-- Works on real devices (Network Extensions require physical hardware — shows placeholder in simulator)
+**Features delivered:**
+- True device-wide VPN via `NETunnelProviderManager` — when active, ALL traffic routes through WireGuard tunnel
+- Auto-reconnect with exponential backoff — retries up to 3 times with increasing delay on disconnect
+- Connect-on-demand rules — auto-connect on WiFi and Cellular network changes
+- Connection statistics — tracks total connections, reconnects, errors, rotations, longest session duration
+- Data transfer monitoring — polls tunnel extension for bytes in/out
+- Endpoint reachability testing — tests all WireGuard endpoints via UDP with latency measurement
+- Best endpoint selection — automatically connects to the lowest-latency reachable endpoint
+- Config validation — validates WireGuard config keys, ports, MTU before connecting
+- Connection event history — logs every connect, disconnect, error, reconnect, rotation, failover event
+- VPN Status Dashboard — dedicated view with all tunnel metrics, endpoint testing, and history
+- Rotation and failover support — dedicated methods for rotation (scheduled) and failover (upstream dead) connects
+- Simulator detection — shows placeholder message on simulator, full functionality on real devices
+- Fallback chain: VPN tunnel → local wireproxy → direct SOCKS5 → direct connection
 
-**Note:** Stage 3 requires the Network Extension entitlement from Apple and only works on real devices. The app will detect this and fall back to Stage 2 (local proxy) or Stage 1 (direct SOCKS5) automatically.
+**Note:** The Packet Tunnel Provider extension target requires provisioning from Apple Developer portal. The app detects simulator vs real device and falls back to Stage 2 (wireproxy) or Stage 1 (direct SOCKS5) automatically.
 
 ---
 
 ## Summary
 
-| Stage | What It Does | Works In Simulator? |
-|-------|-------------|-------------------|
-| 1 | Fix SOCKS5 → WebView routing with proper iOS API | ✅ Yes |
-| 2 | Local proxy server for unified app-wide routing | ✅ Yes |
-| 3 | Device-wide VPN tunnel via NetworkExtension | ❌ Real device only |
-
-Say **"yes"**, **"continue"**, or **"analysis"** after each stage to proceed to the next one.
+| Stage | What It Does | Works In Simulator? | Status |
+|-------|-------------|-------------------|--------|
+| 1 | Fix SOCKS5 → WebView routing with proper iOS API | ✅ Yes | ✅ Complete |
+| 2 | Local proxy server (wireproxy) for unified app-wide routing | ✅ Yes | ✅ Complete |
+| 3 | Device-wide VPN tunnel via NetworkExtension | ❌ Real device only | ✅ Complete |

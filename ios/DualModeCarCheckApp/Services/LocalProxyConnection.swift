@@ -9,20 +9,30 @@ class LocalProxyConnection {
     private let upstream: ProxyConfig?
     private let queue: DispatchQueue
     private weak var server: LocalProxyServer?
+    private let timeoutSeconds: TimeInterval
 
     private var bytesRelayed: UInt64 = 0
+    private var bytesUploaded: UInt64 = 0
+    private var bytesDownloaded: UInt64 = 0
     private var hadError: Bool = false
     private var isCancelled: Bool = false
+    private var errorType: ConnectionErrorType = .none
+    private var targetHost: String = ""
+    private var targetPort: UInt16 = 0
+    private var timeoutWork: DispatchWorkItem?
 
-    init(id: UUID, clientConnection: NWConnection, upstream: ProxyConfig?, queue: DispatchQueue, server: LocalProxyServer) {
+    init(id: UUID, clientConnection: NWConnection, upstream: ProxyConfig?, queue: DispatchQueue, server: LocalProxyServer, timeoutSeconds: TimeInterval = 30) {
         self.id = id
         self.clientConnection = clientConnection
         self.upstream = upstream
         self.queue = queue
         self.server = server
+        self.timeoutSeconds = timeoutSeconds
     }
 
     func start() {
+        startTimeout()
+
         clientConnection.stateUpdateHandler = { [weak self] state in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
@@ -30,6 +40,7 @@ class LocalProxyConnection {
                 case .ready:
                     self.readSOCKS5Greeting()
                 case .failed:
+                    self.errorType = .connection
                     self.finish(error: true)
                 case .cancelled:
                     self.finish(error: false)
@@ -44,6 +55,7 @@ class LocalProxyConnection {
     func cancel() {
         guard !isCancelled else { return }
         isCancelled = true
+        cancelTimeout()
         clientConnection.cancel()
         upstreamConnection?.cancel()
     }
@@ -51,28 +63,63 @@ class LocalProxyConnection {
     private func finish(error: Bool) {
         guard !isCancelled else { return }
         isCancelled = true
+        cancelTimeout()
         hadError = error || hadError
         clientConnection.cancel()
         upstreamConnection?.cancel()
-        server?.connectionFinished(id: id, bytesRelayed: bytesRelayed, hadError: hadError)
+        server?.connectionFinished(
+            id: id,
+            bytesRelayed: bytesRelayed,
+            bytesUp: bytesUploaded,
+            bytesDown: bytesDownloaded,
+            hadError: hadError,
+            errorType: errorType,
+            targetHost: targetHost
+        )
+    }
+
+    private func startTimeout() {
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isCancelled else { return }
+                self.errorType = .connection
+                self.finish(error: true)
+            }
+        }
+        timeoutWork = work
+        queue.asyncAfter(deadline: .now() + timeoutSeconds, execute: work)
+    }
+
+    private func cancelTimeout() {
+        timeoutWork?.cancel()
+        timeoutWork = nil
+    }
+
+    private func resetTimeout() {
+        cancelTimeout()
+        startTimeout()
     }
 
     private func readSOCKS5Greeting() {
+        server?.updateConnectionInfo(id: id, targetHost: "", targetPort: 0, state: .handshaking)
+
         clientConnection.receive(minimumIncompleteLength: 2, maximumLength: 257) { [weak self] data, _, _, error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if let error {
-                    self.hadError = true
+                if error != nil {
+                    self.errorType = .handshake
                     self.finish(error: true)
                     return
                 }
                 guard let data, data.count >= 2 else {
+                    self.errorType = .handshake
                     self.finish(error: true)
                     return
                 }
 
                 let version = data[0]
                 guard version == 0x05 else {
+                    self.errorType = .handshake
                     self.finish(error: true)
                     return
                 }
@@ -82,6 +129,7 @@ class LocalProxyConnection {
                     Task { @MainActor [weak self] in
                         guard let self, !self.isCancelled else { return }
                         if sendError != nil {
+                            self.errorType = .handshake
                             self.finish(error: true)
                             return
                         }
@@ -96,12 +144,13 @@ class LocalProxyConnection {
         clientConnection.receive(minimumIncompleteLength: 4, maximumLength: 512) { [weak self] data, _, _, error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if let error {
-                    self.hadError = true
+                if error != nil {
+                    self.errorType = .handshake
                     self.finish(error: true)
                     return
                 }
                 guard let data, data.count >= 4 else {
+                    self.errorType = .handshake
                     self.finish(error: true)
                     return
                 }
@@ -112,54 +161,53 @@ class LocalProxyConnection {
                 }
 
                 let addressType = data[3]
-                var targetHost: String = ""
-                var targetPort: UInt16 = 0
-                var headerLength: Int = 0
+                var host: String = ""
+                var port: UInt16 = 0
 
                 switch addressType {
                 case 0x01:
-                    guard data.count >= 10 else { self.finish(error: true); return }
-                    targetHost = "\(data[4]).\(data[5]).\(data[6]).\(data[7])"
-                    targetPort = UInt16(data[8]) << 8 | UInt16(data[9])
-                    headerLength = 10
+                    guard data.count >= 10 else { self.errorType = .handshake; self.finish(error: true); return }
+                    host = "\(data[4]).\(data[5]).\(data[6]).\(data[7])"
+                    port = UInt16(data[8]) << 8 | UInt16(data[9])
 
                 case 0x03:
-                    guard data.count >= 5 else { self.finish(error: true); return }
+                    guard data.count >= 5 else { self.errorType = .handshake; self.finish(error: true); return }
                     let domainLength = Int(data[4])
-                    guard data.count >= 5 + domainLength + 2 else { self.finish(error: true); return }
-                    targetHost = String(data: data[5..<(5 + domainLength)], encoding: .utf8) ?? ""
+                    guard data.count >= 5 + domainLength + 2 else { self.errorType = .handshake; self.finish(error: true); return }
+                    host = String(data: data[5..<(5 + domainLength)], encoding: .utf8) ?? ""
                     let portOffset = 5 + domainLength
-                    targetPort = UInt16(data[portOffset]) << 8 | UInt16(data[portOffset + 1])
-                    headerLength = 5 + domainLength + 2
+                    port = UInt16(data[portOffset]) << 8 | UInt16(data[portOffset + 1])
 
                 case 0x04:
-                    guard data.count >= 22 else { self.finish(error: true); return }
+                    guard data.count >= 22 else { self.errorType = .handshake; self.finish(error: true); return }
                     let ipv6Bytes = data[4..<20]
-                    targetHost = ipv6Bytes.map { String(format: "%02x", $0) }
+                    host = ipv6Bytes.map { String(format: "%02x", $0) }
                         .enumerated()
                         .reduce("") { result, pair in
                             let sep = (pair.offset > 0 && pair.offset % 2 == 0) ? ":" : ""
                             return result + sep + pair.element
                         }
-                    targetPort = UInt16(data[20]) << 8 | UInt16(data[21])
-                    headerLength = 22
+                    port = UInt16(data[20]) << 8 | UInt16(data[21])
 
                 default:
                     self.sendSOCKS5Error(0x08)
                     return
                 }
 
-                guard !targetHost.isEmpty, targetPort > 0 else {
+                guard !host.isEmpty, port > 0 else {
                     self.sendSOCKS5Error(0x01)
                     return
                 }
 
-                self.connectToTarget(host: targetHost, port: targetPort, originalRequest: data, addressType: addressType)
+                self.targetHost = host
+                self.targetPort = port
+                self.server?.updateConnectionInfo(id: self.id, targetHost: host, targetPort: port, state: .handshaking)
+                self.connectToTarget(host: host, port: port, addressType: addressType)
             }
         }
     }
 
-    private func connectToTarget(host: String, port: UInt16, originalRequest: Data, addressType: UInt8) {
+    private func connectToTarget(host: String, port: UInt16, addressType: UInt8) {
         if let upstream {
             connectViaUpstream(upstream, targetHost: host, targetPort: port, addressType: addressType)
         } else {
@@ -179,6 +227,7 @@ class LocalProxyConnection {
                 case .ready:
                     self.sendSOCKS5Success(addressType: addressType)
                 case .failed:
+                    self.errorType = .connection
                     self.sendSOCKS5Error(0x05)
                 case .cancelled:
                     break
@@ -205,6 +254,7 @@ class LocalProxyConnection {
                 case .ready:
                     self.performUpstreamSOCKS5Handshake(proxy: proxy, targetHost: targetHost, targetPort: targetPort, addressType: addressType)
                 case .failed:
+                    self.errorType = .connection
                     self.sendSOCKS5Error(0x05)
                 case .cancelled:
                     break
@@ -230,7 +280,7 @@ class LocalProxyConnection {
         upstreamConnection.send(content: greeting, completion: .contentProcessed { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if error != nil { self.sendSOCKS5Error(0x01); return }
+                if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
                 self.readUpstreamGreetingResponse(proxy: proxy, targetHost: targetHost, targetPort: targetPort, addressType: addressType)
             }
         })
@@ -242,8 +292,9 @@ class LocalProxyConnection {
         upstreamConnection.receive(minimumIncompleteLength: 2, maximumLength: 2) { [weak self] data, _, _, error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if error != nil { self.sendSOCKS5Error(0x01); return }
+                if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
                 guard let data, data.count == 2, data[0] == 0x05 else {
+                    self.errorType = .handshake
                     self.sendSOCKS5Error(0x01)
                     return
                 }
@@ -254,6 +305,7 @@ class LocalProxyConnection {
                 } else if method == 0x00 {
                     self.sendUpstreamConnectRequest(targetHost: targetHost, targetPort: targetPort, addressType: addressType)
                 } else {
+                    self.errorType = .handshake
                     self.sendSOCKS5Error(0x01)
                 }
             }
@@ -273,7 +325,7 @@ class LocalProxyConnection {
         upstreamConnection.send(content: authData, completion: .contentProcessed { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if error != nil { self.sendSOCKS5Error(0x01); return }
+                if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
                 self.readUpstreamAuthResponse(targetHost: targetHost, targetPort: targetPort, addressType: addressType)
             }
         })
@@ -285,8 +337,9 @@ class LocalProxyConnection {
         upstreamConnection.receive(minimumIncompleteLength: 2, maximumLength: 2) { [weak self] data, _, _, error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if error != nil { self.sendSOCKS5Error(0x01); return }
+                if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
                 guard let data, data.count == 2, data[1] == 0x00 else {
+                    self.errorType = .handshake
                     self.sendSOCKS5Error(0x01)
                     return
                 }
@@ -308,7 +361,7 @@ class LocalProxyConnection {
         upstreamConnection.send(content: request, completion: .contentProcessed { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if error != nil { self.sendSOCKS5Error(0x01); return }
+                if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
                 self.readUpstreamConnectResponse(addressType: addressType)
             }
         })
@@ -320,9 +373,10 @@ class LocalProxyConnection {
         upstreamConnection.receive(minimumIncompleteLength: 4, maximumLength: 512) { [weak self] data, _, _, error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
-                if error != nil { self.sendSOCKS5Error(0x01); return }
+                if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
                 guard let data, data.count >= 4, data[0] == 0x05, data[1] == 0x00 else {
                     let rep = data != nil && data!.count >= 2 ? data![1] : UInt8(0x01)
+                    self.errorType = .handshake
                     self.sendSOCKS5Error(rep)
                     return
                 }
@@ -332,11 +386,14 @@ class LocalProxyConnection {
     }
 
     private func sendSOCKS5Success(addressType: UInt8) {
+        cancelTimeout()
+
         let response = Data([0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
         clientConnection.send(content: response, completion: .contentProcessed { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self, !self.isCancelled else { return }
                 if error != nil { self.finish(error: true); return }
+                self.server?.updateConnectionInfo(id: self.id, targetHost: self.targetHost, targetPort: self.targetPort, state: .relaying)
                 self.startRelaying()
             }
         })
@@ -352,11 +409,11 @@ class LocalProxyConnection {
     }
 
     private func startRelaying() {
-        relayData(from: clientConnection, to: upstreamConnection, label: "client→upstream")
-        relayData(from: upstreamConnection, to: clientConnection, label: "upstream→client")
+        relayData(from: clientConnection, to: upstreamConnection, label: "up", isUpload: true)
+        relayData(from: upstreamConnection, to: clientConnection, label: "down", isUpload: false)
     }
 
-    private func relayData(from source: NWConnection?, to destination: NWConnection?, label: String) {
+    private func relayData(from source: NWConnection?, to destination: NWConnection?, label: String, isUpload: Bool) {
         guard let source, let destination, !isCancelled else { return }
 
         source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
@@ -364,21 +421,31 @@ class LocalProxyConnection {
                 guard let self, !self.isCancelled else { return }
 
                 if let data, !data.isEmpty {
-                    self.bytesRelayed += UInt64(data.count)
+                    let count = UInt64(data.count)
+                    self.bytesRelayed += count
+                    if isUpload {
+                        self.bytesUploaded += count
+                    } else {
+                        self.bytesDownloaded += count
+                    }
+                    self.server?.updateConnectionBytes(id: self.id, bytes: self.bytesRelayed)
+
                     destination.send(content: data, completion: .contentProcessed { [weak self] sendError in
                         Task { @MainActor [weak self] in
                             guard let self, !self.isCancelled else { return }
                             if sendError != nil {
+                                self.errorType = .relay
                                 self.finish(error: true)
                                 return
                             }
-                            self.relayData(from: source, to: destination, label: label)
+                            self.relayData(from: source, to: destination, label: label, isUpload: isUpload)
                         }
                     })
                 } else if isComplete || error != nil {
+                    if error != nil { self.errorType = .relay }
                     self.finish(error: error != nil)
                 } else {
-                    self.relayData(from: source, to: destination, label: label)
+                    self.relayData(from: source, to: destination, label: label, isUpload: isUpload)
                 }
             }
         }

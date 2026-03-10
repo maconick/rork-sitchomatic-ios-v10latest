@@ -61,6 +61,7 @@ class DeviceProxyService {
     private let proxyService = ProxyRotationService.shared
     private let localProxy = LocalProxyServer.shared
     private let vpnTunnel = VPNTunnelManager.shared
+    private let healthMonitor = ProxyHealthMonitor.shared
     private let logger = DebugLogger.shared
 
     var vpnTunnelEnabled: Bool = false {
@@ -114,6 +115,27 @@ class DeviceProxyService {
         didSet { persistSettings() }
     }
 
+    var autoFailoverEnabled: Bool = true {
+        didSet {
+            persistSettings()
+            healthMonitor.autoFailoverEnabled = autoFailoverEnabled
+        }
+    }
+
+    var healthCheckInterval: TimeInterval = 30 {
+        didSet {
+            persistSettings()
+            healthMonitor.checkIntervalSeconds = healthCheckInterval
+        }
+    }
+
+    var maxFailuresBeforeRotation: Int = 3 {
+        didSet {
+            persistSettings()
+            healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation
+        }
+    }
+
     var activeConfig: ActiveNetworkConfig?
     var activeEndpointLabel: String?
     var activeConnectionType: String = "None"
@@ -122,16 +144,20 @@ class DeviceProxyService {
     var isRotating: Bool = false
     var rotationLog: [RotationLogEntry] = []
     var nextRotationDate: Date?
+    private(set) var failoverCount: Int = 0
 
     private var rotationTimer: Timer?
     private var wgIndex: Int = 0
     private var ovpnIndex: Int = 0
     private var socks5Index: Int = 0
 
-    private let settingsKey = "device_proxy_settings_v1"
+    private let settingsKey = "device_proxy_settings_v2"
 
     init() {
         loadSettings()
+        healthMonitor.autoFailoverEnabled = autoFailoverEnabled
+        healthMonitor.checkIntervalSeconds = healthCheckInterval
+        healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation
         if isEnabled {
             activateUnifiedMode()
         }
@@ -170,7 +196,14 @@ class DeviceProxyService {
         }
         performRotation(reason: "Activated")
         restartRotationTimer()
-        logger.log("DeviceProxy: Unified IP mode ENABLED (localProxy: \(localProxyEnabled), vpnTunnel: \(vpnTunnelEnabled))", category: .network, level: .info)
+
+        localProxy.startHealthMonitoring { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.handleUpstreamFailover()
+            }
+        }
+
+        logger.log("DeviceProxy: Unified IP mode ENABLED (localProxy: \(localProxyEnabled), vpnTunnel: \(vpnTunnelEnabled), autoFailover: \(autoFailoverEnabled))", category: .network, level: .info)
     }
 
     private func deactivateUnifiedMode() {
@@ -185,6 +218,13 @@ class DeviceProxyService {
         localProxy.stop()
         deactivateVPNTunnel()
         logger.log("DeviceProxy: Unified IP mode DISABLED", category: .network, level: .info)
+    }
+
+    private func handleUpstreamFailover() {
+        guard isEnabled, autoFailoverEnabled else { return }
+        failoverCount += 1
+        logger.log("DeviceProxy: FAILOVER triggered (count: \(failoverCount)) - upstream dead, rotating to next", category: .proxy, level: .error)
+        performRotation(reason: "Failover (upstream dead)")
     }
 
     private func restartRotationTimer() {
@@ -245,7 +285,7 @@ class DeviceProxyService {
 
         isRotating = false
 
-        logger.log("DeviceProxy: rotated → \(activeEndpointLabel ?? "Unknown") (reason: \(reason))", category: .network, level: .info)
+        logger.log("DeviceProxy: rotated to \(activeEndpointLabel ?? "Unknown") (reason: \(reason))", category: .network, level: .info)
     }
 
     private func activateVPNTunnel() {
@@ -261,7 +301,7 @@ class DeviceProxyService {
 
     private func deactivateVPNTunnel() {
         if vpnTunnel.isActive {
-            vpnTunnel.disconnect()
+            vpnTunnel.disconnect(reason: "Unified mode deactivated")
         }
     }
 
@@ -347,12 +387,18 @@ class DeviceProxyService {
             "rotateOnFingerprint": rotateOnFingerprintDetection,
             "localProxy": localProxyEnabled,
             "vpnTunnel": vpnTunnelEnabled,
+            "autoFailover": autoFailoverEnabled,
+            "healthCheckInterval": healthCheckInterval,
+            "maxFailures": maxFailuresBeforeRotation,
         ]
         UserDefaults.standard.set(dict, forKey: settingsKey)
     }
 
     private func loadSettings() {
-        guard let dict = UserDefaults.standard.dictionary(forKey: settingsKey) else { return }
+        let key = settingsKey
+        let fallbackKey = "device_proxy_settings_v1"
+        let dict = UserDefaults.standard.dictionary(forKey: key) ?? UserDefaults.standard.dictionary(forKey: fallbackKey)
+        guard let dict else { return }
         if let enabled = dict["enabled"] as? Bool { isEnabled = enabled }
         if let interval = dict["interval"] as? String,
            let parsed = RotationInterval(rawValue: interval) { rotationInterval = parsed }
@@ -360,5 +406,8 @@ class DeviceProxyService {
         if let fp = dict["rotateOnFingerprint"] as? Bool { rotateOnFingerprintDetection = fp }
         if let lp = dict["localProxy"] as? Bool { localProxyEnabled = lp }
         if let vt = dict["vpnTunnel"] as? Bool { vpnTunnelEnabled = vt }
+        if let af = dict["autoFailover"] as? Bool { autoFailoverEnabled = af }
+        if let hci = dict["healthCheckInterval"] as? TimeInterval { healthCheckInterval = hci }
+        if let mf = dict["maxFailures"] as? Int { maxFailuresBeforeRotation = mf }
     }
 }

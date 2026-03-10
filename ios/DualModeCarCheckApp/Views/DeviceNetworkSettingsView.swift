@@ -21,6 +21,7 @@ struct DeviceNetworkSettingsView: View {
     private let deviceProxy = DeviceProxyService.shared
     private let localProxy = LocalProxyServer.shared
     private let vpnTunnel = VPNTunnelManager.shared
+    private let healthMonitor = ProxyHealthMonitor.shared
     private let logger = DebugLogger.shared
     @State private var rotationTimerTick: Int = 0
     @State private var rotationTickTimer: Timer?
@@ -336,9 +337,9 @@ struct DeviceNetworkSettingsView: View {
                             .foregroundStyle(localProxy.isRunning ? .green : .secondary)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Local Proxy Server")
+                        Text("Wireproxy Server")
                             .font(.subheadline.bold())
-                        Text("Routes all traffic through localhost")
+                        Text("On-device SOCKS5 forwarder")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -396,22 +397,90 @@ struct DeviceNetworkSettingsView: View {
                             .clipShape(Capsule())
                     }
 
+                    HStack(spacing: 10) {
+                        Image(systemName: "heart.text.square")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(healthMonitor.upstreamHealth.isHealthy ? .green : .red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Health")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(healthMonitor.isMonitoring ? (healthMonitor.upstreamHealth.isHealthy ? "Healthy" : "Unhealthy (\(healthMonitor.upstreamHealth.consecutiveFailures) fails)") : "Not monitoring")
+                                .font(.system(.caption, design: .monospaced, weight: .medium))
+                                .foregroundStyle(healthMonitor.upstreamHealth.isHealthy ? .green : .orange)
+                        }
+                        Spacer()
+                        if let latency = healthMonitor.upstreamHealth.latencyMs {
+                            Text("\(latency)ms")
+                                .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                .foregroundStyle(.cyan)
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(Color.cyan.opacity(0.1))
+                                .clipShape(Capsule())
+                        }
+                    }
+
                     if localProxy.stats.upstreamErrors > 0 {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
-                            Text("\(localProxy.stats.upstreamErrors) upstream errors")
+                            Text("\(localProxy.stats.upstreamErrors) errors (conn: \(localProxy.stats.connectionErrors), hs: \(localProxy.stats.handshakeErrors), relay: \(localProxy.stats.relayErrors))")
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundStyle(.orange)
                         }
                     }
+
+                    if deviceProxy.failoverCount > 0 {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                            Text("\(deviceProxy.failoverCount) auto-failovers triggered")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.red)
+                        }
+                    }
+
+                    NavigationLink {
+                        ProxyStatusDashboardView()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "chart.bar.xaxis")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.cyan)
+                            Text("Proxy Dashboard")
+                                .font(.subheadline.bold())
+                            Spacer()
+                            Text("\(localProxy.stats.activeConnections) conn")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                 }
+
+                Toggle(isOn: Binding(
+                    get: { deviceProxy.autoFailoverEnabled },
+                    set: { deviceProxy.autoFailoverEnabled = $0 }
+                )) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Auto-Failover")
+                                .font(.subheadline)
+                            Text("Rotate when upstream dies")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .tint(.orange)
             }
         } header: {
             HStack {
                 Image(systemName: "server.rack")
-                Text("Local Proxy Server")
+                Text("Wireproxy Server (Stage 2)")
                 Spacer()
                 if localProxy.isRunning {
                     Text("RUNNING")
@@ -423,7 +492,7 @@ struct DeviceNetworkSettingsView: View {
                 }
             }
         } footer: {
-            Text("The local proxy server runs on localhost and forwards all WebView traffic through the active upstream SOCKS5 proxy. Upstream rotation happens transparently without reconfiguring WebViews.")
+            Text("The wireproxy server runs on localhost and forwards all WebView traffic through the active upstream SOCKS5 proxy. Health monitoring auto-detects dead upstreams and triggers failover rotation.")
         }
     }
 
@@ -527,10 +596,40 @@ struct DeviceNetworkSettingsView: View {
                     }
                 }
 
+                if vpnTunnel.isConnected {
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.down")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.green)
+                                Text("In")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(vpnTunnel.dataInLabel)
+                                .font(.system(.caption, design: .monospaced, weight: .bold))
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.blue)
+                                Text("Out")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(vpnTunnel.dataOutLabel)
+                                .font(.system(.caption, design: .monospaced, weight: .bold))
+                        }
+                        Spacer()
+                    }
+                }
+
                 HStack(spacing: 12) {
                     if vpnTunnel.isConnected {
                         Button {
-                            vpnTunnel.disconnect()
+                            vpnTunnel.disconnect(reason: "Manual")
                         } label: {
                             Label("Disconnect", systemImage: "stop.circle.fill")
                                 .font(.caption.bold())
@@ -547,12 +646,55 @@ struct DeviceNetworkSettingsView: View {
                     }
                 }
 
+                NavigationLink {
+                    VPNStatusDashboardView()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.blue)
+                        Text("VPN Dashboard")
+                            .font(.subheadline.bold())
+                        Spacer()
+                        Text(vpnTunnel.status.rawValue)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
                 Toggle(isOn: Binding(
                     get: { vpnTunnel.autoReconnect },
                     set: { vpnTunnel.autoReconnect = $0 }
                 )) {
-                    Text("Auto-reconnect on rotation")
-                        .font(.caption)
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.clockwise")
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Auto-Reconnect")
+                                .font(.subheadline)
+                            Text("Reconnect on disconnect (max \(vpnTunnel.maxReconnectAttempts) attempts)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .tint(.blue)
+
+                Toggle(isOn: Binding(
+                    get: { vpnTunnel.onDemandEnabled },
+                    set: { vpnTunnel.onDemandEnabled = $0 }
+                )) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "wifi")
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Connect On Demand")
+                                .font(.subheadline)
+                            Text("Auto-connect on WiFi & Cellular")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .tint(.blue)
             }
@@ -568,10 +710,17 @@ struct DeviceNetworkSettingsView: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.blue.opacity(0.12))
                         .clipShape(Capsule())
+                } else if vpnTunnel.isReconnecting {
+                    Text("RECONNECTING")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(Capsule())
                 }
             }
         } footer: {
-            Text("When active, ALL device traffic routes through a WireGuard VPN tunnel. Requires a real device with the Network Extension entitlement. On rotation, the tunnel disconnects and reconnects with the next WireGuard config.")
+            Text("When active, ALL device traffic routes through a WireGuard VPN tunnel. Requires a real device with the Network Extension entitlement. Auto-reconnect retries on failure, on-demand keeps the tunnel always active.")
         }
     }
 

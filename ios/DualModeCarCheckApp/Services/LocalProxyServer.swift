@@ -6,8 +6,38 @@ nonisolated struct LocalProxyStats: Sendable {
     var activeConnections: Int = 0
     var totalConnections: Int = 0
     var bytesRelayed: UInt64 = 0
+    var bytesUploaded: UInt64 = 0
+    var bytesDownloaded: UInt64 = 0
     var upstreamErrors: Int = 0
+    var connectionErrors: Int = 0
+    var handshakeErrors: Int = 0
+    var relayErrors: Int = 0
     var lastConnectionTime: Date?
+    var peakActiveConnections: Int = 0
+    var averageConnectionDurationMs: Double = 0
+    var startedAt: Date?
+}
+
+nonisolated struct ActiveConnectionInfo: Identifiable, Sendable {
+    let id: UUID
+    let targetHost: String
+    let targetPort: UInt16
+    let connectedAt: Date
+    var bytesRelayed: UInt64
+    var state: ConnectionState
+
+    nonisolated enum ConnectionState: String, Sendable {
+        case handshaking = "Handshaking"
+        case relaying = "Relaying"
+        case closing = "Closing"
+    }
+}
+
+nonisolated enum ConnectionErrorType: Sendable {
+    case none
+    case connection
+    case handshake
+    case relay
 }
 
 @Observable
@@ -20,14 +50,23 @@ class LocalProxyServer {
     private(set) var stats: LocalProxyStats = LocalProxyStats()
     private(set) var statusMessage: String = "Stopped"
     private(set) var upstreamLabel: String = "None"
+    private(set) var activeConnectionDetails: [UUID: ActiveConnectionInfo] = [:]
+    private(set) var recentCompletedHosts: [String] = []
 
     var upstreamProxy: ProxyConfig?
+    var maxConcurrentConnections: Int = 50
+    var connectionTimeoutSeconds: TimeInterval = 30
+    var enableConnectionPooling: Bool = true
 
     private var listener: NWListener?
     private var connections: [UUID: LocalProxyConnection] = [:]
     private let queue = DispatchQueue(label: "local-proxy-server", qos: .userInitiated)
     private let logger = DebugLogger.shared
     private let preferredPort: UInt16 = 18080
+    private let healthMonitor = ProxyHealthMonitor.shared
+    private let connectionPool = ProxyConnectionPool.shared
+    private var connectionDurations: [TimeInterval] = []
+    private var rejectedConnections: Int = 0
 
     func start() {
         guard !isRunning else { return }
@@ -54,15 +93,19 @@ class LocalProxyServer {
 
             nwListener.start(queue: queue)
             isRunning = true
+            stats.startedAt = Date()
             statusMessage = "Starting..."
             logger.log("LocalProxy: starting on port \(preferredPort)", category: .network, level: .info)
         } catch {
             statusMessage = "Failed: \(error.localizedDescription)"
-            logger.log("LocalProxy: failed to start — \(error)", category: .network, level: .error)
+            logger.log("LocalProxy: failed to start - \(error)", category: .network, level: .error)
         }
     }
 
     func stop() {
+        healthMonitor.stopMonitoring()
+        connectionPool.drainPool()
+
         listener?.cancel()
         listener = nil
 
@@ -70,36 +113,134 @@ class LocalProxyServer {
             conn.cancel()
         }
         connections.removeAll()
+        activeConnectionDetails.removeAll()
 
         isRunning = false
         listeningPort = 0
         statusMessage = "Stopped"
         stats = LocalProxyStats()
+        connectionDurations.removeAll()
+        rejectedConnections = 0
+        recentCompletedHosts.removeAll()
         logger.log("LocalProxy: stopped", category: .network, level: .info)
     }
 
     func updateUpstream(_ proxy: ProxyConfig?) {
+        let previousProxy = upstreamProxy
         upstreamProxy = proxy
+
         if let proxy {
             upstreamLabel = proxy.displayString
-            logger.log("LocalProxy: upstream changed → \(proxy.displayString)", category: .proxy, level: .info)
+            logger.log("LocalProxy: upstream changed to \(proxy.displayString)", category: .proxy, level: .info)
         } else {
             upstreamLabel = "None (direct)"
-            logger.log("LocalProxy: upstream cleared → direct", category: .proxy, level: .info)
+            logger.log("LocalProxy: upstream cleared to direct", category: .proxy, level: .info)
         }
+
+        if enableConnectionPooling && (previousProxy?.host != proxy?.host || previousProxy?.port != proxy?.port) {
+            connectionPool.drainPool()
+            logger.log("LocalProxy: upstream changed - connection pool drained", category: .proxy, level: .debug)
+        }
+
+        healthMonitor.updateUpstream(proxy)
+    }
+
+    func startHealthMonitoring(onFailover: @escaping () -> Void) {
+        healthMonitor.startMonitoring(upstream: upstreamProxy, onFailover: onFailover)
+    }
+
+    func stopHealthMonitoring() {
+        healthMonitor.stopMonitoring()
     }
 
     var localProxyConfig: ProxyConfig {
         ProxyConfig(host: "127.0.0.1", port: Int(listeningPort == 0 ? preferredPort : listeningPort))
     }
 
-    func connectionFinished(id: UUID, bytesRelayed: UInt64, hadError: Bool) {
+    func connectionFinished(id: UUID, bytesRelayed: UInt64, bytesUp: UInt64, bytesDown: UInt64, hadError: Bool, errorType: ConnectionErrorType, targetHost: String) {
+        if let info = activeConnectionDetails[id] {
+            let duration = Date().timeIntervalSince(info.connectedAt)
+            connectionDurations.append(duration)
+            if connectionDurations.count > 100 {
+                connectionDurations = Array(connectionDurations.suffix(100))
+            }
+            stats.averageConnectionDurationMs = connectionDurations.reduce(0, +) / Double(connectionDurations.count) * 1000
+        }
+
         connections.removeValue(forKey: id)
+        activeConnectionDetails.removeValue(forKey: id)
         stats.activeConnections = connections.count
         stats.bytesRelayed += bytesRelayed
+        stats.bytesUploaded += bytesUp
+        stats.bytesDownloaded += bytesDown
+
         if hadError {
             stats.upstreamErrors += 1
+            switch errorType {
+            case .connection: stats.connectionErrors += 1
+            case .handshake: stats.handshakeErrors += 1
+            case .relay: stats.relayErrors += 1
+            case .none: break
+            }
         }
+
+        if !targetHost.isEmpty {
+            recentCompletedHosts.insert(targetHost, at: 0)
+            if recentCompletedHosts.count > 20 {
+                recentCompletedHosts = Array(recentCompletedHosts.prefix(20))
+            }
+        }
+    }
+
+    func updateConnectionInfo(id: UUID, targetHost: String, targetPort: UInt16, state: ActiveConnectionInfo.ConnectionState) {
+        if var info = activeConnectionDetails[id] {
+            info.state = state
+            activeConnectionDetails[id] = info
+        } else {
+            activeConnectionDetails[id] = ActiveConnectionInfo(
+                id: id,
+                targetHost: targetHost,
+                targetPort: targetPort,
+                connectedAt: Date(),
+                bytesRelayed: 0,
+                state: state
+            )
+        }
+    }
+
+    func updateConnectionBytes(id: UUID, bytes: UInt64) {
+        if var info = activeConnectionDetails[id] {
+            info.bytesRelayed = bytes
+            activeConnectionDetails[id] = info
+        }
+    }
+
+    var uptimeString: String {
+        guard let started = stats.startedAt else { return "--:--" }
+        let elapsed = Int(Date().timeIntervalSince(started))
+        let hrs = elapsed / 3600
+        let mins = (elapsed % 3600) / 60
+        let secs = elapsed % 60
+        if hrs > 0 { return String(format: "%d:%02d:%02d", hrs, mins, secs) }
+        return String(format: "%d:%02d", mins, secs)
+    }
+
+    var throughputLabel: String {
+        guard let started = stats.startedAt else { return "0 B/s" }
+        let elapsed = max(1, Date().timeIntervalSince(started))
+        let bps = Double(stats.bytesRelayed) / elapsed
+        return formatBytesPerSecond(bps)
+    }
+
+    var errorRate: Double {
+        guard stats.totalConnections > 0 else { return 0 }
+        return Double(stats.upstreamErrors) / Double(stats.totalConnections) * 100
+    }
+
+    private func formatBytesPerSecond(_ bps: Double) -> String {
+        if bps < 1024 { return String(format: "%.0f B/s", bps) }
+        if bps < 1024 * 1024 { return String(format: "%.1f KB/s", bps / 1024) }
+        return String(format: "%.1f MB/s", bps / (1024 * 1024))
     }
 
     private func handleListenerState(_ state: NWListener.State) {
@@ -115,7 +256,7 @@ class LocalProxyServer {
         case .failed(let error):
             isRunning = false
             statusMessage = "Failed: \(error.localizedDescription)"
-            logger.log("LocalProxy: listener failed — \(error)", category: .network, level: .error)
+            logger.log("LocalProxy: listener failed - \(error)", category: .network, level: .error)
             listener?.cancel()
             listener = nil
 
@@ -129,6 +270,13 @@ class LocalProxyServer {
     }
 
     private func handleNewConnection(_ nwConnection: NWConnection) {
+        if connections.count >= maxConcurrentConnections {
+            rejectedConnections += 1
+            nwConnection.cancel()
+            logger.log("LocalProxy: rejected connection - at max capacity (\(maxConcurrentConnections))", category: .network, level: .warning)
+            return
+        }
+
         let id = UUID()
         stats.totalConnections += 1
         stats.lastConnectionTime = Date()
@@ -138,10 +286,15 @@ class LocalProxyServer {
             clientConnection: nwConnection,
             upstream: upstreamProxy,
             queue: queue,
-            server: self
+            server: self,
+            timeoutSeconds: connectionTimeoutSeconds
         )
         connections[id] = connection
         stats.activeConnections = connections.count
+
+        if stats.activeConnections > stats.peakActiveConnections {
+            stats.peakActiveConnections = stats.activeConnections
+        }
 
         connection.start()
     }
