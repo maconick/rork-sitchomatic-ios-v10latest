@@ -97,8 +97,46 @@ Currently, WireGuard and OpenVPN configs are assigned to WebViews but **no actua
 - 100% userspace — works in simulator, no NetworkExtension required
 
 **Remaining stages:**
-- Stage 5: Userspace TCP/IP Stack + WireProxy SOCKS5 Bridge (connect SOCKS5 to WG tunnel)
 - Stage 6: Full Integration, UI & Rotation (wire everything into DeviceProxyService)
+
+---
+
+## Stage 5 — Userspace TCP/IP Stack + WireProxy SOCKS5 Bridge ✅ COMPLETE
+
+**What changed:**
+- [x] `IPv4Packet` — full IPv4 packet parser and builder: header parsing (version, IHL, DSCP, total length, identification, flags, fragment offset, TTL, protocol, checksum, src/dst address), packet construction with automatic IP checksum, IP address string↔UInt32 conversion, protocol detection (TCP/UDP)
+- [x] `TCPSegment` — TCP segment parser and builder: header parsing (src/dst port, sequence/ack numbers, data offset, flags, window size, checksum, urgent pointer), segment construction with TCP pseudo-header checksum over IPv4, flag definitions (SYN/ACK/FIN/RST/PSH/URG) as OptionSet
+- [x] `TCPSessionManager` — userspace TCP state machine: full TCP lifecycle (CLOSED→SYN_SENT→ESTABLISHED→FIN_WAIT1→FIN_WAIT2→TIME_WAIT→CLOSED), per-session tracking (local seq/ack, remote window size, send/receive buffers), MSS-based segmentation (1360 byte chunks), automatic ACK generation, FIN/RST handling, retransmit counting, idle session cleanup (120s timeout), port allocation (30000-60000 range)
+- [x] `TunnelDNSResolver` — DNS resolution through WireGuard tunnel: constructs DNS query packets (type A, class IN), sends as UDP over IP through tunnel, parses DNS responses (skips question section, extracts A records), 5-minute TTL cache, query timeout (5s), supports direct IP passthrough
+- [x] `WireProxyBridge` — main orchestrator connecting SOCKS5 to WireGuard: manages WireGuardSession lifecycle, routes incoming decrypted IP packets to TCPSessionManager (TCP) or TunnelDNSResolver (UDP/DNS), configures from WireGuardConfig (interface address, DNS, private key, peer key, endpoint), connection tracking, statistics (sessions created/active, DNS queries, bytes up/down, connections served/failed)
+- [x] `WireProxyTunnelConnection` — per-connection handler: receives SOCKS5 target from handler, resolves hostname via TunnelDNSResolver, creates TCP session through tunnel, bridges SOCKS5 client ↔ TCP session (client reads → tunnel sends, tunnel receives → client writes), connection timeout (30s), proper cleanup on close/error
+- [x] `WireProxySOCKS5Handler` — SOCKS5 handshake for tunnel mode: performs SOCKS5 greeting and CONNECT request parsing (IPv4/domain/IPv6), extracts target host:port, hands off to WireProxyBridge for tunnel routing, replaces upstream SOCKS5/direct connections when wireproxy mode is active
+- [x] Enhanced `LocalProxyServer` — wireproxy mode toggle: when `wireProxyMode=true`, new connections are handled by `WireProxySOCKS5Handler` instead of `LocalProxyConnection`, tunnel connection tracking alongside regular connections, `enableWireProxyMode()` method for clean mode switching
+- [x] Enhanced `DeviceProxyService` — wireproxy tunnel integration: `wireProxyTunnelEnabled` setting (persisted), `syncWireProxyTunnel()` starts/stops WireProxyBridge based on active WireGuard config, `effectiveProxyConfig` returns local proxy when wireproxy tunnel is active, `isWireProxyActive`/`wireProxyStatus`/`wireProxyStats` computed properties for UI
+
+**Files created:**
+- `Services/WireProxy/TCPStack/IPPacket.swift` — IPv4 packet parser/builder with checksum
+- `Services/WireProxy/TCPStack/TCPPacket.swift` — TCP segment parser/builder with pseudo-header checksum
+- `Services/WireProxy/TCPStack/TCPSessionManager.swift` — Userspace TCP state machine
+- `Services/WireProxy/TCPStack/TunnelDNSResolver.swift` — DNS resolution through WG tunnel
+- `Services/WireProxy/WireProxyBridge.swift` — Main SOCKS5-to-WireGuard orchestrator
+- `Services/WireProxy/WireProxyTunnelConnection.swift` — Per-connection tunnel handler
+- `Services/WireProxy/WireProxySOCKS5Handler.swift` — SOCKS5 handshake for tunnel mode
+
+**Files modified:**
+- `Services/LocalProxyServer.swift` — Added wireproxy mode, tunnel connection tracking
+- `Services/DeviceProxyService.swift` — Added wireproxy tunnel enable/disable, bridge integration
+
+**Features delivered:**
+- Pure Swift userspace TCP/IP stack — parses and constructs IPv4 + TCP packets without any system networking
+- Full TCP state machine — SYN→SYN-ACK→ESTABLISHED→FIN handshake, data transfer with ACK, RST support
+- MSS segmentation — breaks large writes into 1360-byte TCP segments for tunnel MTU compatibility
+- DNS through tunnel — hostname resolution via UDP DNS queries sent through the WireGuard tunnel, with 5-min cache
+- SOCKS5-to-WireGuard bridge — accepts SOCKS5 CONNECT requests, resolves hostnames, establishes virtual TCP connections through the encrypted WG tunnel, relays data bidirectionally
+- Seamless mode switching — LocalProxyServer transparently switches between direct/upstream SOCKS5 and wireproxy tunnel mode
+- DeviceProxyService integration — `wireProxyTunnelEnabled` toggle activates the full stack: WG handshake → tunnel established → SOCKS5 server routes through tunnel
+- 100% userspace, works in simulator — no NetworkExtension, no kernel TUN device, pure Swift
+- Fallback chain: WireProxy tunnel → VPN tunnel → local proxy → direct SOCKS5 → direct connection
 
 ---
 
@@ -110,5 +148,5 @@ Currently, WireGuard and OpenVPN configs are assigned to WebViews but **no actua
 | 2 | Local proxy server (wireproxy) for unified app-wide routing | ✅ Yes | ✅ Complete |
 | 3 | Device-wide VPN tunnel via NetworkExtension | ❌ Real device only | ✅ Complete |
 | 4 | WireGuard crypto + Noise handshake + encrypted UDP transport | ✅ Yes | ✅ Complete |
-| 5 | Userspace TCP/IP stack + WireProxy SOCKS5 bridge | ✅ Yes | Pending |
+| 5 | Userspace TCP/IP stack + WireProxy SOCKS5 bridge | ✅ Yes | ✅ Complete |
 | 6 | Full integration, UI & rotation | ✅ Yes | Pending |

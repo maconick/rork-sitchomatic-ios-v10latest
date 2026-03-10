@@ -57,9 +57,11 @@ class LocalProxyServer {
     var maxConcurrentConnections: Int = 50
     var connectionTimeoutSeconds: TimeInterval = 30
     var enableConnectionPooling: Bool = true
+    private(set) var wireProxyMode: Bool = false
 
     private var listener: NWListener?
     private var connections: [UUID: LocalProxyConnection] = [:]
+    private var tunnelConnections: [UUID: WireProxySOCKS5Handler] = [:]
     private let queue = DispatchQueue(label: "local-proxy-server", qos: .userInitiated)
     private let logger = DebugLogger.shared
     private let preferredPort: UInt16 = 18080
@@ -113,16 +115,32 @@ class LocalProxyServer {
             conn.cancel()
         }
         connections.removeAll()
+        for conn in tunnelConnections.values {
+            conn.cancel()
+        }
+        tunnelConnections.removeAll()
         activeConnectionDetails.removeAll()
 
         isRunning = false
         listeningPort = 0
+        wireProxyMode = false
         statusMessage = "Stopped"
         stats = LocalProxyStats()
         connectionDurations.removeAll()
         rejectedConnections = 0
         recentCompletedHosts.removeAll()
         logger.log("LocalProxy: stopped", category: .network, level: .info)
+    }
+
+    func enableWireProxyMode(_ enabled: Bool) {
+        wireProxyMode = enabled
+        if enabled {
+            upstreamLabel = "WireProxy (WG Tunnel)"
+            logger.log("LocalProxy: WireProxy tunnel mode ENABLED", category: .vpn, level: .info)
+        } else {
+            upstreamLabel = upstreamProxy?.displayString ?? "None (direct)"
+            logger.log("LocalProxy: WireProxy tunnel mode DISABLED", category: .vpn, level: .info)
+        }
     }
 
     func updateUpstream(_ proxy: ProxyConfig?) {
@@ -270,7 +288,8 @@ class LocalProxyServer {
     }
 
     private func handleNewConnection(_ nwConnection: NWConnection) {
-        if connections.count >= maxConcurrentConnections {
+        let totalActive = connections.count + tunnelConnections.count
+        if totalActive >= maxConcurrentConnections {
             rejectedConnections += 1
             nwConnection.cancel()
             logger.log("LocalProxy: rejected connection - at max capacity (\(maxConcurrentConnections))", category: .network, level: .warning)
@@ -281,21 +300,39 @@ class LocalProxyServer {
         stats.totalConnections += 1
         stats.lastConnectionTime = Date()
 
-        let connection = LocalProxyConnection(
-            id: id,
-            clientConnection: nwConnection,
-            upstream: upstreamProxy,
-            queue: queue,
-            server: self,
-            timeoutSeconds: connectionTimeoutSeconds
-        )
-        connections[id] = connection
-        stats.activeConnections = connections.count
-
-        if stats.activeConnections > stats.peakActiveConnections {
-            stats.peakActiveConnections = stats.activeConnections
+        if wireProxyMode && WireProxyBridge.shared.isActive {
+            let tunnelConn = WireProxySOCKS5Handler(
+                id: id,
+                clientConnection: nwConnection,
+                queue: queue,
+                server: self
+            )
+            tunnelConnections[id] = tunnelConn
+            stats.activeConnections = connections.count + tunnelConnections.count
+            if stats.activeConnections > stats.peakActiveConnections {
+                stats.peakActiveConnections = stats.activeConnections
+            }
+            tunnelConn.start()
+        } else {
+            let connection = LocalProxyConnection(
+                id: id,
+                clientConnection: nwConnection,
+                upstream: upstreamProxy,
+                queue: queue,
+                server: self,
+                timeoutSeconds: connectionTimeoutSeconds
+            )
+            connections[id] = connection
+            stats.activeConnections = connections.count + tunnelConnections.count
+            if stats.activeConnections > stats.peakActiveConnections {
+                stats.peakActiveConnections = stats.activeConnections
+            }
+            connection.start()
         }
+    }
 
-        connection.start()
+    func tunnelConnectionFinished(id: UUID) {
+        tunnelConnections.removeValue(forKey: id)
+        stats.activeConnections = connections.count + tunnelConnections.count
     }
 }

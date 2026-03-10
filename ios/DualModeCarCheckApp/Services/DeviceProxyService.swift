@@ -62,7 +62,17 @@ class DeviceProxyService {
     private let localProxy = LocalProxyServer.shared
     private let vpnTunnel = VPNTunnelManager.shared
     private let healthMonitor = ProxyHealthMonitor.shared
+    private let wireProxyBridge = WireProxyBridge.shared
     private let logger = DebugLogger.shared
+
+    var wireProxyTunnelEnabled: Bool = false {
+        didSet {
+            persistSettings()
+            if isEnabled {
+                syncWireProxyTunnel()
+            }
+        }
+    }
 
     var vpnTunnelEnabled: Bool = false {
         didSet {
@@ -216,6 +226,7 @@ class DeviceProxyService {
         activeSince = nil
         isActive = false
         localProxy.stop()
+        wireProxyBridge.stop()
         deactivateVPNTunnel()
         logger.log("DeviceProxy: Unified IP mode DISABLED", category: .network, level: .info)
     }
@@ -326,10 +337,59 @@ class DeviceProxyService {
         }
         switch activeConfig {
         case .socks5(let proxy):
+            localProxy.enableWireProxyMode(false)
             localProxy.updateUpstream(proxy)
+        case .wireGuardDNS(let wg):
+            if wireProxyTunnelEnabled {
+                syncWireProxyTunnel()
+            } else {
+                localProxy.enableWireProxyMode(false)
+                localProxy.updateUpstream(nil)
+            }
         default:
+            localProxy.enableWireProxyMode(false)
             localProxy.updateUpstream(nil)
         }
+    }
+
+    private func syncWireProxyTunnel() {
+        guard wireProxyTunnelEnabled, localProxyEnabled else {
+            wireProxyBridge.stop()
+            localProxy.enableWireProxyMode(false)
+            return
+        }
+        guard case .wireGuardDNS(let wg) = activeConfig else {
+            wireProxyBridge.stop()
+            localProxy.enableWireProxyMode(false)
+            return
+        }
+
+        if wireProxyBridge.isActive {
+            wireProxyBridge.stop()
+        }
+
+        Task {
+            await wireProxyBridge.start(with: wg)
+            if wireProxyBridge.isActive {
+                localProxy.enableWireProxyMode(true)
+                logger.log("DeviceProxy: WireProxy tunnel active for \(wg.serverName)", category: .vpn, level: .success)
+            } else {
+                localProxy.enableWireProxyMode(false)
+                logger.log("DeviceProxy: WireProxy tunnel failed for \(wg.serverName)", category: .vpn, level: .error)
+            }
+        }
+    }
+
+    var isWireProxyActive: Bool {
+        wireProxyTunnelEnabled && wireProxyBridge.isActive
+    }
+
+    var wireProxyStatus: WireProxyStatus {
+        wireProxyBridge.status
+    }
+
+    var wireProxyStats: WireProxyStats {
+        wireProxyBridge.stats
     }
 
     var effectiveProxyConfig: ProxyConfig? {
@@ -337,7 +397,15 @@ class DeviceProxyService {
         switch activeConfig {
         case .socks5:
             return localProxy.localProxyConfig
-        case .wireGuardDNS, .openVPNProxy:
+        case .wireGuardDNS:
+            if wireProxyTunnelEnabled && wireProxyBridge.isActive {
+                return localProxy.localProxyConfig
+            }
+            if vpnTunnelEnabled && vpnTunnel.isConnected {
+                return nil
+            }
+            return localProxy.localProxyConfig
+        case .openVPNProxy:
             if vpnTunnelEnabled && vpnTunnel.isConnected {
                 return nil
             }
@@ -387,6 +455,7 @@ class DeviceProxyService {
             "rotateOnFingerprint": rotateOnFingerprintDetection,
             "localProxy": localProxyEnabled,
             "vpnTunnel": vpnTunnelEnabled,
+            "wireProxyTunnel": wireProxyTunnelEnabled,
             "autoFailover": autoFailoverEnabled,
             "healthCheckInterval": healthCheckInterval,
             "maxFailures": maxFailuresBeforeRotation,
@@ -406,6 +475,7 @@ class DeviceProxyService {
         if let fp = dict["rotateOnFingerprint"] as? Bool { rotateOnFingerprintDetection = fp }
         if let lp = dict["localProxy"] as? Bool { localProxyEnabled = lp }
         if let vt = dict["vpnTunnel"] as? Bool { vpnTunnelEnabled = vt }
+        if let wpt = dict["wireProxyTunnel"] as? Bool { wireProxyTunnelEnabled = wpt }
         if let af = dict["autoFailover"] as? Bool { autoFailoverEnabled = af }
         if let hci = dict["healthCheckInterval"] as? TimeInterval { healthCheckInterval = hci }
         if let mf = dict["maxFailures"] as? Int { maxFailuresBeforeRotation = mf }
