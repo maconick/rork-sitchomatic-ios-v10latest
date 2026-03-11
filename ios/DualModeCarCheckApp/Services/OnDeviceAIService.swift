@@ -229,7 +229,6 @@ class OnDeviceAIService {
     }
 
     private func parseAIFieldMapping(_ text: String, ocrTexts: [String]) -> AIFieldMappingResult {
-        let lower = text.lowercased()
         let emailKeywords = ["email", "username", "user name", "e-mail", "email address"]
         let passKeywords = ["password", "pass", "pin"]
         let buttonKeywords = ["log in", "login", "sign in", "submit", "enter"]

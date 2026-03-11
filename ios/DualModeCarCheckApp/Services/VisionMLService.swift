@@ -478,7 +478,7 @@ class VisionMLService {
         let scaleX = viewportSize.width / imageSize.width
         let scaleY = viewportSize.height / imageSize.height
 
-        var enrichedInstances = instances.map { region -> MaskedRegion in
+        let enrichedInstances = instances.map { region -> MaskedRegion in
             var overlapping: [String] = []
             for element in allText {
                 if region.boundingBox.intersects(element.boundingBox) {

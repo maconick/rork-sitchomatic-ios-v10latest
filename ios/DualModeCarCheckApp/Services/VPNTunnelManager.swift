@@ -283,30 +283,30 @@ class VPNTunnelManager {
             let connection = NWConnection(to: endpoint, using: .udp)
             let queue = DispatchQueue(label: "vpn-endpoint-test")
 
-            var completed = false
+            let guard_ = ContinuationGuard()
             let timeoutWork = DispatchWorkItem {
-                guard !completed else { return }
-                completed = true
-                connection.cancel()
-                continuation.resume(returning: (false, 0))
+                if guard_.tryConsume() {
+                    connection.cancel()
+                    continuation.resume(returning: (false, 0))
+                }
             }
             queue.asyncAfter(deadline: .now() + 5, execute: timeoutWork)
 
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    guard !completed else { return }
-                    completed = true
-                    timeoutWork.cancel()
-                    let elapsed = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
-                    connection.cancel()
-                    continuation.resume(returning: (true, elapsed))
+                    if guard_.tryConsume() {
+                        timeoutWork.cancel()
+                        let elapsed = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
+                        connection.cancel()
+                        continuation.resume(returning: (true, elapsed))
+                    }
                 case .failed:
-                    guard !completed else { return }
-                    completed = true
-                    timeoutWork.cancel()
-                    connection.cancel()
-                    continuation.resume(returning: (false, 0))
+                    if guard_.tryConsume() {
+                        timeoutWork.cancel()
+                        connection.cancel()
+                        continuation.resume(returning: (false, 0))
+                    }
                 default:
                     break
                 }

@@ -157,7 +157,7 @@ class NetworkSessionFactory {
     }
 
     func configureWKWebView(config wkConfig: WKWebViewConfiguration, networkConfig: ActiveNetworkConfig) {
-        let dataStore = wkConfig.websiteDataStore ?? .nonPersistent()
+        let dataStore = wkConfig.websiteDataStore
 
         let resolvedConfig = resolveEffectiveConfig(networkConfig)
 

@@ -1,6 +1,6 @@
 import Foundation
 
-final class ContinuationGuard: @unchecked Sendable {
+nonisolated final class ContinuationGuard: @unchecked Sendable {
     private var consumed = false
     private let lock = NSLock()
 

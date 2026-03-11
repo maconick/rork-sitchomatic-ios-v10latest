@@ -77,21 +77,21 @@ class BatchStateManager {
         return stoppedEarly
     }
 
-    func pauseQueue(onLog: (String, PPSRLogEntry.Level) -> Void) {
+    func pauseQueue(onLog: @escaping (String, PPSRLogEntry.Level) -> Void) {
         isPaused = true
         pauseCountdown = 60
         onLog("Queue paused for 60 seconds — all sessions frozen, auto-resume in 60s", .warning)
         startPauseCountdown(onLog: onLog)
     }
 
-    func resumeQueue(onLog: (String, PPSRLogEntry.Level) -> Void) {
+    func resumeQueue(onLog: @escaping (String, PPSRLogEntry.Level) -> Void) {
         cancelPauseCountdown()
         isPaused = false
         pauseCountdown = 0
         onLog("Queue resumed", .info)
     }
 
-    func stopQueue(onLog: (String, PPSRLogEntry.Level) -> Void) {
+    func stopQueue(onLog: @escaping (String, PPSRLogEntry.Level) -> Void) {
         cancelPauseCountdown()
         isStopping = true
         isPaused = false
@@ -99,7 +99,7 @@ class BatchStateManager {
         onLog("Stopping queue — current batch sessions completing, no new batches will be added", .warning)
     }
 
-    func stopAfterCurrent(onLog: (String, PPSRLogEntry.Level) -> Void) {
+    func stopAfterCurrent(onLog: @escaping (String, PPSRLogEntry.Level) -> Void) {
         cancelPauseCountdown()
         isStopping = true
         isPaused = false

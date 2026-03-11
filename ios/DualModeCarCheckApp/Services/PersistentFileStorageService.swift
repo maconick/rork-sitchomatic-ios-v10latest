@@ -106,38 +106,39 @@ class PersistentFileStorageService {
         let ssDir = screenshotsURL
         let ts = fileTimestamp
 
-        Task.detached(priority: .utility) { [creds, cards, flows, automationData, logEntries, networkState, appState, configJSON] in
+        let credEntries = creds.map { cred in
+            CredentialFileEntry(
+                id: cred.id, username: cred.username, password: cred.password,
+                status: cred.status.rawValue, addedAt: cred.addedAt.timeIntervalSince1970,
+                notes: cred.notes, totalTests: cred.totalTests, successCount: cred.successCount,
+                assignedPasswords: cred.assignedPasswords, nextPasswordIndex: cred.nextPasswordIndex
+            )
+        }
+        let workingText = creds.filter { $0.isWorking }.map { $0.exportFormat }.joined(separator: "\n")
+        let cardEntries = cards.map { card in
+            CardFileEntry(
+                id: card.id, number: card.number, brand: card.brand.rawValue,
+                status: card.status.rawValue, addedAt: card.addedAt.timeIntervalSince1970,
+                totalTests: card.testResults.count, successCount: card.testResults.filter(\.success).count
+            )
+        }
+
+        Task.detached(priority: .utility) { [credEntries, workingText, cardEntries, flows, automationData, logEntries, networkState, appState, configJSON] in
             let encoder = JSONEncoder()
             encoder.outputFormatting = .prettyPrinted
 
             try? configJSON.data(using: .utf8)?.write(to: configDir.appendingPathComponent("full_config.json"))
             try? configJSON.data(using: .utf8)?.write(to: configDir.appendingPathComponent("config_\(ts).json"))
 
-            if !creds.isEmpty {
-                let exportable = creds.map { cred in
-                    CredentialFileEntry(
-                        id: cred.id, username: cred.username, password: cred.password,
-                        status: cred.status.rawValue, addedAt: cred.addedAt.timeIntervalSince1970,
-                        notes: cred.notes, totalTests: cred.totalTests, successCount: cred.successCount,
-                        assignedPasswords: cred.assignedPasswords, nextPasswordIndex: cred.nextPasswordIndex
-                    )
-                }
-                if let data = try? JSONEncoder().encode(exportable) {
+            if !credEntries.isEmpty {
+                if let data = try? JSONEncoder().encode(credEntries) {
                     try? data.write(to: credDir.appendingPathComponent("credentials.json"))
                 }
-                let working = creds.filter { $0.isWorking }.map { $0.exportFormat }.joined(separator: "\n")
-                try? working.data(using: .utf8)?.write(to: credDir.appendingPathComponent("working.txt"))
+                try? workingText.data(using: .utf8)?.write(to: credDir.appendingPathComponent("working.txt"))
             }
 
-            if !cards.isEmpty {
-                let exportable = cards.map { card in
-                    CardFileEntry(
-                        id: card.id, number: card.number, brand: card.brand.rawValue,
-                        status: card.status.rawValue, addedAt: card.addedAt.timeIntervalSince1970,
-                        totalTests: card.testResults.count, successCount: card.testResults.filter(\.success).count
-                    )
-                }
-                if let data = try? JSONEncoder().encode(exportable) {
+            if !cardEntries.isEmpty {
+                if let data = try? JSONEncoder().encode(cardEntries) {
                     try? data.write(to: cardDir.appendingPathComponent("cards.json"))
                 }
             }

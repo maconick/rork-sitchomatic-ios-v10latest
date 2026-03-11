@@ -923,8 +923,10 @@ class SuperTestService {
                 continue
             }
         }
+        let capturedErr = lastErr
+        let proxyDisplay = proxy.displayString
         Task { @MainActor in
-            self.logger.log("SuperTest proxy FAIL: \(proxy.displayString) — \(lastErr)", category: .proxy, level: .debug, sessionId: "supertest")
+            self.logger.log("SuperTest proxy FAIL: \(proxyDisplay) — \(capturedErr)", category: .proxy, level: .debug, sessionId: "supertest")
         }
         return (false, 0)
     }

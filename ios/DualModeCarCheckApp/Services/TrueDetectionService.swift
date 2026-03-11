@@ -32,7 +32,7 @@ class TrueDetectionService {
         case errorBanner = "error_banner"
     }
 
-    struct TrueDetectionConfig {
+    nonisolated struct TrueDetectionConfig: Sendable {
         var hardPauseMs: Int = 4000
         var tripleClickDelayMs: Int = 1100
         var tripleClickCount: Int = 3
