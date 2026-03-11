@@ -126,7 +126,11 @@ class NordVPNService {
         privateKey = UserDefaults.standard.string(forKey: newPKKey) ?? ""
         recommendedServers.removeAll()
         lastError = nil
-        logger.log("NordVPN: switched to \(profile.rawValue) profile", category: .vpn, level: .success)
+
+        ProxyRotationService.shared.reloadForActiveProfile()
+        DeviceProxyService.shared.handleProfileSwitch()
+
+        logger.log("NordVPN: switched to \(profile.rawValue) profile — all configs reloaded", category: .vpn, level: .success)
     }
 
     func setAccessKey(_ key: String) {

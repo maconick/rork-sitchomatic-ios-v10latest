@@ -43,7 +43,6 @@ class DefaultSettingsService {
         proxyService.setUnifiedConnectionMode(.wireguard)
 
         let deviceProxy = DeviceProxyService.shared
-        deviceProxy.wireProxyTunnelEnabled = true
         deviceProxy.localProxyEnabled = true
 
         // IMPORTANT: These are default/example WireGuard configs bundled for first-run convenience.

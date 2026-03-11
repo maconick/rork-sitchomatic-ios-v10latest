@@ -101,33 +101,87 @@ class ProxyRotationService {
         var total: Int { added + duplicates + failed.count }
     }
 
-    private let persistKey = "saved_socks5_proxies_v2"
-    private let ignitionPersistKey = "saved_socks5_proxies_ignition_v1"
-    private let ppsrPersistKey = "saved_socks5_proxies_ppsr_v1"
     private let connectionModePersistKey = "connection_modes_v1"
     private let networkRegionPersistKey = "network_region_v1"
     private let unifiedModePersistKey = "unified_connection_mode_v1"
 
-    private let joeVPNPersistKey = "openvpn_configs_joe_v1"
-    private let ignitionVPNPersistKey = "openvpn_configs_ignition_v1"
-    private let ppsrVPNPersistKey = "openvpn_configs_ppsr_v1"
+    private var activeProfilePrefix: String {
+        let profile = UserDefaults.standard.string(forKey: "nordvpn_key_profile_v1") ?? "Nick"
+        return profile.lowercased()
+    }
 
-    private let joeWGPersistKey = "wireguard_configs_joe_v1"
-    private let ignitionWGPersistKey = "wireguard_configs_ignition_v1"
-    private let ppsrWGPersistKey = "wireguard_configs_ppsr_v1"
+    private var persistKey: String { "\(activeProfilePrefix)_socks5_proxies_joe_v2" }
+    private var ignitionPersistKey: String { "\(activeProfilePrefix)_socks5_proxies_ignition_v1" }
+    private var ppsrPersistKey: String { "\(activeProfilePrefix)_socks5_proxies_ppsr_v1" }
+
+    private var joeVPNPersistKey: String { "\(activeProfilePrefix)_openvpn_configs_joe_v1" }
+    private var ignitionVPNPersistKey: String { "\(activeProfilePrefix)_openvpn_configs_ignition_v1" }
+    private var ppsrVPNPersistKey: String { "\(activeProfilePrefix)_openvpn_configs_ppsr_v1" }
+
+    private var joeWGPersistKey: String { "\(activeProfilePrefix)_wireguard_configs_joe_v1" }
+    private var ignitionWGPersistKey: String { "\(activeProfilePrefix)_wireguard_configs_ignition_v1" }
+    private var ppsrWGPersistKey: String { "\(activeProfilePrefix)_wireguard_configs_ppsr_v1" }
 
     private let logger = DebugLogger.shared
 
     init() {
+        migrateUnprefixedKeys()
+        loadAllProfileData()
+        loadConnectionModes()
+        loadNetworkRegion()
+        loadUnifiedMode()
+    }
+
+    func reloadForActiveProfile() {
+        loadAllProfileData()
+        resetRotationIndexes()
+        logger.log("ProxyRotation: reloaded for profile '\(activeProfilePrefix)' — joe:\(savedProxies.count) ign:\(ignitionProxies.count) ppsr:\(ppsrProxies.count) wg:\(joeWGConfigs.count+ignitionWGConfigs.count+ppsrWGConfigs.count) vpn:\(joeVPNConfigs.count+ignitionVPNConfigs.count+ppsrVPNConfigs.count)", category: .proxy, level: .success)
+    }
+
+    private func loadAllProfileData() {
         loadProxies()
         loadIgnitionProxies()
         loadPPSRProxies()
-        loadConnectionModes()
         loadVPNConfigs()
         loadWGConfigs()
-        loadNetworkRegion()
-        loadUnifiedMode()
-        logger.log("ProxyRotation: init — joe:\(savedProxies.count) ign:\(ignitionProxies.count) ppsr:\(ppsrProxies.count) vpn:\(joeVPNConfigs.count+ignitionVPNConfigs.count+ppsrVPNConfigs.count) wg:\(joeWGConfigs.count+ignitionWGConfigs.count+ppsrWGConfigs.count) region:\(networkRegion.rawValue)", category: .proxy, level: .info)
+        logger.log("ProxyRotation: loaded profile '\(activeProfilePrefix)' — joe:\(savedProxies.count) ign:\(ignitionProxies.count) ppsr:\(ppsrProxies.count) vpn:\(joeVPNConfigs.count+ignitionVPNConfigs.count+ppsrVPNConfigs.count) wg:\(joeWGConfigs.count+ignitionWGConfigs.count+ppsrWGConfigs.count) region:\(networkRegion.rawValue)", category: .proxy, level: .info)
+    }
+
+    private func migrateUnprefixedKeys() {
+        let oldSocks5Joe = "saved_socks5_proxies_v2"
+        let oldSocks5Ign = "saved_socks5_proxies_ignition_v1"
+        let oldSocks5Ppsr = "saved_socks5_proxies_ppsr_v1"
+        let oldVPNJoe = "openvpn_configs_joe_v1"
+        let oldVPNIgn = "openvpn_configs_ignition_v1"
+        let oldVPNPpsr = "openvpn_configs_ppsr_v1"
+        let oldWGJoe = "wireguard_configs_joe_v1"
+        let oldWGIgn = "wireguard_configs_ignition_v1"
+        let oldWGPpsr = "wireguard_configs_ppsr_v1"
+
+        let migrationDone = UserDefaults.standard.bool(forKey: "profile_storage_migration_v1")
+        guard !migrationDone else { return }
+
+        let pairs: [(String, String)] = [
+            (oldSocks5Joe, "nick_socks5_proxies_joe_v2"),
+            (oldSocks5Ign, "nick_socks5_proxies_ignition_v1"),
+            (oldSocks5Ppsr, "nick_socks5_proxies_ppsr_v1"),
+            (oldVPNJoe, "nick_openvpn_configs_joe_v1"),
+            (oldVPNIgn, "nick_openvpn_configs_ignition_v1"),
+            (oldVPNPpsr, "nick_openvpn_configs_ppsr_v1"),
+            (oldWGJoe, "nick_wireguard_configs_joe_v1"),
+            (oldWGIgn, "nick_wireguard_configs_ignition_v1"),
+            (oldWGPpsr, "nick_wireguard_configs_ppsr_v1"),
+        ]
+
+        for (oldKey, newKey) in pairs {
+            if let data = UserDefaults.standard.data(forKey: oldKey) {
+                UserDefaults.standard.set(data, forKey: newKey)
+                UserDefaults.standard.removeObject(forKey: oldKey)
+            }
+        }
+
+        UserDefaults.standard.set(true, forKey: "profile_storage_migration_v1")
+        logger.log("ProxyRotation: migrated old config keys to nick profile", category: .persistence, level: .info)
     }
 
     func setConnectionMode(_ mode: ConnectionMode, for target: ProxyTarget) {

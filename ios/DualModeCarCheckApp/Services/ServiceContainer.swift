@@ -12,8 +12,6 @@ class ServiceContainer {
     let screenshotCache: ScreenshotCacheService
 
     let socks5Manager: SOCKS5ProxyManager
-    let wgManager: WGConfigManager
-    let ovpnManager: OVPNConfigManager
     let jsBuilder: LoginJSBuilder
     let typingEngine: HumanTypingEngine
 
@@ -33,8 +31,6 @@ class ServiceContainer {
         self.screenshotCache = screenshotCache ?? .shared
 
         self.socks5Manager = SOCKS5ProxyManager()
-        self.wgManager = WGConfigManager()
-        self.ovpnManager = OVPNConfigManager()
         self.jsBuilder = LoginJSBuilder()
         self.typingEngine = HumanTypingEngine()
     }

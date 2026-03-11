@@ -25,15 +25,15 @@ nonisolated struct NordLynxConfigGeneratorService: Sendable {
     }
 
     static var activePrivateKey: String {
-        let persisted = UserDefaults.standard.string(forKey: "nordvpn_private_key_v1") ?? ""
-        if !persisted.isEmpty {
-            return persisted
-        }
         let activeProfile = UserDefaults.standard.string(forKey: "nordvpn_key_profile_v1") ?? "Nick"
         let profileKey = activeProfile == "Poli" ? "nordvpn_poli_private_key_v1" : "nordvpn_nick_private_key_v1"
         let profilePK = UserDefaults.standard.string(forKey: profileKey) ?? ""
         if !profilePK.isEmpty {
             return profilePK
+        }
+        let legacyPK = UserDefaults.standard.string(forKey: "nordvpn_private_key_v1") ?? ""
+        if !legacyPK.isEmpty {
+            return legacyPK
         }
         return activeAccessKey.key
     }

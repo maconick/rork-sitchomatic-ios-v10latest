@@ -3,6 +3,7 @@ import SwiftUI
 struct MainMenuView: View {
     @Binding var activeMode: ActiveAppMode?
     @State private var animateIn: Bool = false
+    @State private var nordService = NordVPNService.shared
 
     var body: some View {
         GeometryReader { geo in
@@ -18,11 +19,15 @@ struct MainMenuView: View {
                 VStack(spacing: 0) {
                     Spacer().frame(height: geo.safeAreaInsets.top + 12)
 
+                    profileSwitcher
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
+
                     HStack(spacing: 0) {
                         joeZone(geo: geo)
                         ignitionZone(geo: geo)
                     }
-                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.32)
+                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.28)
 
                     HStack(spacing: 0) {
                         splitTestZone(geo: geo)
@@ -51,6 +56,7 @@ struct MainMenuView: View {
                     }
                     .padding(.bottom, geo.safeAreaInsets.bottom + 6)
                 }
+                .allowsHitTesting(false)
             }
         }
         .ignoresSafeArea()
@@ -426,6 +432,49 @@ struct MainMenuView: View {
         .opacity(animateIn ? 1 : 0)
         .offset(x: animateIn ? 0 : 30)
         .sensoryFeedback(.impact(weight: .medium), trigger: activeMode == .dualFind)
+    }
+
+    private var profileSwitcher: some View {
+        HStack(spacing: 0) {
+            ForEach(NordKeyProfile.allCases, id: \.self) { profile in
+                Button {
+                    guard nordService.activeKeyProfile != profile else { return }
+                    withAnimation(.spring(duration: 0.3, bounce: 0.15)) {
+                        nordService.switchProfile(profile)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: profile == .nick ? "person.fill" : "person.fill")
+                            .font(.system(size: 11, weight: .bold))
+                        Text(profile.rawValue.uppercased())
+                            .font(.system(size: 12, weight: .black, design: .monospaced))
+                    }
+                    .foregroundStyle(nordService.activeKeyProfile == profile ? .white : .white.opacity(0.4))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        Group {
+                            if nordService.activeKeyProfile == profile {
+                                Capsule()
+                                    .fill(
+                                        profile == .nick
+                                            ? LinearGradient(colors: [.blue, .cyan], startPoint: .leading, endPoint: .trailing)
+                                            : LinearGradient(colors: [.purple, .pink], startPoint: .leading, endPoint: .trailing)
+                                    )
+                            }
+                        }
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Color.white.opacity(0.08))
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .sensoryFeedback(.impact(weight: .heavy), trigger: nordService.activeKeyProfile)
+        .opacity(animateIn ? 1 : 0)
+        .offset(y: animateIn ? 0 : -20)
     }
 }
 

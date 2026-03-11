@@ -405,7 +405,7 @@ struct WireProxyDashboardView: View {
         Section {
             if bridge.isActive {
                 Button(role: .destructive) {
-                    deviceProxy.wireProxyTunnelEnabled = false
+                    deviceProxy.stopWireProxy()
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "stop.circle.fill")
@@ -429,7 +429,7 @@ struct WireProxyDashboardView: View {
                 }
             } else {
                 Button {
-                    deviceProxy.wireProxyTunnelEnabled = true
+                    deviceProxy.reconnectWireProxy()
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "play.circle.fill")

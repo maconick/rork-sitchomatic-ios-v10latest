@@ -65,15 +65,6 @@ class DeviceProxyService {
     private let wireProxyBridge = WireProxyBridge.shared
     private let logger = DebugLogger.shared
 
-    var wireProxyTunnelEnabled: Bool = true {
-        didSet {
-            persistSettings()
-            if isEnabled {
-                syncWireProxyTunnel()
-            }
-        }
-    }
-
     var localProxyEnabled: Bool = true {
         didSet {
             persistSettings()
@@ -202,7 +193,7 @@ class DeviceProxyService {
             }
         }
 
-        logger.log("DeviceProxy: Unified IP mode ENABLED (localProxy: \(localProxyEnabled), wireProxy: \(wireProxyTunnelEnabled), autoFailover: \(autoFailoverEnabled))", category: .network, level: .info)
+        logger.log("DeviceProxy: Unified IP mode ENABLED (localProxy: \(localProxyEnabled), autoFailover: \(autoFailoverEnabled))", category: .network, level: .info)
     }
 
     private func deactivateUnifiedMode() {
@@ -245,7 +236,7 @@ class DeviceProxyService {
         isRotating = true
         let previousLabel = activeEndpointLabel ?? "None"
 
-        if wireProxyTunnelEnabled && wireProxyBridge.isActive {
+        if wireProxyBridge.isActive {
             wireProxyBridge.stop()
             localProxy.enableWireProxyMode(false)
         }
@@ -304,13 +295,8 @@ class DeviceProxyService {
         case .socks5(let proxy):
             localProxy.enableWireProxyMode(false)
             localProxy.updateUpstream(proxy)
-        case .wireGuardDNS(let wg):
-            if wireProxyTunnelEnabled {
-                syncWireProxyTunnel()
-            } else {
-                localProxy.enableWireProxyMode(false)
-                localProxy.updateUpstream(nil)
-            }
+        case .wireGuardDNS:
+            syncWireProxyTunnel()
         default:
             localProxy.enableWireProxyMode(false)
             localProxy.updateUpstream(nil)
@@ -318,7 +304,7 @@ class DeviceProxyService {
     }
 
     private func syncWireProxyTunnel() {
-        guard wireProxyTunnelEnabled, localProxyEnabled else {
+        guard localProxyEnabled else {
             wireProxyBridge.stop()
             localProxy.enableWireProxyMode(false)
             return
@@ -346,7 +332,7 @@ class DeviceProxyService {
     }
 
     var isWireProxyActive: Bool {
-        wireProxyTunnelEnabled && wireProxyBridge.isActive
+        wireProxyBridge.isActive
     }
 
     var wireProxyStatus: WireProxyStatus {
@@ -358,15 +344,30 @@ class DeviceProxyService {
     }
 
     func reconnectWireProxy() {
-        guard wireProxyTunnelEnabled, isEnabled else { return }
+        guard isEnabled, case .wireGuardDNS = activeConfig else { return }
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
         logger.log("DeviceProxy: WireProxy reconnect requested", category: .vpn, level: .info)
         syncWireProxyTunnel()
     }
 
+    func stopWireProxy() {
+        wireProxyBridge.stop()
+        localProxy.enableWireProxyMode(false)
+        logger.log("DeviceProxy: WireProxy manually stopped", category: .vpn, level: .info)
+    }
+
+    func handleProfileSwitch() {
+        if isEnabled {
+            wireProxyBridge.stop()
+            localProxy.enableWireProxyMode(false)
+            performRotation(reason: "Profile Switch")
+        }
+        logger.log("DeviceProxy: profile switched — configs reloaded, rotation triggered", category: .network, level: .info)
+    }
+
     func rotateWireProxyConfig() {
-        guard wireProxyTunnelEnabled, isEnabled else { return }
+        guard isEnabled else { return }
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
         let config = resolveNextConfig()
@@ -400,7 +401,7 @@ class DeviceProxyService {
         case .socks5:
             return localProxy.localProxyConfig
         case .wireGuardDNS:
-            if wireProxyTunnelEnabled && wireProxyBridge.isActive {
+            if wireProxyBridge.isActive {
                 return localProxy.localProxyConfig
             }
             return nil
@@ -496,7 +497,6 @@ class DeviceProxyService {
             "rotateOnBatch": rotateOnBatchStart,
             "rotateOnFingerprint": rotateOnFingerprintDetection,
             "localProxy": localProxyEnabled,
-            "wireProxyTunnel": wireProxyTunnelEnabled,
             "autoFailover": autoFailoverEnabled,
             "healthCheckInterval": healthCheckInterval,
             "maxFailures": maxFailuresBeforeRotation,
@@ -515,7 +515,6 @@ class DeviceProxyService {
         if let batch = dict["rotateOnBatch"] as? Bool { rotateOnBatchStart = batch }
         if let fp = dict["rotateOnFingerprint"] as? Bool { rotateOnFingerprintDetection = fp }
         if let lp = dict["localProxy"] as? Bool { localProxyEnabled = lp }
-        if let wpt = dict["wireProxyTunnel"] as? Bool { wireProxyTunnelEnabled = wpt }
         if let af = dict["autoFailover"] as? Bool { autoFailoverEnabled = af }
         if let hci = dict["healthCheckInterval"] as? TimeInterval { healthCheckInterval = hci }
         if let mf = dict["maxFailures"] as? Int { maxFailuresBeforeRotation = mf }

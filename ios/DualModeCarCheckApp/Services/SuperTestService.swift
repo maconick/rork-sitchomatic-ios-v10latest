@@ -529,7 +529,7 @@ class SuperTestService {
 
         if !wireProxyActive {
             addLog("WireProxy not active — attempting to start", level: .warning)
-            if deviceProxy.isEnabled && deviceProxy.wireProxyTunnelEnabled {
+            if deviceProxy.isEnabled {
                 deviceProxy.reconnectWireProxy()
                 try? await Task.sleep(for: .seconds(4))
             }
