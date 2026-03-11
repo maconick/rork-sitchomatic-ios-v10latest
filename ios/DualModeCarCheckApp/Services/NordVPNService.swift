@@ -131,6 +131,15 @@ class NordVPNService {
         DeviceProxyService.shared.handleProfileSwitch()
 
         logger.log("NordVPN: switched to \(profile.rawValue) profile — all configs reloaded", category: .vpn, level: .success)
+
+        let proxyService = ProxyRotationService.shared
+        let hasWG = !proxyService.joeWGConfigs.isEmpty
+        let hasOVPN = !proxyService.joeVPNConfigs.isEmpty
+        if !hasWG || !hasOVPN {
+            Task {
+                await autoPopulateConfigs(forceRefresh: false)
+            }
+        }
     }
 
     func setAccessKey(_ key: String) {
@@ -255,6 +264,9 @@ class NordVPNService {
     }
     var isDownloadingOVPN: Bool = false
     var ovpnDownloadProgress: String = ""
+    var isAutoPopulating: Bool = false
+    var autoPopulateProgress: String = ""
+    var autoPopulateError: String?
 
     func fetchRecommendedServers(country: String? = nil, limit: Int = 10, technology: String = "openvpn_tcp") async {
         isLoadingServers = true
@@ -485,6 +497,105 @@ class NordVPNService {
             proto: proto,
             rawContent: rawContent
         )
+    }
+
+    // MARK: - Auto-Populate Configs
+
+    func autoPopulateConfigs(forceRefresh: Bool = false) async {
+        let proxyService = ProxyRotationService.shared
+        let hasWG = !proxyService.joeWGConfigs.isEmpty
+        let hasOVPN = !proxyService.joeVPNConfigs.isEmpty
+
+        if !forceRefresh && hasWG && hasOVPN {
+            logger.log("NordVPN: auto-populate skipped — configs already exist (WG: \(proxyService.joeWGConfigs.count), OVPN: \(proxyService.joeVPNConfigs.count))", category: .vpn, level: .info)
+            return
+        }
+
+        guard !isAutoPopulating else {
+            logger.log("NordVPN: auto-populate already in progress", category: .vpn, level: .warning)
+            return
+        }
+
+        isAutoPopulating = true
+        autoPopulateProgress = "Fetching private key..."
+        autoPopulateError = nil
+        defer {
+            isAutoPopulating = false
+            autoPopulateProgress = ""
+        }
+
+        if privateKey.isEmpty {
+            await fetchPrivateKey()
+            guard hasPrivateKey else {
+                autoPopulateError = "Failed to fetch private key. Cannot generate WireGuard configs."
+                logger.log("NordVPN: auto-populate aborted — no private key", category: .vpn, level: .error)
+                return
+            }
+        }
+
+        let wgCount = 20
+        let ovpnCount = 10
+
+        autoPopulateProgress = "Fetching WireGuard servers (0/\(wgCount))..."
+        logger.log("NordVPN: auto-populate starting — \(wgCount) WG + \(ovpnCount) OVPN for \(activeKeyProfile.rawValue)", category: .vpn, level: .info)
+
+        if forceRefresh || !hasWG {
+            await fetchRecommendedServers(limit: wgCount, technology: "wireguard_udp")
+            let wgServers = recommendedServers
+
+            if wgServers.isEmpty {
+                autoPopulateError = "No WireGuard servers found."
+                logger.log("NordVPN: auto-populate — no WG servers returned", category: .vpn, level: .error)
+            } else {
+                var wgConfigs: [WireGuardConfig] = []
+                for (index, server) in wgServers.enumerated() {
+                    autoPopulateProgress = "Generating WG config \(index + 1)/\(wgServers.count)..."
+                    if let config = generateWireGuardConfig(from: server) {
+                        wgConfigs.append(config)
+                    }
+                }
+
+                if !wgConfigs.isEmpty {
+                    if forceRefresh {
+                        proxyService.clearAllUnifiedWGConfigs()
+                    }
+                    let report = proxyService.importUnifiedWGConfigs(wgConfigs)
+                    logger.log("NordVPN: auto-populate WG — added \(report.added), duplicates \(report.duplicates)", category: .vpn, level: .success)
+                }
+            }
+        }
+
+        if forceRefresh || !hasOVPN {
+            autoPopulateProgress = "Fetching OpenVPN servers (0/\(ovpnCount))..."
+            await fetchRecommendedServers(limit: ovpnCount, technology: "openvpn_tcp")
+            let ovpnServers = recommendedServers
+
+            if ovpnServers.isEmpty {
+                let existingError = autoPopulateError ?? ""
+                autoPopulateError = existingError.isEmpty ? "No OpenVPN servers found." : existingError + " No OpenVPN servers found."
+                logger.log("NordVPN: auto-populate — no OVPN servers returned", category: .vpn, level: .error)
+            } else {
+                var importedOVPN = 0
+                var failedOVPN = 0
+
+                for (index, server) in ovpnServers.enumerated() {
+                    autoPopulateProgress = "Downloading OVPN \(index + 1)/\(ovpnServers.count)..."
+                    if let config = await downloadOVPNConfig(from: server, proto: .tcp) {
+                        proxyService.importUnifiedVPNConfig(config)
+                        importedOVPN += 1
+                    } else {
+                        failedOVPN += 1
+                    }
+                }
+
+                logger.log("NordVPN: auto-populate OVPN — imported \(importedOVPN), failed \(failedOVPN)", category: .vpn, level: importedOVPN > 0 ? .success : .error)
+            }
+        }
+
+        let finalWG = proxyService.joeWGConfigs.count
+        let finalOVPN = proxyService.joeVPNConfigs.count
+        autoPopulateProgress = "Done — \(finalWG) WG, \(finalOVPN) OVPN"
+        logger.log("NordVPN: auto-populate complete for \(activeKeyProfile.rawValue) — \(finalWG) WG, \(finalOVPN) OVPN configs ready", category: .vpn, level: .success)
     }
 
     private func cacheServers(_ servers: [NordVPNServer]) {

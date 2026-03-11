@@ -102,6 +102,8 @@ struct DualModeCarCheckAppApp: App {
                         nord.lastError = "NordVPN access token needs to be refreshed before fetching a private key."
                     }
                     vault.saveFullState()
+
+                    await nord.autoPopulateConfigs(forceRefresh: false)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
