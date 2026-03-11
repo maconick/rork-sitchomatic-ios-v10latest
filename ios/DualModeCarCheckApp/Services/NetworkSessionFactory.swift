@@ -166,9 +166,22 @@ class NetworkSessionFactory {
                 sessionConfig.connectionProxyDictionary = proxyDict
                 logger.log("URLSession WG: routed via WireProxy local proxy 127.0.0.1:\(localConfig.port)", category: .vpn, level: .info)
             } else {
-                logger.log("URLSession WG: \(wg.displayString) — no active tunnel, triggering device-wide VPN connect", category: .vpn, level: .warning)
+                logger.log("URLSession WG: \(wg.displayString) — no active tunnel, triggering VPN connect and falling back to SOCKS5", category: .vpn, level: .warning)
                 Task {
                     await vpnTunnel.configureAndConnect(with: wg)
+                }
+                if let fallbackProxy = proxyService.nextWorkingProxy(for: .joe) {
+                    var proxyDict: [String: Any] = [
+                        "SOCKSEnable": 1,
+                        "SOCKSProxy": fallbackProxy.host,
+                        "SOCKSPort": fallbackProxy.port,
+                    ]
+                    if let u = fallbackProxy.username { proxyDict["SOCKSUser"] = u }
+                    if let p = fallbackProxy.password { proxyDict["SOCKSPassword"] = p }
+                    sessionConfig.connectionProxyDictionary = proxyDict
+                    logger.log("URLSession WG: SOCKS5 fallback \(fallbackProxy.displayString) while VPN connecting", category: .proxy, level: .info)
+                } else {
+                    logger.log("URLSession WG: no SOCKS5 fallback available — traffic will use real IP until VPN connects", category: .vpn, level: .error)
                 }
             }
 
@@ -176,7 +189,20 @@ class NetworkSessionFactory {
             if vpnTunnel.isConnected {
                 logger.log("URLSession OVPN: device-wide VPN active — traffic routed through tunnel for \(ovpn.displayString)", category: .vpn, level: .info)
             } else {
-                logger.log("URLSession OVPN: \(ovpn.remoteHost):\(ovpn.remotePort) (\(ovpn.proto)) — no active tunnel, traffic may use real IP", category: .vpn, level: .warning)
+                logger.log("URLSession OVPN: \(ovpn.remoteHost):\(ovpn.remotePort) (\(ovpn.proto)) — no active tunnel, falling back to SOCKS5", category: .vpn, level: .warning)
+                if let fallbackProxy = proxyService.nextWorkingProxy(for: .joe) {
+                    var proxyDict: [String: Any] = [
+                        "SOCKSEnable": 1,
+                        "SOCKSProxy": fallbackProxy.host,
+                        "SOCKSPort": fallbackProxy.port,
+                    ]
+                    if let u = fallbackProxy.username { proxyDict["SOCKSUser"] = u }
+                    if let p = fallbackProxy.password { proxyDict["SOCKSPassword"] = p }
+                    sessionConfig.connectionProxyDictionary = proxyDict
+                    logger.log("URLSession OVPN: SOCKS5 fallback \(fallbackProxy.displayString) while no VPN tunnel", category: .proxy, level: .info)
+                } else {
+                    logger.log("URLSession OVPN: no SOCKS5 fallback available — traffic will use real IP", category: .vpn, level: .error)
+                }
             }
         }
 
@@ -226,7 +252,20 @@ class NetworkSessionFactory {
             if vpnTunnel.isConnected {
                 logger.log("WKWebView OVPN: \(ovpn.displayString) — device-wide VPN tunnel active, all WebView traffic routed via tunnel", category: .vpn, level: .info)
             } else {
-                logger.log("WKWebView OVPN: \(ovpn.displayString) — no VPN tunnel available, WebView traffic will use real IP", category: .vpn, level: .warning)
+                logger.log("WKWebView OVPN: \(ovpn.displayString) — no VPN tunnel, falling back to SOCKS5 for WebView", category: .vpn, level: .warning)
+                if let fallbackProxy = proxyService.nextWorkingProxy(for: .joe) {
+                    let endpoint = NWEndpoint.hostPort(
+                        host: NWEndpoint.Host(fallbackProxy.host),
+                        port: NWEndpoint.Port(integerLiteral: UInt16(fallbackProxy.port))
+                    )
+                    let proxyConfig = ProxyConfiguration(socksv5Proxy: endpoint)
+                    if let u = fallbackProxy.username, let p = fallbackProxy.password {
+                        proxyConfig.applyCredential(username: u, password: p)
+                    }
+                    dataStore.proxyConfigurations = [proxyConfig]
+                    wkConfig.websiteDataStore = dataStore
+                    logger.log("WKWebView OVPN: SOCKS5 fallback \(fallbackProxy.displayString)", category: .proxy, level: .info)
+                }
             }
 
         case .direct:

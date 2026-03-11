@@ -10,6 +10,7 @@ class LocalProxyConnection {
     private let queue: DispatchQueue
     private weak var server: LocalProxyServer?
     private let timeoutSeconds: TimeInterval
+    private let connectionPool = ProxyConnectionPool.shared
 
     private var bytesRelayed: UInt64 = 0
     private var bytesUploaded: UInt64 = 0
@@ -20,6 +21,7 @@ class LocalProxyConnection {
     private var targetHost: String = ""
     private var targetPort: UInt16 = 0
     private var timeoutWork: DispatchWorkItem?
+    private var pooledConnectionId: UUID?
 
     init(id: UUID, clientConnection: NWConnection, upstream: ProxyConfig?, queue: DispatchQueue, server: LocalProxyServer, timeoutSeconds: TimeInterval = 30) {
         self.id = id
@@ -66,7 +68,12 @@ class LocalProxyConnection {
         cancelTimeout()
         hadError = error || hadError
         clientConnection.cancel()
-        upstreamConnection?.cancel()
+        if let poolId = pooledConnectionId {
+            connectionPool.releaseConnection(id: poolId, hadError: hadError)
+            pooledConnectionId = nil
+        } else {
+            upstreamConnection?.cancel()
+        }
         server?.connectionFinished(
             id: id,
             bytesRelayed: bytesRelayed,
@@ -216,27 +223,22 @@ class LocalProxyConnection {
     }
 
     private func connectDirect(host: String, port: UInt16, addressType: UInt8) {
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(integerLiteral: port))
-        let conn = NWConnection(to: endpoint, using: .tcp)
-        self.upstreamConnection = conn
-
-        conn.stateUpdateHandler = { [weak self] state in
+        connectionPool.acquireUpstream(targetHost: host, targetPort: port, upstream: nil) { [weak self] conn, poolId in
             Task { @MainActor [weak self] in
-                guard let self, !self.isCancelled else { return }
-                switch state {
-                case .ready:
+                guard let self, !self.isCancelled else {
+                    if let poolId { self?.connectionPool.releaseConnection(id: poolId, hadError: true) }
+                    return
+                }
+                if let conn, let poolId {
+                    self.upstreamConnection = conn
+                    self.pooledConnectionId = poolId
                     self.sendSOCKS5Success(addressType: addressType)
-                case .failed:
+                } else {
                     self.errorType = .connection
                     self.sendSOCKS5Error(0x05)
-                case .cancelled:
-                    break
-                default:
-                    break
                 }
             }
         }
-        conn.start(queue: queue)
     }
 
     private func connectViaUpstream(_ proxy: ProxyConfig, targetHost: String, targetPort: UInt16, addressType: UInt8) {

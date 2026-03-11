@@ -85,14 +85,16 @@ class WireGuardTunnelService {
             issues.append("Missing interface address")
         }
 
-        let keyLength = config.interfacePrivateKey.count
-        if keyLength != 44 && !config.interfacePrivateKey.isEmpty {
-            issues.append("Private key appears invalid (expected 44 chars base64, got \(keyLength))")
+        if !config.interfacePrivateKey.isEmpty {
+            if !isValidWireGuardKey(config.interfacePrivateKey) {
+                issues.append("Private key is not valid base64 (expected 44 chars, 32 bytes decoded)")
+            }
         }
 
-        let pubKeyLength = config.peerPublicKey.count
-        if pubKeyLength != 44 && !config.peerPublicKey.isEmpty {
-            issues.append("Public key appears invalid (expected 44 chars base64, got \(pubKeyLength))")
+        if !config.peerPublicKey.isEmpty {
+            if !isValidWireGuardKey(config.peerPublicKey) {
+                issues.append("Public key is not valid base64 (expected 44 chars, 32 bytes decoded)")
+            }
         }
 
         if config.endpointPort < 1 || config.endpointPort > 65535 {
@@ -104,6 +106,12 @@ class WireGuardTunnelService {
         }
 
         return issues
+    }
+
+    private func isValidWireGuardKey(_ key: String) -> Bool {
+        guard key.count == 44 else { return false }
+        guard let data = Data(base64Encoded: key) else { return false }
+        return data.count == 32
     }
 
     func generateWGQuickConfig(_ config: WireGuardConfig) -> String {

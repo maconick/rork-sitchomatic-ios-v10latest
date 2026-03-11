@@ -160,6 +160,14 @@ class ProxyHealthMonitor {
     }
 
     private func testSOCKS5Connectivity(host: String, port: UInt16, username: String?, password: String?) async -> (success: Bool, error: String?) {
+        let handshakeResult = await testSOCKS5Handshake(host: host, port: port)
+        guard handshakeResult.success else { return handshakeResult }
+
+        let httpResult = await testHTTPViaSocks5(host: host, port: port, username: username, password: password)
+        return httpResult
+    }
+
+    private func testSOCKS5Handshake(host: String, port: UInt16) async -> (success: Bool, error: String?) {
         let timeout = self.healthCheckTimeoutSeconds
         let testQueue = self.queue
         return await withCheckedContinuation { continuation in
@@ -224,6 +232,40 @@ class ProxyHealthMonitor {
                 }
             }
             connection.start(queue: testQueue)
+        }
+    }
+
+    private nonisolated func testHTTPViaSocks5(host: String, port: UInt16, username: String?, password: String?) async -> (success: Bool, error: String?) {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 12
+        var proxyDict: [String: Any] = [
+            "SOCKSEnable": 1,
+            "SOCKSProxy": host,
+            "SOCKSPort": Int(port),
+        ]
+        if let u = username { proxyDict["SOCKSUser"] = u }
+        if let p = password { proxyDict["SOCKSPassword"] = p }
+        config.connectionProxyDictionary = proxyDict
+
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        guard let url = URL(string: "https://api.ipify.org?format=json") else {
+            return (false, "Invalid test URL")
+        }
+        do {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 8
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+                return (true, nil)
+            }
+            return (false, "HTTP status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        } catch {
+            return (false, "HTTP test failed: \(error.localizedDescription)")
         }
     }
 

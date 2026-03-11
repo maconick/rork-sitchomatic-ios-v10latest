@@ -868,7 +868,7 @@ class ProxyRotationService {
         }
     }
 
-    private nonisolated func testSingleProxy(_ proxy: ProxyConfig) async -> Bool {
+    nonisolated func testSingleProxy(_ proxy: ProxyConfig) async -> Bool {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 12
         config.timeoutIntervalForResource = 15
@@ -891,27 +891,39 @@ class ProxyRotationService {
             "https://ifconfig.me/ip"
         ]
 
-        var lastErrorDesc = ""
-        for urlString in testURLs {
-            guard let url = URL(string: urlString) else { continue }
-            do {
-                var request = URLRequest(url: url)
-                request.httpMethod = "GET"
-                request.timeoutInterval = 10
-                request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-                let (data, response) = try await session.data(for: request)
-                if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+        let result = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+            for urlString in testURLs {
+                group.addTask {
+                    guard let url = URL(string: urlString) else { return false }
+                    do {
+                        var request = URLRequest(url: url)
+                        request.httpMethod = "GET"
+                        request.timeoutInterval = 10
+                        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+                        let (data, response) = try await session.data(for: request)
+                        if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+                            return true
+                        }
+                    } catch { }
+                    return false
+                }
+            }
+            for await success in group {
+                if success {
+                    group.cancelAll()
                     return true
                 }
-            } catch {
-                lastErrorDesc = error.localizedDescription
-                continue
+            }
+            return false
+        }
+
+        if !result {
+            let proxyDisplay = proxy.displayString
+            Task { @MainActor in
+                DebugLogger.shared.log("ProxyTest FAIL: \(proxyDisplay)", category: .proxy, level: .debug)
             }
         }
-        Task { @MainActor in
-            self.logger.log("ProxyTest FAIL: \(proxy.displayString) — \(lastErrorDesc)", category: .proxy, level: .debug)
-        }
-        return false
+        return result
     }
 
     func exportProxies(forIgnition: Bool = false) -> String {

@@ -583,9 +583,6 @@ class VPNTunnelManager {
     }
 
     nonisolated deinit {
-        let obs = MainActor.assumeIsolated { statusObserver }
-        if let obs {
-            NotificationCenter.default.removeObserver(obs)
-        }
+        NotificationCenter.default.removeObserver(self)
     }
 }

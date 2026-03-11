@@ -70,38 +70,46 @@ class LocalProxyServer {
     private var connectionDurations: [TimeInterval] = []
     private var rejectedConnections: Int = 0
 
+    private let portRetryRange: [UInt16] = [18080, 18081, 18082, 18083, 18084, 18090, 18100]
+
     func start() {
         guard !isRunning else { return }
 
-        do {
-            let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
-            params.requiredInterfaceType = .loopback
+        for port in portRetryRange {
+            do {
+                let params = NWParameters.tcp
+                params.allowLocalEndpointReuse = true
+                params.requiredInterfaceType = .loopback
 
-            let nwListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: preferredPort))
-            self.listener = nwListener
+                let nwListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: port))
+                self.listener = nwListener
 
-            nwListener.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor [weak self] in
-                    self?.handleListenerState(state)
+                nwListener.stateUpdateHandler = { [weak self] state in
+                    Task { @MainActor [weak self] in
+                        self?.handleListenerState(state)
+                    }
                 }
-            }
 
-            nwListener.newConnectionHandler = { [weak self] nwConnection in
-                Task { @MainActor [weak self] in
-                    self?.handleNewConnection(nwConnection)
+                nwListener.newConnectionHandler = { [weak self] nwConnection in
+                    Task { @MainActor [weak self] in
+                        self?.handleNewConnection(nwConnection)
+                    }
                 }
-            }
 
-            nwListener.start(queue: queue)
-            isRunning = true
-            stats.startedAt = Date()
-            statusMessage = "Starting..."
-            logger.log("LocalProxy: starting on port \(preferredPort)", category: .network, level: .info)
-        } catch {
-            statusMessage = "Failed: \(error.localizedDescription)"
-            logger.log("LocalProxy: failed to start - \(error)", category: .network, level: .error)
+                nwListener.start(queue: queue)
+                isRunning = true
+                stats.startedAt = Date()
+                statusMessage = "Starting on :\(port)..."
+                logger.log("LocalProxy: starting on port \(port)", category: .network, level: .info)
+                return
+            } catch {
+                logger.log("LocalProxy: port \(port) unavailable — \(error.localizedDescription)", category: .network, level: .warning)
+                continue
+            }
         }
+
+        statusMessage = "Failed: all ports unavailable"
+        logger.log("LocalProxy: failed to start — all ports in range unavailable", category: .network, level: .error)
     }
 
     func stop() {

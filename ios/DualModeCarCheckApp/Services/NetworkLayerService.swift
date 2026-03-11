@@ -148,9 +148,28 @@ class NetworkLayerService {
         return nil
     }
 
+    private let fallbackLogKey = "network_layer_fallback_log_v1"
+
     private func addFallbackLog(_ message: String) {
-        fallbackLog.insert(message, at: 0)
-        if fallbackLog.count > 50 { fallbackLog = Array(fallbackLog.prefix(50)) }
+        let entry = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)"
+        fallbackLog.insert(entry, at: 0)
+        if fallbackLog.count > 100 { fallbackLog = Array(fallbackLog.prefix(100)) }
+        persistFallbackLog()
         logger.log("NetworkLayer: \(message)", category: .network, level: .warning)
+    }
+
+    private func persistFallbackLog() {
+        UserDefaults.standard.set(fallbackLog, forKey: fallbackLogKey)
+    }
+
+    func loadFallbackLog() {
+        if let saved = UserDefaults.standard.stringArray(forKey: fallbackLogKey) {
+            fallbackLog = saved
+        }
+    }
+
+    func clearFallbackLog() {
+        fallbackLog.removeAll()
+        UserDefaults.standard.removeObject(forKey: fallbackLogKey)
     }
 }

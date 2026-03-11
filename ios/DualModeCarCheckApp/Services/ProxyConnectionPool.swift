@@ -30,11 +30,15 @@ class ProxyConnectionPool {
     private let logger = DebugLogger.shared
     private let queue = DispatchQueue(label: "proxy-connection-pool", qos: .userInitiated)
 
-    init() {
-        startCleanupTimer()
-    }
+    private var cleanupTimerStarted = false
+
+    init() {}
 
     func acquireUpstream(targetHost: String, targetPort: UInt16, upstream: ProxyConfig?, completion: @escaping (NWConnection?, UUID?) -> Void) {
+        if !cleanupTimerStarted {
+            cleanupTimerStarted = true
+            startCleanupTimer()
+        }
         let poolKey = "\(targetHost):\(targetPort)"
 
         for (id, info) in pooledConnections where info.isIdle && "\(info.targetHost):\(info.targetPort)" == poolKey {

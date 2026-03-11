@@ -464,30 +464,38 @@ class DeviceProxyService {
     }
 
     private func resolveNextConfig() -> ActiveNetworkConfig {
-        let wgConfigs = proxyService.wgConfigs(for: .joe).filter { $0.isEnabled }
-        if !wgConfigs.isEmpty {
-            let config = wgConfigs[wgIndex % wgConfigs.count]
+        let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
+
+        var allWG: [WireGuardConfig] = []
+        for t in targets { allWG.append(contentsOf: proxyService.wgConfigs(for: t).filter { $0.isEnabled }) }
+        let uniqueWG = Array(Dictionary(grouping: allWG, by: \.uniqueKey).compactMapValues(\.first).values)
+        if !uniqueWG.isEmpty {
+            let config = uniqueWG[wgIndex % uniqueWG.count]
             wgIndex += 1
             return .wireGuardDNS(config)
         }
 
-        let ovpnConfigs = proxyService.vpnConfigs(for: .joe).filter { $0.isEnabled }
-        if !ovpnConfigs.isEmpty {
-            let config = ovpnConfigs[ovpnIndex % ovpnConfigs.count]
+        var allOVPN: [OpenVPNConfig] = []
+        for t in targets { allOVPN.append(contentsOf: proxyService.vpnConfigs(for: t).filter { $0.isEnabled }) }
+        let uniqueOVPN = Array(Dictionary(grouping: allOVPN, by: \.uniqueKey).compactMapValues(\.first).values)
+        if !uniqueOVPN.isEmpty {
+            let config = uniqueOVPN[ovpnIndex % uniqueOVPN.count]
             ovpnIndex += 1
             return .openVPNProxy(config)
         }
 
-        let proxies = proxyService.proxies(for: .joe).filter { $0.isWorking || $0.lastTested == nil }
-        if !proxies.isEmpty {
-            let proxy = proxies[socks5Index % proxies.count]
+        var allProxies: [ProxyConfig] = []
+        for t in targets { allProxies.append(contentsOf: proxyService.proxies(for: t)) }
+        let uniqueProxies = Array(Dictionary(grouping: allProxies, by: \.id).compactMapValues(\.first).values)
+        let workingProxies = uniqueProxies.filter { $0.isWorking || $0.lastTested == nil }
+        if !workingProxies.isEmpty {
+            let proxy = workingProxies[socks5Index % workingProxies.count]
             socks5Index += 1
             return .socks5(proxy)
         }
 
-        let allProxies = proxyService.proxies(for: .joe)
-        if !allProxies.isEmpty {
-            let proxy = allProxies[socks5Index % allProxies.count]
+        if !uniqueProxies.isEmpty {
+            let proxy = uniqueProxies[socks5Index % uniqueProxies.count]
             socks5Index += 1
             return .socks5(proxy)
         }
