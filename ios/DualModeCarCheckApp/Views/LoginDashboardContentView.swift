@@ -7,11 +7,15 @@ struct LoginDashboardContentView: View {
     @State private var showPurgeNoAccConfirm: Bool = false
     @State private var showPurgePermDisabledConfirm: Bool = false
     @State private var showPurgeUnsureConfirm: Bool = false
+    @State private var proxyService = ProxyRotationService.shared
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
                 statusHeader
+                if vm.isIgnitionMode {
+                    regionToggle
+                }
                 dashboardActionButtons
                 if vm.isRunning {
                     testingBanner
@@ -191,6 +195,39 @@ struct LoginDashboardContentView: View {
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
+    }
+
+    private var regionToggle: some View {
+        HStack(spacing: 12) {
+            Image(systemName: proxyService.networkRegion == .usa ? "flag.fill" : "globe.asia.australia.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Region")
+                    .font(.subheadline.bold())
+                Text(proxyService.networkRegion.label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Picker("", selection: Binding(
+                get: { proxyService.networkRegion },
+                set: { proxyService.networkRegion = $0 }
+            )) {
+                Text("USA").tag(NetworkRegion.usa)
+                Text("AU").tag(NetworkRegion.au)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 120)
+        }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(.rect(cornerRadius: 12))
+        .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.networkRegion)
     }
 
     private var stealthBadge: some View {

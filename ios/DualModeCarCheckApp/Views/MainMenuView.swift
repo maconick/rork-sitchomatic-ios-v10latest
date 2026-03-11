@@ -17,11 +17,12 @@ struct MainMenuView: View {
                 Color.black.opacity(0.3)
 
                 VStack(spacing: 0) {
-                    Spacer().frame(height: geo.safeAreaInsets.top + 12)
+                    Spacer().frame(height: geo.safeAreaInsets.top + 20)
 
                     profileSwitcher
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 8)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 12)
+                        .zIndex(10)
 
                     HStack(spacing: 0) {
                         joeZone(geo: geo)
@@ -445,13 +446,13 @@ struct MainMenuView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: profile == .nick ? "person.fill" : "person.fill")
-                            .font(.system(size: 11, weight: .bold))
+                            .font(.system(size: 12, weight: .bold))
                         Text(profile.rawValue.uppercased())
-                            .font(.system(size: 12, weight: .black, design: .monospaced))
+                            .font(.system(size: 13, weight: .black, design: .monospaced))
                     }
                     .foregroundStyle(nordService.activeKeyProfile == profile ? .white : .white.opacity(0.4))
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
+                    .frame(minHeight: 44)
                     .background(
                         Group {
                             if nordService.activeKeyProfile == profile {
@@ -464,14 +465,16 @@ struct MainMenuView: View {
                             }
                         }
                     )
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(3)
-        .background(Color.white.opacity(0.08))
+        .padding(4)
+        .background(Color.white.opacity(0.12))
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+        .contentShape(Capsule())
         .sensoryFeedback(.impact(weight: .heavy), trigger: nordService.activeKeyProfile)
         .opacity(animateIn ? 1 : 0)
         .offset(y: animateIn ? 0 : -20)

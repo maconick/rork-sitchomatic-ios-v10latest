@@ -358,12 +358,28 @@ class DeviceProxyService {
     }
 
     func handleProfileSwitch() {
+        wireProxyBridge.stop()
+        localProxy.enableWireProxyMode(false)
+        localProxy.updateUpstream(nil)
+
+        activeConfig = nil
+        activeEndpointLabel = nil
+        activeConnectionType = "None"
+        activeSince = nil
+        isActive = false
+
+        wgIndex = 0
+        ovpnIndex = 0
+        socks5Index = 0
+
+        rotationLog.removeAll()
+
         if isEnabled {
-            wireProxyBridge.stop()
-            localProxy.enableWireProxyMode(false)
             performRotation(reason: "Profile Switch")
         }
-        logger.log("DeviceProxy: profile switched — configs reloaded, rotation triggered", category: .network, level: .info)
+
+        let profile = NordVPNService.shared.activeKeyProfile
+        logger.log("DeviceProxy: profile switched to \(profile.rawValue) — tunnel stopped, state reset, configs reloaded", category: .network, level: .success)
     }
 
     func rotateWireProxyConfig() {
