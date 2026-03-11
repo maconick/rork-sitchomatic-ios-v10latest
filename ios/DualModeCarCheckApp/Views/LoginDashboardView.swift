@@ -182,7 +182,7 @@ struct LoginDashboardView: View {
                                 .clipShape(Capsule())
                         }
                     }
-                    Text("\(vm.activeTestCount) active · \(vm.untestedCards.count) queued · \(vm.testingCards.count) testing")
+                    Text("\(vm.activeChecks.count) active · \(vm.untestedCards.count) queued · \(vm.testingCards.count) testing")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

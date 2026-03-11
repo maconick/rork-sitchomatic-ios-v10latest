@@ -106,6 +106,7 @@ class LoginViewModel {
     private var credentialsSaveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var connectionTestTask: Task<Void, Never>?
+    private var forceStopTask: Task<Void, Never>?
     private var sessionHeartbeatTimeout: TimeInterval {
         TimeoutResolver.resolveHeartbeatTimeout(max(90, testTimeout))
     }
@@ -811,6 +812,8 @@ class LoginViewModel {
         lastBatchResult = result
         cancelPauseCountdown()
         stopHeartbeatMonitor()
+        forceStopTask?.cancel()
+        forceStopTask = nil
         persistence.clearTestQueue()
         isRunning = false
         isPaused = false
@@ -821,6 +824,7 @@ class LoginViewModel {
         isStopping = false
 
         resetStuckTestingCredentials()
+        syncActiveTestCount()
         backgroundService.endExtendedBackgroundExecution()
 
         if stoppedEarly {
@@ -886,6 +890,7 @@ class LoginViewModel {
         isPaused = false
         pauseCountdown = 0
         log("Stopping queue — current batch sessions completing, no new batches will be added", level: .warning)
+        startForceStopTimer()
     }
 
     func stopAfterCurrent() {
@@ -894,6 +899,41 @@ class LoginViewModel {
         isPaused = false
         pauseCountdown = 0
         log("Stopping after current batch due to unusual failures...", level: .warning)
+        startForceStopTimer()
+    }
+
+    private func startForceStopTimer() {
+        forceStopTask?.cancel()
+        forceStopTask = Task {
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            guard isRunning || isStopping else { return }
+            log("Force-stop: batch did not finish within 20s — force cancelling", level: .error)
+            logger.log("Force-stop triggered — cancelling hung batch task", category: .login, level: .error)
+            batchTask?.cancel()
+            secondaryBatchTask?.cancel()
+            forceFinalizeBatch()
+        }
+    }
+
+    private func forceFinalizeBatch() {
+        cancelPauseCountdown()
+        stopHeartbeatMonitor()
+        forceStopTask?.cancel()
+        forceStopTask = nil
+        persistence.clearTestQueue()
+        isRunning = false
+        isPaused = false
+        isStopping = false
+        pauseCountdown = 0
+        activeTestCount = 0
+        batchTask = nil
+        secondaryBatchTask = nil
+        resetStuckTestingCredentials()
+        syncActiveTestCount()
+        backgroundService.endExtendedBackgroundExecution()
+        log("Force-stop complete — all state reset", level: .warning)
+        persistCredentials()
     }
 
     private func startPauseCountdown() {
@@ -917,6 +957,14 @@ class LoginViewModel {
         pauseCountdownTask = nil
     }
 
+    private func syncActiveTestCount() {
+        let actualActive = attempts.filter({ !$0.status.isTerminal }).count
+        if activeTestCount != actualActive {
+            log("activeTestCount sync: \(activeTestCount) → \(actualActive)", level: .warning)
+            activeTestCount = actualActive
+        }
+    }
+
     private func startHeartbeatMonitor() {
         heartbeatTask?.cancel()
         heartbeatTask = Task {
@@ -938,6 +986,7 @@ class LoginViewModel {
                         }
                     }
                 }
+                syncActiveTestCount()
                 if stuckCount > 0 {
                     log("Heartbeat: force-terminated \(stuckCount) stuck session(s) (>\(Int(sessionHeartbeatTimeout))s)", level: .warning)
                     logger.log("Heartbeat terminated \(stuckCount) stuck login sessions", category: .login, level: .warning)

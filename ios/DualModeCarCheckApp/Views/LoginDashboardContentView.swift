@@ -266,7 +266,7 @@ struct LoginDashboardContentView: View {
                                 .background(Color.red.opacity(0.15)).clipShape(Capsule())
                         }
                     }
-                    Text("\(vm.activeTestCount) active · \(vm.untestedCredentials.count) queued · \(vm.testingCredentials.count) testing")
+                    Text("\(vm.activeAttempts.count) active · \(vm.untestedCredentials.count) queued · \(vm.testingCredentials.count) testing")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()

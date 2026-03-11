@@ -109,6 +109,7 @@ class PPSRAutomationViewModel {
     private var settingsSaveTask: Task<Void, Never>?
     private var cardsSaveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var forceStopTask: Task<Void, Never>?
     private var sessionHeartbeatTimeout: TimeInterval {
         TimeoutResolver.resolveHeartbeatTimeout(max(90, testTimeout))
     }
@@ -614,6 +615,47 @@ class PPSRAutomationViewModel {
         isPaused = false
         pauseCountdown = 0
         log("Stopping after current batch due to unusual failures...", level: .warning)
+        startForceStopTimer()
+    }
+
+    private func startForceStopTimer() {
+        forceStopTask?.cancel()
+        forceStopTask = Task {
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            guard isRunning || isStopping else { return }
+            log("Force-stop: batch did not finish within 20s — force cancelling", level: .error)
+            logger.log("Force-stop triggered — cancelling hung PPSR batch task", category: .ppsr, level: .error)
+            batchTask?.cancel()
+            forceFinalizeBatch()
+        }
+    }
+
+    private func forceFinalizeBatch() {
+        cancelPauseCountdown()
+        stopHeartbeatMonitor()
+        forceStopTask?.cancel()
+        forceStopTask = nil
+        persistence.clearTestQueue()
+        isRunning = false
+        isPaused = false
+        isStopping = false
+        pauseCountdown = 0
+        activeTestCount = 0
+        batchTask = nil
+        resetStuckTestingCards()
+        syncActiveTestCount()
+        backgroundService.endExtendedBackgroundExecution()
+        log("Force-stop complete — all state reset", level: .warning)
+        persistCards()
+    }
+
+    private func syncActiveTestCount() {
+        let actualActive = checks.filter({ !$0.status.isTerminal }).count
+        if activeTestCount != actualActive {
+            log("activeTestCount sync: \(activeTestCount) → \(actualActive)", level: .warning)
+            activeTestCount = actualActive
+        }
     }
 
     func testSingleCard(_ card: PPSRCard) {
@@ -779,6 +821,7 @@ class PPSRAutomationViewModel {
         isPaused = false
         pauseCountdown = 0
         log("Stopping queue — current batch sessions completing, no new batches will be added", level: .warning)
+        startForceStopTimer()
     }
 
     private func startPauseCountdown() {
@@ -880,6 +923,8 @@ class PPSRAutomationViewModel {
         lastBatchResult = result
         cancelPauseCountdown()
         stopHeartbeatMonitor()
+        forceStopTask?.cancel()
+        forceStopTask = nil
         persistence.clearTestQueue()
         isRunning = false
         isPaused = false
@@ -890,6 +935,7 @@ class PPSRAutomationViewModel {
         isStopping = false
 
         resetStuckTestingCards()
+        syncActiveTestCount()
         backgroundService.endExtendedBackgroundExecution()
 
         let batchDuration = batchStartTime.map { Date().timeIntervalSince($0) } ?? 0
@@ -958,6 +1004,7 @@ class PPSRAutomationViewModel {
                         }
                     }
                 }
+                syncActiveTestCount()
                 if stuckCount > 0 {
                     log("Heartbeat: force-terminated \(stuckCount) stuck session(s) (>\(Int(sessionHeartbeatTimeout))s)", level: .warning)
                     logger.log("Heartbeat terminated \(stuckCount) stuck sessions", category: .ppsr, level: .warning)
