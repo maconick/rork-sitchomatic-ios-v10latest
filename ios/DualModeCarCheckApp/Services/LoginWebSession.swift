@@ -13,6 +13,7 @@ class LoginWebSession: NSObject {
     var lastNavigationError: String?
     var lastHTTPStatusCode: Int?
     var networkConfig: ActiveNetworkConfig = .direct
+    private var isProtectedRouteBlocked: Bool = false
     private var stealthProfile: PPSRStealthService.SessionProfile?
     private(set) var lastFingerprintScore: FingerprintValidationService.FingerprintScore?
     var onFingerprintLog: ((String, PPSRLogEntry.Level) -> Void)?
@@ -32,8 +33,10 @@ class LoginWebSession: NSObject {
         config.defaultWebpagePreferences.allowsContentJavaScript = true
 
         let proxyApplied = NetworkSessionFactory.shared.configureWKWebView(config: config, networkConfig: networkConfig, target: .ppsr)
-        if !proxyApplied {
-            logger.log("LoginWebSession: BLOCKED — no proxy available for PPSR, refusing to create WebView on real IP", category: .network, level: .error)
+        isProtectedRouteBlocked = networkConfig.requiresProtectedRoute && !proxyApplied
+        if isProtectedRouteBlocked {
+            lastNavigationError = "Protected PPSR route blocked — no proxy path available"
+            logger.log("LoginWebSession: BLOCKED — no proxy available for PPSR, refusing to load on real IP", category: .network, level: .error)
         }
 
         if stealthEnabled {
@@ -70,6 +73,7 @@ class LoginWebSession: NSObject {
         }
         webView = nil
         isPageLoaded = false
+        isProtectedRouteBlocked = false
         lastNavigationError = nil
         lastHTTPStatusCode = nil
         if let cont = pageLoadContinuation {
@@ -122,6 +126,10 @@ class LoginWebSession: NSObject {
         guard let webView else {
             lastNavigationError = "WebView not initialized"
             logger.log("LoginWebSession: loadPage failed — webView nil", category: .webView, level: .error)
+            return false
+        }
+        guard !isProtectedRouteBlocked else {
+            logger.log("LoginWebSession: loadPage blocked — protected route has no safe proxy path", category: .network, level: .error)
             return false
         }
         logger.startTimer(key: "loginWebSession_load")

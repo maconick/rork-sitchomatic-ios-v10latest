@@ -48,17 +48,29 @@ class LoginSiteWebSession: NSObject {
     var lastHTTPStatusCode: Int?
     var targetURL: URL
     var networkConfig: ActiveNetworkConfig = .direct
+    private var isProtectedRouteBlocked: Bool = false
     var proxyTarget: ProxyRotationService.ProxyTarget = .joe
     private var stealthProfile: PPSRStealthService.SessionProfile?
     private(set) var lastFingerprintScore: FingerprintValidationService.FingerprintScore?
     var onFingerprintLog: ((String, PPSRLogEntry.Level) -> Void)?
     private let logger = DebugLogger.shared
 
-    init(targetURL: URL, networkConfig: ActiveNetworkConfig = .direct, proxyTarget: ProxyRotationService.ProxyTarget = .joe) {
+    init(targetURL: URL, networkConfig: ActiveNetworkConfig = .direct, proxyTarget: ProxyRotationService.ProxyTarget? = nil) {
         self.targetURL = targetURL
         self.networkConfig = networkConfig
-        self.proxyTarget = proxyTarget
+        self.proxyTarget = proxyTarget ?? Self.inferProxyTarget(for: targetURL)
         super.init()
+    }
+
+    private static func inferProxyTarget(for targetURL: URL) -> ProxyRotationService.ProxyTarget {
+        let host = targetURL.host?.lowercased() ?? ""
+        if host.contains("ppsr") {
+            return .ppsr
+        }
+        if host.contains("ignition") {
+            return .ignition
+        }
+        return .joe
     }
 
     func setUp(wipeAll: Bool = true) {
@@ -80,8 +92,10 @@ class LoginSiteWebSession: NSObject {
         config.defaultWebpagePreferences.allowsContentJavaScript = true
 
         let proxyApplied = NetworkSessionFactory.shared.configureWKWebView(config: config, networkConfig: networkConfig, target: proxyTarget)
-        if !proxyApplied {
-            logger.log("LoginSiteWebSession: BLOCKED — no proxy available for \(proxyTarget.rawValue), refusing to create WebView on real IP", category: .network, level: .error)
+        isProtectedRouteBlocked = networkConfig.requiresProtectedRoute && !proxyApplied
+        if isProtectedRouteBlocked {
+            lastNavigationError = "Protected route blocked — no proxy path available for \(proxyTarget.rawValue)"
+            logger.log("LoginSiteWebSession: BLOCKED — no proxy available for \(proxyTarget.rawValue), refusing to load on real IP", category: .network, level: .error)
         }
         logger.log("LoginSiteWebSession: setUp with network=\(networkConfig.label) target=\(proxyTarget.rawValue)", category: .network, level: .debug)
 
@@ -122,6 +136,7 @@ class LoginSiteWebSession: NSObject {
         }
         webView = nil
         isPageLoaded = false
+        isProtectedRouteBlocked = false
         lastNavigationError = nil
         lastHTTPStatusCode = nil
         if let cont = pageLoadContinuation {
@@ -175,6 +190,9 @@ class LoginSiteWebSession: NSObject {
         let timeout = TimeoutResolver.resolvePageLoadTimeout(timeout)
         guard let webView else {
             lastNavigationError = "WebView not initialized"
+            return false
+        }
+        guard !isProtectedRouteBlocked else {
             return false
         }
         isPageLoaded = false

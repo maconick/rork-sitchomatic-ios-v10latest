@@ -131,8 +131,9 @@ class NordVPNService {
         lastError = nil
         autoPopulateError = nil
 
-        DeviceProxyService.shared.handleProfileSwitch()
         ProxyRotationService.shared.reloadForActiveProfile()
+        NetworkSessionFactory.shared.resetRotationIndexes()
+        DeviceProxyService.shared.handleProfileSwitch()
 
         logger.log("NordVPN: switched to \(profile.rawValue) profile — key=\(accessKey.prefix(8))... pk=\(privateKey.isEmpty ? "EMPTY" : "SET") — all configs reloaded", category: .vpn, level: .success)
 
