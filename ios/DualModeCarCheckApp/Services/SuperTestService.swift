@@ -904,8 +904,6 @@ class SuperTestService {
 
         let start = Date()
         let testURLs = ["https://api.ipify.org?format=json", "https://httpbin.org/ip", "https://ifconfig.me/ip"]
-        var lastErr = ""
-
         for urlString in testURLs {
             guard let url = URL(string: urlString) else { continue }
             do {
@@ -919,14 +917,8 @@ class SuperTestService {
                     return (true, latency)
                 }
             } catch {
-                lastErr = error.localizedDescription
                 continue
             }
-        }
-        let capturedErr = lastErr
-        let proxyDisplay = proxy.displayString
-        Task { @MainActor in
-            self.logger.log("SuperTest proxy FAIL: \(proxyDisplay) — \(capturedErr)", category: .proxy, level: .debug, sessionId: "supertest")
         }
         return (false, 0)
     }

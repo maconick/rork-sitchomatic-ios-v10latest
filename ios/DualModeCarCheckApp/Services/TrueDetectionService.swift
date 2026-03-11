@@ -66,7 +66,7 @@ class TrueDetectionService {
         session: LoginSiteWebSession,
         username: String,
         password: String,
-        config: TrueDetectionConfig = .init(),
+        config: TrueDetectionConfig = TrueDetectionConfig(),
         sessionId: String = "",
         onLog: ((String, PPSRLogEntry.Level) -> Void)? = nil
     ) async -> TrueDetectionResult {

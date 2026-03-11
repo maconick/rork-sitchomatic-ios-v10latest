@@ -10,10 +10,10 @@ nonisolated struct VPNProtocolTestResult: Sendable {
     let portOpen: Bool
 }
 
-nonisolated final class VPNProtocolTestService: Sendable {
+final class VPNProtocolTestService: @unchecked Sendable {
     static let shared = VPNProtocolTestService()
 
-    func testWireGuardEndpoint(_ config: WireGuardConfig) async -> VPNProtocolTestResult {
+    nonisolated func testWireGuardEndpoint(_ config: WireGuardConfig) async -> VPNProtocolTestResult {
         let host = config.endpointHost
         let port = config.endpointPort
         let start = Date()
@@ -67,7 +67,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
         )
     }
 
-    func testOpenVPNEndpoint(_ config: OpenVPNConfig) async -> VPNProtocolTestResult {
+    nonisolated func testOpenVPNEndpoint(_ config: OpenVPNConfig) async -> VPNProtocolTestResult {
         let host = config.remoteHost
         let port = config.remotePort
         let proto = config.proto
@@ -125,7 +125,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
 
     // MARK: - WireGuard UDP Handshake
 
-    private func testWireGuardUDPHandshake(host: String, port: UInt16) async -> (portOpen: Bool, protocolValidated: Bool) {
+    private nonisolated func testWireGuardUDPHandshake(host: String, port: UInt16) async -> (portOpen: Bool, protocolValidated: Bool) {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             return (false, false)
         }
@@ -196,7 +196,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
         }
     }
 
-    private static func buildWireGuardHandshakeInit() -> Data {
+    private nonisolated static func buildWireGuardHandshakeInit() -> Data {
         var data = Data(count: 148)
         data[0] = 0x01
         data[1] = 0x00
@@ -214,7 +214,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
 
     // MARK: - OpenVPN TCP Handshake
 
-    private func testOpenVPNTCPHandshake(host: String, port: UInt16) async -> (portOpen: Bool, protocolValidated: Bool) {
+    private nonisolated func testOpenVPNTCPHandshake(host: String, port: UInt16) async -> (portOpen: Bool, protocolValidated: Bool) {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             return (false, false)
         }
@@ -284,7 +284,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
 
     // MARK: - OpenVPN UDP Handshake
 
-    private func testOpenVPNUDPHandshake(host: String, port: UInt16) async -> (portOpen: Bool, protocolValidated: Bool) {
+    private nonisolated func testOpenVPNUDPHandshake(host: String, port: UInt16) async -> (portOpen: Bool, protocolValidated: Bool) {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             return (false, false)
         }
@@ -343,7 +343,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
         }
     }
 
-    private static func buildOpenVPNResetPacket() -> Data {
+    private nonisolated static func buildOpenVPNResetPacket() -> Data {
         var data = Data()
         data.append(0x38)
         let sessionId = (0..<8).map { _ in UInt8.random(in: 0...255) }
@@ -354,7 +354,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
         return data
     }
 
-    private static func validateOpenVPNResponse(_ data: Data) -> Bool {
+    private nonisolated static func validateOpenVPNResponse(_ data: Data) -> Bool {
         guard !data.isEmpty else { return false }
         let opcode = data[0] >> 3
         return opcode == 0x08 || opcode == 0x07 || opcode == 0x04
@@ -362,7 +362,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
 
     // MARK: - DNS Resolution
 
-    private func resolveHost(_ host: String) async -> Bool {
+    private nonisolated func resolveHost(_ host: String) async -> Bool {
         await withCheckedContinuation { continuation in
             let hostRef = CFHostCreateWithName(nil, host as CFString).takeRetainedValue()
             var resolved = DarwinBoolean(false)
@@ -376,7 +376,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
         }
     }
 
-    private func resolveHostViaDoH(_ host: String) async -> Bool {
+    private nonisolated func resolveHostViaDoH(_ host: String) async -> Bool {
         let dohEndpoints = [
             "https://cloudflare-dns.com/dns-query?name=\(host)&type=A",
             "https://dns.google/dns-query?name=\(host)&type=A",
@@ -409,7 +409,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
         return false
     }
 
-    private func testTCPPort(host: String, port: Int, timeout: Double) async -> Bool {
+    private nonisolated func testTCPPort(host: String, port: Int, timeout: Double) async -> Bool {
         guard port > 0, port <= 65535, let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
             return false
         }
@@ -449,7 +449,7 @@ nonisolated final class VPNProtocolTestService: Sendable {
         }
     }
 
-    private func elapsed(_ start: Date) -> Int {
+    private nonisolated func elapsed(_ start: Date) -> Int {
         Int(Date().timeIntervalSince(start) * 1000)
     }
 }
