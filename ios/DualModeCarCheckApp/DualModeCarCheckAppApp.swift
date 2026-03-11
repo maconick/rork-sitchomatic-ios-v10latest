@@ -106,9 +106,11 @@ struct DualModeCarCheckAppApp: App {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
                 PersistentFileStorageService.shared.forceSave()
+                DebugLogger.shared.persistLatestLog()
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
                 PersistentFileStorageService.shared.forceSave()
+                DebugLogger.shared.persistLatestLog()
             }
         }
     }

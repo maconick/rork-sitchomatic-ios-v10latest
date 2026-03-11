@@ -191,6 +191,7 @@ class DebugLogger {
     private var flushTask: Task<Void, Never>?
     private var persistTask: Task<Void, Never>?
     private var diskFlushTask: Task<Void, Never>?
+    private var autoPersistTask: Task<Void, Never>?
     private(set) var totalEntriesLogged: Int = 0
     private(set) var totalEntriesEvicted: Int = 0
     private let logArchiveDirectory: URL = {
@@ -235,8 +236,14 @@ class DebugLogger {
         }
     }
 
+    private let persistentLogURL: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent("debug_log_latest.txt")
+    }()
+
     init() {
         try? FileManager.default.createDirectory(at: logArchiveDirectory, withIntermediateDirectories: true)
+        startAutoPersist()
     }
 
     var filteredEntries: [DebugLogEntry] {
@@ -332,7 +339,18 @@ class DebugLogger {
             schedulePersistCritical()
         }
 
+        if batch.contains(where: { $0.level >= .error }) {
+            scheduleAutoPersist()
+        }
+
         didChange.send()
+    }
+
+    private func scheduleAutoPersist() {
+        guard autoPersistTask == nil || autoPersistTask?.isCancelled == true else { return }
+        Task {
+            persistLatestLog()
+        }
     }
 
     private func schedulePersistCritical() {
@@ -640,6 +658,7 @@ class DebugLogger {
         let fileURL = logArchiveDirectory.appendingPathComponent(fileName)
         try? allLines.write(to: fileURL, atomically: true, encoding: .utf8)
         pruneArchiveFiles(in: logArchiveDirectory)
+        persistLatestLog()
     }
 
     private func persistCriticalEntries() {
@@ -765,6 +784,29 @@ class DebugLogger {
             return "  - \(host): email=\(email) pass=\(pass) btn=\(btn) confidence=\(String(format: "%.0f%%", cal.confidence * 100)) success=\(cal.successCount) fail=\(cal.failCount)"
         }.joined(separator: "\n")
     }
+
+    private func startAutoPersist() {
+        autoPersistTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                self?.persistLatestLog()
+            }
+        }
+    }
+
+    func persistLatestLog() {
+        let tail = Array(entries.prefix(1000))
+        guard !tail.isEmpty else { return }
+        let lines = tail.reversed().map(\.exportLine).joined(separator: "\n")
+        let header = "=== PERSISTED DEBUG LOG (last \(tail.count) entries) ===\nTimestamp: \(DateFormatters.fullTimestamp.string(from: Date()))\nTotal logged: \(totalEntriesLogged) | In-memory: \(entries.count) | Errors: \(cachedErrorCount) | Warnings: \(cachedWarningCount)\n===\n\n"
+        try? (header + lines).write(to: persistentLogURL, atomically: true, encoding: .utf8)
+    }
+
+    func loadPersistedLatestLog() -> String {
+        (try? String(contentsOf: persistentLogURL, encoding: .utf8)) ?? "No persisted log found."
+    }
+
+    var persistedLogURL: URL { persistentLogURL }
 
     func handleMemoryPressure() {
         let beforeCount = entries.count

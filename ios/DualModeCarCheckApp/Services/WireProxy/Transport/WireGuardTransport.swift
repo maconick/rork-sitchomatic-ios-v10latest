@@ -112,12 +112,36 @@ class WireGuardSession {
         endpoint: String,
         keepalive: Int
     ) -> Bool {
-        guard let privKey = WireGuardCrypto.privateKey(from: privateKey) else {
-            lastError = "Invalid private key"
+        let trimmedPriv = privateKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPub = peerPubKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedPriv.isEmpty else {
+            lastError = "Private key is empty"
+            logger.log("WGSession: private key is empty", category: .vpn, level: .error)
             return false
         }
-        guard let pubKey = WireGuardCrypto.peerPublicKey(from: peerPubKey) else {
-            lastError = "Invalid peer public key"
+
+        guard Data(base64Encoded: trimmedPriv) != nil else {
+            lastError = "Private key is not valid base64 (length: \(trimmedPriv.count))"
+            logger.log("WGSession: private key base64 decode failed (\(trimmedPriv.count) chars)", category: .vpn, level: .error)
+            return false
+        }
+
+        guard let privKey = WireGuardCrypto.privateKey(from: trimmedPriv) else {
+            lastError = "Private key invalid Curve25519 key (decoded \(Data(base64Encoded: trimmedPriv)?.count ?? 0) bytes, need 32)"
+            logger.log("WGSession: private key Curve25519 init failed - decoded \(Data(base64Encoded: trimmedPriv)?.count ?? 0) bytes", category: .vpn, level: .error)
+            return false
+        }
+
+        guard !trimmedPub.isEmpty else {
+            lastError = "Peer public key is empty"
+            logger.log("WGSession: peer public key is empty", category: .vpn, level: .error)
+            return false
+        }
+
+        guard let pubKey = WireGuardCrypto.peerPublicKey(from: trimmedPub) else {
+            lastError = "Peer public key invalid (length: \(trimmedPub.count), decoded: \(Data(base64Encoded: trimmedPub)?.count ?? 0) bytes)"
+            logger.log("WGSession: peer public key Curve25519 init failed", category: .vpn, level: .error)
             return false
         }
 
@@ -125,15 +149,23 @@ class WireGuardSession {
         peerPublicKey = pubKey
 
         if let psk, !psk.isEmpty {
-            preSharedKey = Data(base64Encoded: psk)
+            let trimmedPSK = psk.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let pskData = Data(base64Encoded: trimmedPSK), pskData.count == 32 {
+                preSharedKey = pskData
+            } else {
+                logger.log("WGSession: preshared key decode failed or wrong size, ignoring", category: .vpn, level: .warning)
+                preSharedKey = nil
+            }
         }
 
-        let parts = endpoint.split(separator: ":")
-        guard parts.count == 2, let port = UInt16(parts[1]) else {
-            lastError = "Invalid endpoint format"
+        let trimmedEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmedEndpoint.split(separator: ":")
+        guard parts.count >= 2, let port = UInt16(parts.last!) else {
+            lastError = "Invalid endpoint format: \(endpoint)"
+            logger.log("WGSession: invalid endpoint format '\(endpoint)'", category: .vpn, level: .error)
             return false
         }
-        endpointHost = String(parts[0])
+        endpointHost = parts.dropLast().joined(separator: ":")
         endpointPort = port
         persistentKeepalive = keepalive
 
@@ -287,7 +319,7 @@ class WireGuardSession {
                 guard let keys = NoiseHandshake.parseResponse(responseData: data, state: state) else {
                     self.status = .failed
                     self.lastError = "Failed to parse handshake response"
-                    self.logger.log("WGSession: handshake response parse failed (\\(data.count) bytes, type: \\(data[0]))", category: .vpn, level: .error)
+                    self.logger.log("WGSession: handshake response parse failed (\(data.count) bytes, type: \(data[0]))", category: .vpn, level: .error)
                     return
                 }
 

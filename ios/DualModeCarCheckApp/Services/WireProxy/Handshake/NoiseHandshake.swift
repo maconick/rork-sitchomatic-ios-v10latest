@@ -89,6 +89,7 @@ nonisolated struct NoiseHandshake: Sendable {
 
         let state = HandshakeState(
             senderIndex: senderIndex,
+            staticPrivateKey: staticPrivateKey,
             ephemeralPrivateKey: ephemeral,
             chainingKey: chainingKey,
             hash: hash,
@@ -125,11 +126,12 @@ nonisolated struct NoiseHandshake: Sendable {
         let (ck1, _) = WireGuardCrypto.kdf2(key: chainingKey, input: sharedEphEph)
         chainingKey = ck1
 
-        guard let rekeyedPriv = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: state.ephemeralPrivateKey.rawRepresentation),
-              let sharedStaticEph = WireGuardCrypto.dh(
-            privateKey: rekeyedPriv,
+        guard let sharedStaticEph = WireGuardCrypto.dh(
+            privateKey: state.staticPrivateKey,
             publicKey: respEphKey
         ) else { return nil }
+        let (ck2, _) = WireGuardCrypto.kdf2(key: chainingKey, input: sharedStaticEph)
+        chainingKey = ck2
 
         let psk = state.preSharedKey ?? Data(repeating: 0, count: 32)
         let (ck3, tempKey, key3) = WireGuardCrypto.kdf3(key: chainingKey, input: psk)
@@ -138,7 +140,6 @@ nonisolated struct NoiseHandshake: Sendable {
 
         let encNothing = responseData[44..<60]
         guard let _ = WireGuardCrypto.aeadDecrypt(key: key3, counter: 0, ciphertext: Data(encNothing), aad: hash) else {
-            let _ = sharedStaticEph
             return nil
         }
         hash = WireGuardCrypto.mixHash(hash, Data(encNothing))
@@ -182,6 +183,7 @@ nonisolated struct NoiseHandshake: Sendable {
 
 nonisolated struct HandshakeState: Sendable {
     let senderIndex: UInt32
+    let staticPrivateKey: Curve25519.KeyAgreement.PrivateKey
     let ephemeralPrivateKey: Curve25519.KeyAgreement.PrivateKey
     let chainingKey: Data
     let hash: Data
