@@ -5,8 +5,8 @@ class TunnelDNSResolver {
     private var dnsServers: [UInt32] = []
     private var cache: [String: (ip: UInt32, expiry: Date)] = [:]
     private let cacheTTL: TimeInterval = 300
-    private let queryTimeoutSeconds: TimeInterval = 8
-    private let maxRetries: Int = 3
+    private let queryTimeoutSeconds: TimeInterval = 5
+    private let maxRetries: Int = 2
     private let logger = DebugLogger.shared
     private var pendingQueries: [UInt16: (String, CheckedContinuation<UInt32?, Never>)] = [:]
     var sendPacketHandler: ((Data) -> Void)?
@@ -20,11 +20,14 @@ class TunnelDNSResolver {
         let cloudflare = IPv4Packet.ipFromString("1.1.1.1") ?? 0x01010101
         let google = IPv4Packet.ipFromString("8.8.8.8") ?? 0x08080808
 
-        var servers: [UInt32] = [cloudflare, google]
+        var servers: [UInt32] = []
 
-        if let tunnelIP = IPv4Packet.ipFromString(dnsServer), tunnelIP != cloudflare, tunnelIP != google {
+        if let tunnelIP = IPv4Packet.ipFromString(dnsServer) {
             servers.append(tunnelIP)
         }
+
+        if !servers.contains(cloudflare) { servers.append(cloudflare) }
+        if !servers.contains(google) { servers.append(google) }
 
         self.dnsServers = servers
         let serverNames = servers.map { formatDNSIP($0) }.joined(separator: " → ")
@@ -59,7 +62,7 @@ class TunnelDNSResolver {
         for (serverIndex, server) in dnsServers.enumerated() {
             for attempt in 0..<maxRetries {
                 if attempt > 0 {
-                    try? await Task.sleep(for: .milliseconds(300 * attempt))
+                    try? await Task.sleep(for: .milliseconds(200 * attempt))
                 }
                 if let result = await sendDNSQuery(hostname: hostname, dnsServer: server) {
                     return result
@@ -96,7 +99,12 @@ class TunnelDNSResolver {
                         let result: UInt32? = addrData.withUnsafeBytes { ptr in
                             guard let sa = ptr.baseAddress?.assumingMemoryBound(to: sockaddr.self),
                                   sa.pointee.sa_family == AF_INET else { return nil }
-                            return ptr.baseAddress!.assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr.s_addr.bigEndian
+                            let raw = ptr.baseAddress!.assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr.s_addr
+                            let a = UInt32(raw & 0xFF)
+                            let b = UInt32((raw >> 8) & 0xFF)
+                            let c = UInt32((raw >> 16) & 0xFF)
+                            let d = UInt32((raw >> 24) & 0xFF)
+                            return (a << 24) | (b << 16) | (c << 8) | d
                         }
                         if let ip = result {
                             continuation.resume(returning: ip)
@@ -169,7 +177,15 @@ class TunnelDNSResolver {
         guard let (hostname, continuation) = pendingQueries.removeValue(forKey: queryID) else { return }
 
         guard rcode == 0 else {
-            logger.log("TunnelDNS: DNS error rcode=\(rcode) for \(hostname)", category: .vpn, level: .warning)
+            logger.log("TunnelDNS: DNS error rcode=\(rcode) for \(hostname) from \(ipPacket.header.sourceIP)", category: .vpn, level: .warning)
+            continuation.resume(returning: nil)
+            return
+        }
+
+        let anCount = Int(readBE16(udpPayload, offset: 6))
+
+        if anCount == 0 {
+            logger.log("TunnelDNS: empty answer (0 records) for \(hostname) from \(ipPacket.header.sourceIP)", category: .vpn, level: .warning)
             continuation.resume(returning: nil)
             return
         }
@@ -177,10 +193,10 @@ class TunnelDNSResolver {
         if let ip = parseDNSResponseForA(udpPayload) {
             cache[hostname] = (ip: ip, expiry: Date().addingTimeInterval(cacheTTL))
             let ipStr = "\((ip >> 24) & 0xFF).\((ip >> 16) & 0xFF).\((ip >> 8) & 0xFF).\(ip & 0xFF)"
-            logger.log("TunnelDNS: resolved \(hostname) → \(ipStr)", category: .vpn, level: .debug)
+            logger.log("TunnelDNS: resolved \(hostname) → \(ipStr) via \(ipPacket.header.sourceIP)", category: .vpn, level: .debug)
             continuation.resume(returning: ip)
         } else {
-            logger.log("TunnelDNS: no A record for \(hostname)", category: .vpn, level: .warning)
+            logger.log("TunnelDNS: no A record in \(anCount) answers for \(hostname) from \(ipPacket.header.sourceIP)", category: .vpn, level: .warning)
             continuation.resume(returning: nil)
         }
     }
@@ -240,20 +256,23 @@ class TunnelDNSResolver {
         }
 
         for _ in 0..<anCount {
-            offset = skipDNSName(data, offset: offset)
-            guard offset >= 0, offset + 10 <= data.count else { return nil }
+            let nameEnd = skipDNSName(data, offset: offset)
+            guard nameEnd >= 0, nameEnd + 10 <= data.count else { return nil }
+            offset = nameEnd
 
             let recordType = readBE16(data, offset: offset)
+            let recordClass = readBE16(data, offset: offset + 2)
             offset += 8
             let rdLength = Int(readBE16(data, offset: offset))
             offset += 2
 
-            if recordType == 1 && rdLength == 4 && offset + 4 <= data.count {
+            guard offset + rdLength <= data.count else { return nil }
+
+            if recordType == 1 && recordClass == 1 && rdLength == 4 {
                 return readBE32(data, offset: offset)
             }
 
             offset += rdLength
-            guard offset <= data.count else { return nil }
         }
 
         return nil
@@ -269,9 +288,11 @@ class TunnelDNSResolver {
                 return pos + 1
             }
             if (len & 0xC0) == 0xC0 {
+                guard pos + 1 < data.count else { return -1 }
                 return pos + 2
             }
             pos += 1 + len
+            guard pos <= data.count else { return -1 }
         }
         return -1
     }
@@ -300,5 +321,16 @@ class TunnelDNSResolver {
         udp[7] = UInt8(checksum & 0xFF)
 
         return udp
+    }
+
+    func verifyDNS() async -> Bool {
+        let testDomain = "nordvpn.com"
+        if let _ = await resolve(testDomain) {
+            logger.log("TunnelDNS: verification PASSED — resolved \(testDomain)", category: .vpn, level: .success)
+            cache.removeValue(forKey: testDomain)
+            return true
+        }
+        logger.log("TunnelDNS: verification FAILED — could not resolve \(testDomain)", category: .vpn, level: .error)
+        return false
     }
 }

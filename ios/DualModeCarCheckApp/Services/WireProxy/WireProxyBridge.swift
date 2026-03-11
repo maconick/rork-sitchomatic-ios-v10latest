@@ -98,6 +98,16 @@ class WireProxyBridge {
             status = .established
             connectedSince = Date()
             logger.log("WireProxyBridge: tunnel ESTABLISHED via \(config.peerEndpoint)", category: .vpn, level: .success)
+
+            let dnsOK = await dnsResolver.verifyDNS()
+            if !dnsOK {
+                logger.log("WireProxyBridge: DNS verification failed — tunnel up but DNS not resolving, will retry", category: .vpn, level: .warning)
+                try? await Task.sleep(for: .seconds(2))
+                let retryOK = await dnsResolver.verifyDNS()
+                if !retryOK {
+                    logger.log("WireProxyBridge: DNS still failing after retry — tunnel may have limited connectivity", category: .vpn, level: .error)
+                }
+            }
         } else {
             status = .failed
             lastError = wgSession.lastError ?? "Handshake timeout"
