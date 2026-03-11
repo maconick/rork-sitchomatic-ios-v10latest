@@ -17,7 +17,7 @@ class NetworkLayerService {
     var socks5Healthy: Bool = false
     var directHealthy: Bool = true
 
-    var activeMode: ConnectionMode = .dns
+    var activeMode: ConnectionMode = .wireguard
     var fallbackLog: [String] = []
 
     func resolveActiveConfig(for target: ProxyRotationService.ProxyTarget) async -> ActiveNetworkConfig {

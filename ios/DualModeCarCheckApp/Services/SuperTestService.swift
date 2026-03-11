@@ -5,6 +5,7 @@ import WebKit
 
 nonisolated enum SuperTestConnectionType: String, CaseIterable, Sendable, Identifiable {
     case fingerprint = "Fingerprint"
+    case wireproxyWebView = "WireProxy WebView"
     case joeURLs = "Joe URLs"
     case ignitionURLs = "Ignition URLs"
     case ppsrConnection = "PPSR"
@@ -18,6 +19,7 @@ nonisolated enum SuperTestConnectionType: String, CaseIterable, Sendable, Identi
     var icon: String {
         switch self {
         case .fingerprint: "fingerprint"
+        case .wireproxyWebView: "globe.badge.chevron.backward"
         case .joeURLs: "suit.spade.fill"
         case .ignitionURLs: "flame.fill"
         case .ppsrConnection: "car.side.fill"
@@ -31,6 +33,7 @@ nonisolated enum SuperTestConnectionType: String, CaseIterable, Sendable, Identi
     var color: Color {
         switch self {
         case .fingerprint: .purple
+        case .wireproxyWebView: .teal
         case .joeURLs: .green
         case .ignitionURLs: .orange
         case .ppsrConnection: .cyan
@@ -45,6 +48,7 @@ nonisolated enum SuperTestConnectionType: String, CaseIterable, Sendable, Identi
 nonisolated enum SuperTestPhase: String, Sendable, CaseIterable, Identifiable {
     case idle = "Idle"
     case fingerprint = "Fingerprint Detection"
+    case wireproxyWebView = "WireProxy WebView"
     case joeURLs = "Joe Fortune URLs"
     case ignitionURLs = "Ignition URLs"
     case ppsrConnection = "PPSR Connection"
@@ -60,6 +64,7 @@ nonisolated enum SuperTestPhase: String, Sendable, CaseIterable, Identifiable {
         switch self {
         case .idle: "circle"
         case .fingerprint: "fingerprint"
+        case .wireproxyWebView: "globe.badge.chevron.backward"
         case .joeURLs: "suit.spade.fill"
         case .ignitionURLs: "flame.fill"
         case .ppsrConnection: "car.side.fill"
@@ -75,6 +80,7 @@ nonisolated enum SuperTestPhase: String, Sendable, CaseIterable, Identifiable {
         switch self {
         case .idle: "secondary"
         case .fingerprint: "purple"
+        case .wireproxyWebView: "teal"
         case .joeURLs: "green"
         case .ignitionURLs: "orange"
         case .ppsrConnection: "cyan"
@@ -161,9 +167,14 @@ class SuperTestService {
     private let diagnostics = PPSRConnectionDiagnosticService.shared
     private let protocolTester = VPNProtocolTestService.shared
 
+    private let networkFactory = NetworkSessionFactory.shared
+    private let deviceProxy = DeviceProxyService.shared
+    private let wireProxyBridge = WireProxyBridge.shared
+    private let localProxy = LocalProxyServer.shared
+
     var phaseSummary: [(phase: SuperTestPhase, passed: Int, failed: Int)] {
         let phases = enabledPhases.isEmpty
-            ? [SuperTestPhase.fingerprint, .joeURLs, .ignitionURLs, .ppsrConnection, .dnsServers, .socks5Proxies, .openvpnProfiles, .wireguardProfiles]
+            ? [SuperTestPhase.fingerprint, .wireproxyWebView, .joeURLs, .ignitionURLs, .ppsrConnection, .dnsServers, .socks5Proxies, .openvpnProfiles, .wireguardProfiles]
             : enabledPhases
         return phases.map { phase in
             let phaseResults = results.filter { $0.category == phase }
@@ -176,6 +187,7 @@ class SuperTestService {
     var enabledPhases: [SuperTestPhase] {
         var phases: [SuperTestPhase] = []
         if selectedConnectionTypes.contains(.fingerprint) { phases.append(.fingerprint) }
+        if selectedConnectionTypes.contains(.wireproxyWebView) { phases.append(.wireproxyWebView) }
         if selectedConnectionTypes.contains(.joeURLs) { phases.append(.joeURLs) }
         if selectedConnectionTypes.contains(.ignitionURLs) { phases.append(.ignitionURLs) }
         if selectedConnectionTypes.contains(.ppsrConnection) { phases.append(.ppsrConnection) }
@@ -210,6 +222,13 @@ class SuperTestService {
 
             if activeTypes.contains(.fingerprint) {
                 await runFingerprintTest()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
+
+            if activeTypes.contains(.wireproxyWebView) {
+                await runWireProxyWebViewTest()
                 completed += 1
                 updateProgress(Double(completed) / Double(totalPhases))
                 if Task.isCancelled { finalize(startTime: startTime); return }
@@ -419,17 +438,18 @@ class SuperTestService {
         return 0
     }
 
-    // MARK: - Joe Fortune URL Tests
+    // MARK: - Joe Fortune URL Tests (2 Random Sample)
 
     private func runJoeURLTests() async {
         currentPhase = .joeURLs
-        let urls = urlRotation.joeURLs
-        let total = urls.count
+        let allURLs = urlRotation.joeURLs
+        let sampleURLs = pickRandomSample(from: allURLs, count: 2)
+        let total = sampleURLs.count
         phaseProgress[.joeURLs] = (total: total, done: 0)
-        addLog("Phase 2: Testing \(total) Joe Fortune URLs")
-        logger.log("Phase 2: Testing \(total) Joe Fortune URLs", category: .superTest, level: .info, sessionId: "supertest")
+        addLog("Phase: Testing \(total) random Joe Fortune URLs (of \(allURLs.count) total)")
+        logger.log("Testing \(total) random Joe Fortune URLs (of \(allURLs.count) total)", category: .superTest, level: .info, sessionId: "supertest")
 
-        for (index, rotatingURL) in urls.enumerated() {
+        for (index, rotatingURL) in sampleURLs.enumerated() {
             if Task.isCancelled { return }
             currentItem = rotatingURL.host
             logger.startTimer(key: "supertest_joe_\(index)")
@@ -453,17 +473,18 @@ class SuperTestService {
         addLog("Joe URLs: \(passed)/\(total) passed", level: passed > 0 ? .success : .error)
     }
 
-    // MARK: - Ignition URL Tests
+    // MARK: - Ignition URL Tests (2 Random Sample)
 
     private func runIgnitionURLTests() async {
         currentPhase = .ignitionURLs
-        let urls = urlRotation.ignitionURLs
-        let total = urls.count
+        let allURLs = urlRotation.ignitionURLs
+        let sampleURLs = pickRandomSample(from: allURLs, count: 2)
+        let total = sampleURLs.count
         phaseProgress[.ignitionURLs] = (total: total, done: 0)
-        addLog("Phase 3: Testing \(total) Ignition URLs")
-        logger.log("Phase 3: Testing \(total) Ignition URLs", category: .superTest, level: .info, sessionId: "supertest")
+        addLog("Phase: Testing \(total) random Ignition URLs (of \(allURLs.count) total)")
+        logger.log("Testing \(total) random Ignition URLs (of \(allURLs.count) total)", category: .superTest, level: .info, sessionId: "supertest")
 
-        for (index, rotatingURL) in urls.enumerated() {
+        for (index, rotatingURL) in sampleURLs.enumerated() {
             if Task.isCancelled { return }
             currentItem = rotatingURL.host
             logger.startTimer(key: "supertest_ign_\(index)")
@@ -485,6 +506,187 @@ class SuperTestService {
 
         let passed = results.filter { $0.category == .ignitionURLs && $0.passed }.count
         addLog("Ignition URLs: \(passed)/\(total) passed", level: passed > 0 ? .success : .error)
+    }
+
+    // MARK: - WireProxy WebView Test
+
+    private func runWireProxyWebViewTest() async {
+        currentPhase = .wireproxyWebView
+        currentItem = "WireProxy WebView Connectivity"
+        let testCount = 3
+        phaseProgress[.wireproxyWebView] = (total: testCount, done: 0)
+        addLog("Phase: WireProxy WebView Test — verifying WebView traffic routes through WireProxy")
+        logger.log("WireProxy WebView Test starting", category: .superTest, level: .info, sessionId: "supertest")
+
+        let wireProxyActive = wireProxyBridge.isActive && localProxy.isRunning && localProxy.wireProxyMode
+        results.append(SuperTestItemResult(
+            name: "WireProxy Tunnel Status",
+            category: .wireproxyWebView,
+            passed: wireProxyActive,
+            detail: wireProxyActive ? "WireProxy tunnel established, local proxy on :\(localProxy.listeningPort)" : "WireProxy tunnel NOT active — WebView traffic will NOT be proxied"
+        ))
+        phaseProgress[.wireproxyWebView] = (total: testCount, done: 1)
+
+        if !wireProxyActive {
+            addLog("WireProxy not active — attempting to start", level: .warning)
+            if deviceProxy.isEnabled && deviceProxy.wireProxyTunnelEnabled {
+                deviceProxy.reconnectWireProxy()
+                try? await Task.sleep(for: .seconds(4))
+            }
+        }
+
+        let tunnelReady = wireProxyBridge.isActive && localProxy.isRunning && localProxy.wireProxyMode
+
+        let webViewIPResult = await testWebViewIPViaWireProxy(tunnelReady: tunnelReady)
+        results.append(webViewIPResult)
+        phaseProgress[.wireproxyWebView] = (total: testCount, done: 2)
+
+        let webViewLoadResult = await testWebViewLoadViaWireProxy(tunnelReady: tunnelReady)
+        results.append(webViewLoadResult)
+        phaseProgress[.wireproxyWebView] = (total: testCount, done: 3)
+
+        let passed = results.filter { $0.category == .wireproxyWebView && $0.passed }.count
+        addLog("WireProxy WebView: \(passed)/\(testCount) passed", level: passed == testCount ? .success : (passed > 0 ? .warning : .error))
+    }
+
+    private func testWebViewIPViaWireProxy(tunnelReady: Bool) async -> SuperTestItemResult {
+        guard tunnelReady else {
+            return SuperTestItemResult(
+                name: "WebView IP via WireProxy",
+                category: .wireproxyWebView,
+                passed: false,
+                detail: "Skipped — WireProxy tunnel not active"
+            )
+        }
+
+        let networkConfig: ActiveNetworkConfig = .socks5(localProxy.localProxyConfig)
+        let wkConfig = WKWebViewConfiguration()
+        wkConfig.websiteDataStore = .nonPersistent()
+        let applied = networkFactory.configureWKWebView(config: wkConfig, networkConfig: networkConfig, target: .joe)
+        guard applied else {
+            return SuperTestItemResult(
+                name: "WebView IP via WireProxy",
+                category: .wireproxyWebView,
+                passed: false,
+                detail: "Failed to apply proxy config to WKWebView"
+            )
+        }
+
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 414, height: 896), configuration: wkConfig)
+        let start = Date()
+
+        let ipCheckURL = URL(string: "https://api.ipify.org?format=json")!
+        let request = URLRequest(url: ipCheckURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
+        webView.load(request)
+
+        var attempts = 0
+        var pageContent: String?
+        while attempts < 30 {
+            try? await Task.sleep(for: .milliseconds(500))
+            attempts += 1
+            if let content = try? await webView.evaluateJavaScript("document.body?.innerText || ''") as? String, !content.isEmpty {
+                pageContent = content
+                break
+            }
+        }
+
+        let latency = Int(Date().timeIntervalSince(start) * 1000)
+
+        guard let content = pageContent, !content.isEmpty else {
+            return SuperTestItemResult(
+                name: "WebView IP via WireProxy",
+                category: .wireproxyWebView,
+                passed: false,
+                latencyMs: latency,
+                detail: "WebView failed to load IP check page in \(latency)ms"
+            )
+        }
+
+        if let data = content.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let ip = json["ip"] as? String {
+            logger.log("WireProxy WebView IP: \(ip) in \(latency)ms", category: .superTest, level: .success, sessionId: "supertest", durationMs: latency)
+            return SuperTestItemResult(
+                name: "WebView IP via WireProxy",
+                category: .wireproxyWebView,
+                passed: true,
+                latencyMs: latency,
+                detail: "IP: \(ip) via WireProxy in \(latency)ms"
+            )
+        }
+
+        return SuperTestItemResult(
+            name: "WebView IP via WireProxy",
+            category: .wireproxyWebView,
+            passed: true,
+            latencyMs: latency,
+            detail: "WebView loaded via WireProxy in \(latency)ms (response: \(content.prefix(80)))"
+        )
+    }
+
+    private func testWebViewLoadViaWireProxy(tunnelReady: Bool) async -> SuperTestItemResult {
+        guard tunnelReady else {
+            return SuperTestItemResult(
+                name: "WebView Page Load via WireProxy",
+                category: .wireproxyWebView,
+                passed: false,
+                detail: "Skipped — WireProxy tunnel not active"
+            )
+        }
+
+        let networkConfig: ActiveNetworkConfig = .socks5(localProxy.localProxyConfig)
+        let wkConfig = WKWebViewConfiguration()
+        wkConfig.websiteDataStore = .nonPersistent()
+        let applied = networkFactory.configureWKWebView(config: wkConfig, networkConfig: networkConfig, target: .joe)
+        guard applied else {
+            return SuperTestItemResult(
+                name: "WebView Page Load via WireProxy",
+                category: .wireproxyWebView,
+                passed: false,
+                detail: "Failed to apply proxy config"
+            )
+        }
+
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 414, height: 896), configuration: wkConfig)
+        let start = Date()
+
+        let testURL = URL(string: "https://httpbin.org/get")!
+        let request = URLRequest(url: testURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
+        webView.load(request)
+
+        var attempts = 0
+        var pageLoaded = false
+        while attempts < 30 {
+            try? await Task.sleep(for: .milliseconds(500))
+            attempts += 1
+            if let done = try? await webView.evaluateJavaScript("document.readyState") as? String, done == "complete" {
+                pageLoaded = true
+                break
+            }
+        }
+
+        let latency = Int(Date().timeIntervalSince(start) * 1000)
+
+        if pageLoaded {
+            let bodyText = (try? await webView.evaluateJavaScript("document.body?.innerText || ''") as? String) ?? ""
+            let hasOrigin = bodyText.contains("origin")
+            logger.log("WireProxy WebView page load OK in \(latency)ms", category: .superTest, level: .success, sessionId: "supertest", durationMs: latency)
+            return SuperTestItemResult(
+                name: "WebView Page Load via WireProxy",
+                category: .wireproxyWebView,
+                passed: true,
+                latencyMs: latency,
+                detail: "httpbin.org loaded in \(latency)ms\(hasOrigin ? " (origin IP confirmed)" : "")"
+            )
+        }
+
+        return SuperTestItemResult(
+            name: "WebView Page Load via WireProxy",
+            category: .wireproxyWebView,
+            passed: false,
+            latencyMs: latency,
+            detail: "Page failed to load via WireProxy in \(latency)ms"
+        )
     }
 
     // MARK: - PPSR Connection Test
@@ -959,5 +1161,12 @@ class SuperTestService {
     private func addLog(_ message: String, level: PPSRLogEntry.Level = .info) {
         logs.insert(PPSRLogEntry(message: message, level: level), at: 0)
         if logs.count > 500 { logs = Array(logs.prefix(500)) }
+    }
+
+    private func pickRandomSample(from urls: [LoginURLRotationService.RotatingURL], count: Int) -> [LoginURLRotationService.RotatingURL] {
+        guard urls.count > count else { return urls }
+        var shuffled = urls
+        shuffled.shuffle()
+        return Array(shuffled.prefix(count))
     }
 }

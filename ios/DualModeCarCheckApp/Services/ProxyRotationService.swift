@@ -83,11 +83,11 @@ class ProxyRotationService {
     var rotateAfterDisabled: Bool = true
     var lastImportReport: ImportReport?
 
-    var joeConnectionMode: ConnectionMode = .dns
-    var ignitionConnectionMode: ConnectionMode = .dns
-    var ppsrConnectionMode: ConnectionMode = .dns
+    var joeConnectionMode: ConnectionMode = .wireguard
+    var ignitionConnectionMode: ConnectionMode = .wireguard
+    var ppsrConnectionMode: ConnectionMode = .wireguard
 
-    var unifiedConnectionMode: ConnectionMode = .dns {
+    var unifiedConnectionMode: ConnectionMode = .wireguard {
         didSet { syncUnifiedConnectionMode() }
     }
     var networkRegion: NetworkRegion = .usa {

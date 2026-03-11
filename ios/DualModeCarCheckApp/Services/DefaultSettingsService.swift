@@ -39,7 +39,12 @@ class DefaultSettingsService {
 
         proxyService.setConnectionMode(.wireguard, for: .joe)
         proxyService.setConnectionMode(.wireguard, for: .ignition)
-        proxyService.setConnectionMode(.dns, for: .ppsr)
+        proxyService.setConnectionMode(.wireguard, for: .ppsr)
+        proxyService.setUnifiedConnectionMode(.wireguard)
+
+        let deviceProxy = DeviceProxyService.shared
+        deviceProxy.wireProxyTunnelEnabled = true
+        deviceProxy.localProxyEnabled = true
 
         // IMPORTANT: These are default/example WireGuard configs bundled for first-run convenience.
     // Keys and endpoints below are placeholder values that ship in the binary.
