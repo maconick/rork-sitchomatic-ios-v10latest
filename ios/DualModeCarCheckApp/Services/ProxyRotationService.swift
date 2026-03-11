@@ -95,7 +95,7 @@ class ProxyRotationService {
     var unifiedConnectionMode: ConnectionMode = .wireguard {
         didSet { syncUnifiedConnectionMode() }
     }
-    var networkRegion: NetworkRegion = .usa {
+    var networkRegion: NetworkRegion = .au {
         didSet { persistNetworkRegion() }
     }
 

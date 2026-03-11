@@ -460,25 +460,27 @@ struct AutomationSettingsView: View {
     private var unifiedNetworkSection: some View {
         Group {
             Section {
-                HStack(spacing: 10) {
-                    Image(systemName: proxyService.networkRegion == .usa ? "flag.fill" : "globe.asia.australia.fill")
-                        .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Network Region").font(.body)
-                        Text("All connections use \(proxyService.networkRegion.label) configs").font(.caption2).foregroundStyle(.secondary)
+                if vm.isIgnitionMode {
+                    HStack(spacing: 10) {
+                        Image(systemName: proxyService.networkRegion == .usa ? "flag.fill" : "globe.asia.australia.fill")
+                            .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Ignition Region").font(.body)
+                            Text("Ignition connections use \(proxyService.networkRegion.label) configs").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { proxyService.networkRegion },
+                            set: { proxyService.networkRegion = $0 }
+                        )) {
+                            Text("USA").tag(NetworkRegion.usa)
+                            Text("AU").tag(NetworkRegion.au)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 120)
                     }
-                    Spacer()
-                    Picker("", selection: Binding(
-                        get: { proxyService.networkRegion },
-                        set: { proxyService.networkRegion = $0 }
-                    )) {
-                        Text("USA").tag(NetworkRegion.usa)
-                        Text("AU").tag(NetworkRegion.au)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 120)
+                    .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.networkRegion)
                 }
-                .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.networkRegion)
 
                 Picker(selection: Binding(
                     get: { proxyService.unifiedConnectionMode },
@@ -1021,6 +1023,7 @@ struct AutomationSettingsView: View {
                     get: { Int(vm.automationSettings.pageLoadTimeout) },
                     set: { vm.automationSettings.pageLoadTimeout = TimeInterval($0) }
                 )) {
+                    Text("12s").tag(12)
                     Text("15s").tag(15)
                     Text("20s").tag(20)
                     Text("30s").tag(30)

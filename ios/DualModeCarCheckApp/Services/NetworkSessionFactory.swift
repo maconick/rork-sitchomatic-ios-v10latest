@@ -196,10 +196,11 @@ class NetworkSessionFactory {
     }
 
     private func resolveEffectiveConfig(_ config: ActiveNetworkConfig) -> ActiveNetworkConfig {
+        if wireProxyBridge.isActive, localProxy.isRunning, localProxy.wireProxyMode {
+            return .socks5(localProxy.localProxyConfig)
+        }
+
         if deviceProxy.isEnabled {
-            if deviceProxy.isWireProxyActive, localProxy.isRunning, localProxy.wireProxyMode {
-                return .socks5(localProxy.localProxyConfig)
-            }
             if let localConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
                 return .socks5(localConfig)
             }
@@ -209,9 +210,6 @@ class NetworkSessionFactory {
         case .socks5:
             return config
         case .wireGuardDNS, .openVPNProxy:
-            if localProxy.isRunning, localProxy.wireProxyMode, wireProxyBridge.isActive {
-                return .socks5(localProxy.localProxyConfig)
-            }
             if localProxy.isRunning, localProxy.upstreamProxy != nil {
                 return .socks5(localProxy.localProxyConfig)
             }

@@ -20,7 +20,7 @@ class PPSRAutomationViewModel {
     var cards: [PPSRCard] = []
     var checks: [PPSRCheck] = []
     var testEmail: String = "dev@test.ppsr.gov.au"
-    var maxConcurrency: Int = 8
+    var maxConcurrency: Int = 4
     var isRunning: Bool = false
     var isPaused: Bool = false
     var isStopping: Bool = false

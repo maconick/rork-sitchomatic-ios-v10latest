@@ -15,7 +15,7 @@ class LoginViewModel {
     var globalLogs: [PPSRLogEntry] = []
     var connectionStatus: ConnectionStatus = .disconnected
     var activeTestCount: Int = 0
-    var maxConcurrency: Int = 8
+    var maxConcurrency: Int = 4
     var debugMode: Bool = false
     var stealthEnabled: Bool = true
     var targetSite: LoginTargetSite = .joefortune

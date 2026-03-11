@@ -23,7 +23,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var trueDetectionIgnoreClassNames: Bool = true
 
     // MARK: - Page Loading
-    var pageLoadTimeout: TimeInterval = 90
+    var pageLoadTimeout: TimeInterval = 12
     var pageLoadRetries: Int = 3
     var retryBackoffMultiplier: Double = 2.0
     var waitForJSRenderMs: Int = 4000
@@ -108,7 +108,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var maxScreenshotRetention: Int = 500
 
     // MARK: - Concurrency
-    var maxConcurrency: Int = 8
+    var maxConcurrency: Int = 4
     var batchDelayBetweenStartsMs: Int = 0
     var connectionTestBeforeBatch: Bool = false
 

@@ -37,7 +37,9 @@ struct DeviceNetworkSettingsView: View {
             if proxyService.unifiedConnectionMode == .wireguard {
                 wireProxyServerSection
             }
-            ignitionRegionSection
+            if LoginURLRotationService.shared.isIgnitionMode {
+                ignitionRegionSection
+            }
             nordVPNSection
             endpointConfigSection
         }

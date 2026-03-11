@@ -6,6 +6,8 @@ class TunnelDNSResolver {
     private var fallbackDNSIP: UInt32 = 0
     private var cache: [String: (ip: UInt32, expiry: Date)] = [:]
     private let cacheTTL: TimeInterval = 300
+    private let queryTimeoutSeconds: TimeInterval = 5
+    private let maxRetries: Int = 2
     private let logger = DebugLogger.shared
     private var pendingQueries: [UInt16: (String, CheckedContinuation<UInt32?, Never>)] = [:]
     var sendPacketHandler: ((Data) -> Void)?
@@ -39,12 +41,28 @@ class TunnelDNSResolver {
 
         cache.removeValue(forKey: hostname)
 
-        if let result = await sendDNSQuery(hostname: hostname, dnsServer: dnsServerIP) {
-            return result
+        for attempt in 0..<maxRetries {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(300 * attempt))
+            }
+            if let result = await sendDNSQuery(hostname: hostname, dnsServer: dnsServerIP) {
+                return result
+            }
         }
 
-        logger.log("TunnelDNS: primary DNS failed for \(hostname), trying fallback", category: .vpn, level: .warning)
-        return await sendDNSQuery(hostname: hostname, dnsServer: fallbackDNSIP)
+        logger.log("TunnelDNS: primary DNS failed for \(hostname) after \(maxRetries) attempts, trying fallback", category: .vpn, level: .warning)
+
+        for attempt in 0..<maxRetries {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(300 * attempt))
+            }
+            if let result = await sendDNSQuery(hostname: hostname, dnsServer: fallbackDNSIP) {
+                return result
+            }
+        }
+
+        logger.log("TunnelDNS: all DNS attempts exhausted for \(hostname)", category: .vpn, level: .error)
+        return nil
     }
 
     private func sendDNSQuery(hostname: String, dnsServer: UInt32) async -> UInt32? {
@@ -72,9 +90,9 @@ class TunnelDNSResolver {
             sendPacketHandler?(ipPacket)
 
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: .seconds(self.queryTimeoutSeconds))
                 if let pending = self.pendingQueries.removeValue(forKey: queryID) {
-                    self.logger.log("TunnelDNS: timeout resolving \(hostname) via \(self.formatDNSIP(dnsServer))", category: .vpn, level: .warning)
+                    self.logger.log("TunnelDNS: timeout resolving \(hostname) via \(self.formatDNSIP(dnsServer)) after \(Int(self.queryTimeoutSeconds))s", category: .vpn, level: .warning)
                     pending.1.resume(returning: nil)
                 }
             }
