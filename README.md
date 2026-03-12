@@ -4,6 +4,15 @@ Native iOS app built in Swift and SwiftUI for multi-mode networked automation, l
 
 This README reflects a deep codebase review of the current app target under `ios/Sitchomatic`.
 
+## Recent changes
+
+- Sitchomatic branding now replaces the older DualModeCarCheck naming across the app target, project references, entitlements, and test targets.
+- The main menu now includes a dedicated Proxy Manager launcher in the bottom-right quadrant.
+- Proxy Manager supports named sets of a single type (`SOCKS5 Proxy`, `WireGuard Config`, or `OpenVPN Config`), up to 10 items per set, with optional `1 Server Per Set` routing once 4+ sets are active.
+- IP routing terminology has been reworked into `Separate IP per Session` and `App-Wide United IP`.
+- WireProxy is now documented as its own WireGuard-only network section, and the WireGuard tunnel dashboard link appears only when the tunnel is actually active.
+- The localhost proxy server now allows up to 500 concurrent connections for higher-burst runs.
+
 ## What the app currently is
 
 Sitchomatic is a single iOS application with one main SwiftUI target that routes into multiple operational modes from a custom main menu. The app combines:
@@ -34,7 +43,7 @@ Sitchomatic is a single iOS application with one main SwiftUI target that routes
 | Views | 62 |
 | ViewModels | 11 |
 | Models | 32 |
-| Services | 72 |
+| Services | 82 |
 | Utilities | 11 |
 | Persistence | UserDefaults, documents-based vault, NSUbiquitousKeyValueStore sync, export/import JSON |
 | Networking | URLSession, WebKit, proxy routing, WireGuard/OpenVPN/SOCKS5 selection |
@@ -106,7 +115,7 @@ The current `ActiveAppMode` enum contains:
 - animated mode zones
 - profile switcher for `Nick` / `Poli`
 - profile-selection requirement on first launch
-- quick entry into Joe, Ignition, PPSR, Split Test, Dual Find, Settings & Testing, and Proxy Manager
+- quick entry into Joe, Ignition, PPSR, Split Test, Dual Find, Settings & Testing, and a dedicated bottom-right Proxy Manager launcher
 
 The menu is not a standard tab launcher; it is the app’s mode switchboard.
 
@@ -203,7 +212,7 @@ Sections currently include:
 
 ### 4. Proxy Manager
 
-`ProxyManagerView.swift` and `ProxyManagerViewModel.swift` add a second, set-based config management system separate from the older per-target proxy lists.
+`ProxyManagerView.swift` and `ProxyManagerViewModel.swift` add a dedicated, set-based config management system reachable from the bottom-right of the main menu, separate from the older per-target proxy lists.
 
 Current behavior verified from code:
 
@@ -219,7 +228,9 @@ Current behavior verified from code:
 - WireGuard file import and pasted config import are supported
 - OpenVPN file import and pasted config import are supported
 - `1 Server Per Set` becomes available only when 4+ active sets exist
+- session-to-set assignment follows active set order when `1 Server Per Set` is enabled
 - per-session routing can draw from different active sets when enabled
+- proxy-set state and the `1 Server Per Set` toggle persist locally in `UserDefaults`
 
 ### 5. Device-wide network settings
 
@@ -239,7 +250,11 @@ Verified features:
   - rotate now
   - rotation log
 - unified connection mode selection
+- WireProxy server is a separate section from the IP routing controls
 - WireProxy section shown only for WireGuard mode
+- Proxy Dashboard appears when the local proxy server is running
+- WireGuard tunnel dashboard link appears only when the WireProxy tunnel is active
+- local localhost SOCKS5 forwarder currently allows up to 500 concurrent connections
 - NordVPN / endpoint / DNS / VPN import surfaces
 - file importing for VPN/WireGuard configs
 
@@ -480,7 +495,9 @@ It also supports a second routing layer:
 - `Separate IP per Session`
 - `App-Wide United IP`
 
-When device-wide United IP is active, `DeviceProxyService` becomes the top-level routing authority and can route traffic through local proxy or WireProxy bridge logic.
+When device-wide United IP is active, `DeviceProxyService` becomes the top-level routing authority. In WireGuard mode, `NetworkSessionFactory` prioritizes the localhost WireProxy path when the tunnel is active; otherwise the app falls back through its protected SOCKS5 routing paths.
+
+The localhost proxy server currently caps at 500 concurrent connections.
 
 ## AI / ML and automation support
 
