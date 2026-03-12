@@ -68,7 +68,7 @@ class NetworkSessionFactory {
                 logger.log("NetworkFactory: using local proxy 127.0.0.1:\(localConfig.port) → upstream \(config.label) for \(target.rawValue)", category: .network, level: .debug)
                 return .socks5(localConfig)
             }
-            logger.log("NetworkFactory: using unified IP → \(config.label) for \(target.rawValue)", category: .network, level: .debug)
+            logger.log("NetworkFactory: using united IP → \(config.label) for \(target.rawValue)", category: .network, level: .debug)
             return config
         }
 

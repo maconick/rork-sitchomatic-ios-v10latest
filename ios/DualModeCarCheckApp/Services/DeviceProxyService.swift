@@ -218,7 +218,7 @@ class DeviceProxyService {
             }
         }
 
-        logger.log("DeviceProxy: Unified IP mode ENABLED (localProxy: \(localProxyEnabled), autoFailover: \(autoFailoverEnabled))", category: .network, level: .info)
+        logger.log("DeviceProxy: App-Wide United IP ENABLED (localProxy: \(localProxyEnabled), autoFailover: \(autoFailoverEnabled))", category: .network, level: .info)
     }
 
     private func deactivateUnifiedMode() {
@@ -232,7 +232,7 @@ class DeviceProxyService {
         isActive = false
         localProxy.stop()
         wireProxyBridge.stop()
-        logger.log("DeviceProxy: Unified IP mode DISABLED", category: .network, level: .info)
+        logger.log("DeviceProxy: App-Wide United IP DISABLED", category: .network, level: .info)
     }
 
     private func handleUpstreamFailover() {

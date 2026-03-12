@@ -446,7 +446,7 @@ struct IPScoreTestView: View {
                 }
 
                 if deviceProxy.isEnabled {
-                    Section("Unified IP Mode") {
+                    Section("App-Wide United IP") {
                         LabeledContent("Status") {
                             Text(deviceProxy.isActive ? "Active" : "Inactive")
                                 .foregroundStyle(deviceProxy.isActive ? .green : .red)
