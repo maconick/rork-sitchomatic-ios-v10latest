@@ -22,6 +22,10 @@ class LocalProxyConnection {
     private var targetPort: UInt16 = 0
     private var timeoutWork: DispatchWorkItem?
     private var pooledConnectionId: UUID?
+    private var authRetryCount: Int = 0
+    private let maxAuthRetries: Int = 2
+    private var upstreamHalfClosed: Bool = false
+    private var clientHalfClosed: Bool = false
 
     init(id: UUID, clientConnection: NWConnection, upstream: ProxyConfig?, queue: DispatchQueue, server: LocalProxyServer, timeoutSeconds: TimeInterval = 30) {
         self.id = id
@@ -341,6 +345,13 @@ class LocalProxyConnection {
                 guard let self, !self.isCancelled else { return }
                 if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
                 guard let data, data.count == 2, data[1] == 0x00 else {
+                    if self.authRetryCount < self.maxAuthRetries, let proxy = self.upstream {
+                        self.authRetryCount += 1
+                        self.upstreamConnection?.cancel()
+                        self.upstreamConnection = nil
+                        self.retryUpstreamWithNoAuth(proxy: proxy, targetHost: targetHost, targetPort: targetPort, addressType: addressType)
+                        return
+                    }
                     self.errorType = .handshake
                     self.sendSOCKS5Error(0x01)
                     return
@@ -348,6 +359,38 @@ class LocalProxyConnection {
                 self.sendUpstreamConnectRequest(targetHost: targetHost, targetPort: targetPort, addressType: addressType)
             }
         }
+    }
+
+    private func retryUpstreamWithNoAuth(proxy: ProxyConfig, targetHost: String, targetPort: UInt16, addressType: UInt8) {
+        let proxyEndpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(proxy.host),
+            port: NWEndpoint.Port(integerLiteral: UInt16(proxy.port))
+        )
+        let conn = NWConnection(to: proxyEndpoint, using: .tcp)
+        self.upstreamConnection = conn
+
+        conn.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isCancelled else { return }
+                switch state {
+                case .ready:
+                    let noAuthGreeting = Data([0x05, 0x01, 0x00])
+                    conn.send(content: noAuthGreeting, completion: .contentProcessed { [weak self] error in
+                        Task { @MainActor [weak self] in
+                            guard let self, !self.isCancelled else { return }
+                            if error != nil { self.errorType = .handshake; self.sendSOCKS5Error(0x01); return }
+                            self.readUpstreamGreetingResponse(proxy: proxy, targetHost: targetHost, targetPort: targetPort, addressType: addressType)
+                        }
+                    })
+                case .failed:
+                    self.errorType = .connection
+                    self.sendSOCKS5Error(0x05)
+                default:
+                    break
+                }
+            }
+        }
+        conn.start(queue: queue)
     }
 
     private func sendUpstreamConnectRequest(targetHost: String, targetPort: UInt16, addressType: UInt8) {
@@ -440,16 +483,39 @@ class LocalProxyConnection {
                                 self.finish(error: true)
                                 return
                             }
-                            self.relayData(from: source, to: destination, label: label, isUpload: isUpload)
+                            if isComplete {
+                                self.handleHalfClose(isUpload: isUpload, destination: destination)
+                            } else {
+                                self.relayData(from: source, to: destination, label: label, isUpload: isUpload)
+                            }
                         }
                     })
-                } else if isComplete || error != nil {
-                    if error != nil { self.errorType = .relay }
-                    self.finish(error: error != nil)
+                } else if isComplete {
+                    self.handleHalfClose(isUpload: isUpload, destination: destination)
+                } else if error != nil {
+                    self.errorType = .relay
+                    self.finish(error: true)
                 } else {
                     self.relayData(from: source, to: destination, label: label, isUpload: isUpload)
                 }
             }
         }
+    }
+
+    private func handleHalfClose(isUpload: Bool, destination: NWConnection) {
+        if isUpload {
+            clientHalfClosed = true
+        } else {
+            upstreamHalfClosed = true
+        }
+
+        destination.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isCancelled else { return }
+                if self.clientHalfClosed && self.upstreamHalfClosed {
+                    self.finish(error: false)
+                }
+            }
+        })
     }
 }

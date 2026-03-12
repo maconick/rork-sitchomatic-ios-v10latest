@@ -44,6 +44,8 @@ class NetworkSessionFactory {
 
     private let proxyService = ProxyRotationService.shared
     private let deviceProxy = DeviceProxyService.shared
+    private let scoring = ProxyScoringService.shared
+    private let resilience = NetworkResilienceService.shared
     private let logger = DebugLogger.shared
 
     private var joeWGIndex: Int = 0
@@ -265,22 +267,45 @@ class NetworkSessionFactory {
         let resolved = resolveEffectiveConfig(config)
         guard case .socks5(let proxy) = resolved else { return config }
 
+        let startTime = CFAbsoluteTimeGetCurrent()
         let alive = await quickSOCKS5Handshake(host: proxy.host, port: UInt16(proxy.port))
+        let latencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+
         if alive {
-            logger.log("Preflight: proxy \(proxy.displayString) is alive", category: .proxy, level: .debug)
+            scoring.recordSuccess(proxyId: proxy.id, latencyMs: latencyMs)
+            logger.log("Preflight: proxy \(proxy.displayString) is alive (\(latencyMs)ms)", category: .proxy, level: .debug)
             return config
         }
 
+        scoring.recordFailure(proxyId: proxy.id)
         logger.log("Preflight: proxy \(proxy.displayString) DEAD — rotating to next for \(target.rawValue)", category: .proxy, level: .warning)
         proxyService.markProxyFailed(proxy)
 
-        if let replacement = proxyService.nextWorkingProxy(for: target) {
-            let replacementAlive = await quickSOCKS5Handshake(host: replacement.host, port: UInt16(replacement.port))
+        let workingProxies = proxyService.proxies(for: target).filter { $0.isWorking || $0.lastTested == nil }
+        if let scoredReplacement = scoring.bestProxy(from: workingProxies) {
+            let replStartTime = CFAbsoluteTimeGetCurrent()
+            let replacementAlive = await quickSOCKS5Handshake(host: scoredReplacement.host, port: UInt16(scoredReplacement.port))
+            let replLatency = Int((CFAbsoluteTimeGetCurrent() - replStartTime) * 1000)
+
             if replacementAlive {
-                logger.log("Preflight: replacement proxy \(replacement.displayString) is alive", category: .proxy, level: .info)
-                return .socks5(replacement)
+                scoring.recordSuccess(proxyId: scoredReplacement.id, latencyMs: replLatency)
+                logger.log("Preflight: scored replacement \(scoredReplacement.displayString) is alive (\(replLatency)ms)", category: .proxy, level: .info)
+                return .socks5(scoredReplacement)
             }
-            proxyService.markProxyFailed(replacement)
+            scoring.recordFailure(proxyId: scoredReplacement.id)
+            proxyService.markProxyFailed(scoredReplacement)
+        }
+
+        if let fallback = proxyService.nextWorkingProxy(for: target) {
+            let fbStartTime = CFAbsoluteTimeGetCurrent()
+            let fbAlive = await quickSOCKS5Handshake(host: fallback.host, port: UInt16(fallback.port))
+            let fbLatency = Int((CFAbsoluteTimeGetCurrent() - fbStartTime) * 1000)
+            if fbAlive {
+                scoring.recordSuccess(proxyId: fallback.id, latencyMs: fbLatency)
+                return .socks5(fallback)
+            }
+            scoring.recordFailure(proxyId: fallback.id)
+            proxyService.markProxyFailed(fallback)
         }
 
         logger.log("Preflight: no working proxy found for \(target.rawValue) — returning original config", category: .proxy, level: .error)

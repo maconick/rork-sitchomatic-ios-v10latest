@@ -184,6 +184,8 @@ class LocalProxyServer {
     }
 
     func connectionFinished(id: UUID, bytesRelayed: UInt64, bytesUp: UInt64, bytesDown: UInt64, hadError: Bool, errorType: ConnectionErrorType, targetHost: String) {
+        let resilience = NetworkResilienceService.shared
+
         if let info = activeConnectionDetails[id] {
             let duration = Date().timeIntervalSince(info.connectedAt)
             connectionDurations.append(duration)
@@ -191,6 +193,13 @@ class LocalProxyServer {
                 connectionDurations = Array(connectionDurations.suffix(100))
             }
             stats.averageConnectionDurationMs = connectionDurations.reduce(0, +) / Double(connectionDurations.count) * 1000
+
+            let latencyMs = Int(duration * 1000)
+            resilience.recordLatencySample(latencyMs: latencyMs, hadError: hadError)
+        }
+
+        if bytesRelayed > 0 {
+            resilience.recordBandwidthSample(bytes: bytesRelayed)
         }
 
         connections.removeValue(forKey: id)

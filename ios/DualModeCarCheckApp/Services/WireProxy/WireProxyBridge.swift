@@ -41,6 +41,10 @@ class WireProxyBridge {
     private var tunnelConnections: [UUID: WireProxyTunnelConnection] = [:]
     private var reconnectAttempts: Int = 0
     private let maxReconnectAttempts: Int = 3
+    private var healthCheckTimer: Timer?
+    private let healthCheckInterval: TimeInterval = 20
+    private var pendingReconnectHosts: [(host: String, port: UInt16)] = []
+    private var isReconnecting: Bool = false
 
     var isActive: Bool { status == .established }
 
@@ -97,6 +101,8 @@ class WireProxyBridge {
         if wgSession.isEstablished {
             status = .established
             connectedSince = Date()
+            reconnectAttempts = 0
+            dnsResolver.startBackgroundRefresh()
             logger.log("WireProxyBridge: tunnel ESTABLISHED via \(config.peerEndpoint)", category: .vpn, level: .success)
 
             let dnsOK = await dnsResolver.verifyDNS()
@@ -108,6 +114,8 @@ class WireProxyBridge {
                     logger.log("WireProxyBridge: DNS still failing after retry — tunnel may have limited connectivity", category: .vpn, level: .error)
                 }
             }
+
+            startHealthCheck()
         } else {
             status = .failed
             lastError = wgSession.lastError ?? "Handshake timeout"
@@ -116,10 +124,14 @@ class WireProxyBridge {
     }
 
     func stop() {
+        stopHealthCheck()
+        dnsResolver.stopBackgroundRefresh()
+
         for conn in tunnelConnections.values {
             conn.cancel()
         }
         tunnelConnections.removeAll()
+        pendingReconnectHosts.removeAll()
 
         tcpManager.shutdown()
         dnsResolver.clearCache()
@@ -128,8 +140,114 @@ class WireProxyBridge {
         status = .stopped
         connectedSince = nil
         activeConfig = nil
+        isReconnecting = false
         stats = WireProxyStats()
         logger.log("WireProxyBridge: stopped", category: .vpn, level: .info)
+    }
+
+    func reconnectPreservingSessions() async {
+        guard let config = activeConfig, !isReconnecting else { return }
+        isReconnecting = true
+        status = .reconnecting
+
+        pendingReconnectHosts = tunnelConnections.values.map { ($0.targetHost, $0.targetPort) }
+        let preservedStats = stats
+
+        logger.log("WireProxyBridge: reconnecting — preserving \(pendingReconnectHosts.count) session targets", category: .vpn, level: .warning)
+
+        for conn in tunnelConnections.values {
+            conn.cancel()
+        }
+        tunnelConnections.removeAll()
+        tcpManager.shutdown()
+        wgSession.disconnect()
+
+        try? await Task.sleep(for: .seconds(1))
+
+        let address = config.interfaceAddress.split(separator: "/").first.map(String.init) ?? config.interfaceAddress
+        guard let ip = IPv4Packet.ipFromString(address) else {
+            status = .failed
+            lastError = "Invalid interface address on reconnect"
+            isReconnecting = false
+            return
+        }
+        localIP = ip
+
+        tcpManager.configure(localIP: localIP)
+        tcpManager.sendPacketHandler = { [weak self] packet in
+            self?.wgSession.sendPacket(packet)
+        }
+
+        wgSession.onPacketReceived = { [weak self] ipData in
+            self?.handleTunnelPacket(ipData)
+        }
+
+        let configured = wgSession.configure(
+            privateKey: config.interfacePrivateKey,
+            peerPublicKey: config.peerPublicKey,
+            preSharedKey: config.peerPreSharedKey,
+            endpoint: config.peerEndpoint,
+            keepalive: config.peerPersistentKeepalive ?? 25
+        )
+
+        guard configured else {
+            status = .failed
+            lastError = "Reconnect configuration failed"
+            isReconnecting = false
+            return
+        }
+
+        await wgSession.connect()
+        try? await Task.sleep(for: .seconds(3))
+
+        if wgSession.isEstablished {
+            status = .established
+            stats = preservedStats
+            reconnectAttempts = 0
+            dnsResolver.startBackgroundRefresh()
+            startHealthCheck()
+
+            logger.log("WireProxyBridge: reconnect SUCCEEDED — tunnel re-established, \(pendingReconnectHosts.count) sessions were active", category: .vpn, level: .success)
+            pendingReconnectHosts.removeAll()
+        } else {
+            reconnectAttempts += 1
+            if reconnectAttempts < maxReconnectAttempts {
+                logger.log("WireProxyBridge: reconnect attempt \(reconnectAttempts)/\(maxReconnectAttempts) failed, retrying...", category: .vpn, level: .warning)
+                isReconnecting = false
+                await reconnectPreservingSessions()
+                return
+            }
+            status = .failed
+            lastError = "Reconnect failed after \(maxReconnectAttempts) attempts"
+            logger.log("WireProxyBridge: reconnect FAILED after \(maxReconnectAttempts) attempts", category: .vpn, level: .error)
+        }
+
+        isReconnecting = false
+    }
+
+    private func startHealthCheck() {
+        stopHealthCheck()
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: healthCheckInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkTunnelHealth()
+            }
+        }
+    }
+
+    private func stopHealthCheck() {
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+    }
+
+    private func checkTunnelHealth() {
+        guard status == .established else { return }
+
+        if !wgSession.isEstablished {
+            logger.log("WireProxyBridge: health check detected tunnel DOWN — initiating reconnect", category: .vpn, level: .error)
+            Task {
+                await reconnectPreservingSessions()
+            }
+        }
     }
 
     func handleSOCKS5Connection(
@@ -217,6 +335,7 @@ class WireProxyBridge {
     var wgSessionStatus: WGSessionStatus { wgSession.status }
     var wgSessionStats: WGSessionStats { wgSession.stats }
     var dnsCacheSize: Int { dnsResolver.cacheSize }
+    var reconnectCount: Int { reconnectAttempts }
 
     var uptimeString: String {
         guard let since = connectedSince else { return "--:--" }

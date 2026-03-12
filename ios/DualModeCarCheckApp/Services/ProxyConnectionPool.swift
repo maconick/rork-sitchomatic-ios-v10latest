@@ -9,6 +9,8 @@ nonisolated struct PooledConnectionInfo: Sendable {
     var lastUsedAt: Date
     var bytesTransferred: UInt64
     var isIdle: Bool
+    var lastKeepaliveAt: Date?
+    var keepaliveFailures: Int = 0
 }
 
 @Observable
@@ -24,20 +26,53 @@ class ProxyConnectionPool {
     var maxPoolSize: Int = 20
     var idleTimeoutSeconds: TimeInterval = 60
     var connectionTTLSeconds: TimeInterval = 300
+    var keepaliveIntervalSeconds: TimeInterval = 15
+    var maxKeepaliveFailures: Int = 2
 
     private var upstreamConnections: [UUID: NWConnection] = [:]
     private var cleanupTimer: Timer?
+    private var keepaliveTimer: Timer?
     private let logger = DebugLogger.shared
     private let queue = DispatchQueue(label: "proxy-connection-pool", qos: .userInitiated)
 
     private var cleanupTimerStarted = false
+    private var prewarmTasks: [UUID: Task<Void, Never>] = [:]
 
     init() {}
+
+    func prewarmConnections(count: Int, upstream: ProxyConfig?, targetHost: String = "warmup", targetPort: UInt16 = 443) {
+        guard count > 0 else { return }
+        let toWarm = min(count, maxPoolSize - pooledConnections.count)
+        guard toWarm > 0 else {
+            logger.log("ConnectionPool: prewarm skipped — pool at capacity", category: .proxy, level: .debug)
+            return
+        }
+
+        logger.log("ConnectionPool: pre-warming \(toWarm) connections via \(upstream?.displayString ?? "direct")", category: .proxy, level: .info)
+
+        for i in 0..<toWarm {
+            let taskId = UUID()
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(for: .milliseconds(50 * i))
+                self.acquireUpstream(targetHost: targetHost, targetPort: targetPort, upstream: upstream) { [weak self] conn, poolId in
+                    guard let self else { return }
+                    if let poolId {
+                        self.releaseConnection(id: poolId, hadError: false)
+                        self.logger.log("ConnectionPool: pre-warmed connection \(poolId.uuidString.prefix(8))", category: .proxy, level: .trace)
+                    }
+                }
+                self.prewarmTasks.removeValue(forKey: taskId)
+            }
+            prewarmTasks[taskId] = task
+        }
+    }
 
     func acquireUpstream(targetHost: String, targetPort: UInt16, upstream: ProxyConfig?, completion: @escaping (NWConnection?, UUID?) -> Void) {
         if !cleanupTimerStarted {
             cleanupTimerStarted = true
             startCleanupTimer()
+            startKeepaliveTimer()
         }
         let poolKey = "\(targetHost):\(targetPort)"
 
@@ -146,6 +181,8 @@ class ProxyConnectionPool {
     }
 
     func drainPool() {
+        for task in prewarmTasks.values { task.cancel() }
+        prewarmTasks.removeAll()
         for (id, _) in upstreamConnections {
             upstreamConnections[id]?.cancel()
         }
@@ -154,6 +191,8 @@ class ProxyConnectionPool {
         totalPoolHits = 0
         totalPoolMisses = 0
         totalEvictions = 0
+        keepaliveTimer?.invalidate()
+        keepaliveTimer = nil
         logger.log("ConnectionPool: drained all connections", category: .proxy, level: .info)
     }
 
@@ -201,6 +240,47 @@ class ProxyConnectionPool {
             Task { @MainActor [weak self] in
                 self?.cleanupExpiredConnections()
             }
+        }
+    }
+
+    private func startKeepaliveTimer() {
+        keepaliveTimer?.invalidate()
+        keepaliveTimer = Timer.scheduledTimer(withTimeInterval: keepaliveIntervalSeconds, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.probeIdleConnections()
+            }
+        }
+    }
+
+    private func probeIdleConnections() {
+        let idleIds = pooledConnections.filter { $0.value.isIdle }.map { $0.key }
+        guard !idleIds.isEmpty else { return }
+
+        for id in idleIds {
+            guard let conn = upstreamConnections[id], conn.state == .ready else {
+                evictConnection(id: id, reason: "keepalive: not ready")
+                continue
+            }
+
+            conn.send(content: Data(), completion: .contentProcessed { [weak self] error in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if error != nil {
+                        guard var existingInfo = self.pooledConnections[id] else { return }
+                        existingInfo.keepaliveFailures += 1
+                        if existingInfo.keepaliveFailures >= self.maxKeepaliveFailures {
+                            self.evictConnection(id: id, reason: "keepalive: \(existingInfo.keepaliveFailures) consecutive failures")
+                        } else {
+                            self.pooledConnections[id] = existingInfo
+                        }
+                    } else {
+                        guard var existingInfo = self.pooledConnections[id] else { return }
+                        existingInfo.lastKeepaliveAt = Date()
+                        existingInfo.keepaliveFailures = 0
+                        self.pooledConnections[id] = existingInfo
+                    }
+                }
+            })
         }
     }
 

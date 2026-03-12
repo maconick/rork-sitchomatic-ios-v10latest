@@ -5,8 +5,8 @@ import Network
 class WireProxyTunnelConnection {
     let id: UUID
     private let clientConnection: NWConnection
-    private let targetHost: String
-    private let targetPort: UInt16
+    let targetHost: String
+    let targetPort: UInt16
     private let queue: DispatchQueue
     private weak var server: LocalProxyServer?
     private weak var bridge: WireProxyBridge?

@@ -13,6 +13,10 @@ class TunnelDNSResolver {
     private var sourceIP: UInt32 = 0
     private var nextQueryID: UInt16 = 1
     private var inflightHostnames: [String: Task<UInt32?, Never>] = [:]
+    private var queryFrequency: [String: Int] = [:]
+    private var backgroundRefreshTimer: Timer?
+    private let backgroundRefreshInterval: TimeInterval = 120
+    private let frequentQueryThreshold: Int = 3
 
     func configure(dnsServer: String, sourceIP: UInt32) {
         self.sourceIP = sourceIP
@@ -39,7 +43,15 @@ class TunnelDNSResolver {
             return ip
         }
 
+        queryFrequency[hostname, default: 0] += 1
+
         if let cached = cache[hostname], cached.expiry > Date() {
+            let remaining = cached.expiry.timeIntervalSinceNow
+            if remaining < cacheTTL * 0.2 && queryFrequency[hostname, default: 0] >= frequentQueryThreshold {
+                Task { @MainActor [weak self] in
+                    _ = await self?.performResolve(hostname)
+                }
+            }
             return cached.ip
         }
 
@@ -54,6 +66,40 @@ class TunnelDNSResolver {
         let result = await task.value
         inflightHostnames.removeValue(forKey: hostname)
         return result
+    }
+
+    func startBackgroundRefresh() {
+        backgroundRefreshTimer?.invalidate()
+        backgroundRefreshTimer = Timer.scheduledTimer(withTimeInterval: backgroundRefreshInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshFrequentEntries()
+            }
+        }
+    }
+
+    func stopBackgroundRefresh() {
+        backgroundRefreshTimer?.invalidate()
+        backgroundRefreshTimer = nil
+    }
+
+    private func refreshFrequentEntries() {
+        let frequentHosts = queryFrequency.filter { $0.value >= frequentQueryThreshold }.map { $0.key }
+        guard !frequentHosts.isEmpty else { return }
+
+        let hostsNearExpiry = frequentHosts.filter { hostname in
+            guard let cached = cache[hostname] else { return true }
+            return cached.expiry.timeIntervalSinceNow < cacheTTL * 0.3
+        }
+
+        guard !hostsNearExpiry.isEmpty else { return }
+
+        logger.log("TunnelDNS: background refreshing \(hostsNearExpiry.count) frequent entries", category: .vpn, level: .debug)
+
+        for hostname in hostsNearExpiry.prefix(5) {
+            Task { @MainActor [weak self] in
+                _ = await self?.performResolve(hostname)
+            }
+        }
     }
 
     private func performResolve(_ hostname: String) async -> UInt32? {
@@ -203,11 +249,13 @@ class TunnelDNSResolver {
 
     func clearCache() {
         cache.removeAll()
+        queryFrequency.removeAll()
         for (queryID, pending) in pendingQueries {
             pending.1.resume(returning: nil)
             pendingQueries.removeValue(forKey: queryID)
         }
         inflightHostnames.removeAll()
+        stopBackgroundRefresh()
     }
 
     var cacheSize: Int { cache.count }

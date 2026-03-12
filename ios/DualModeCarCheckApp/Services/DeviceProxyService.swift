@@ -84,6 +84,9 @@ class DeviceProxyService {
     private let vpnTunnel = VPNTunnelManager.shared
     private let healthMonitor = ProxyHealthMonitor.shared
     private let wireProxyBridge = WireProxyBridge.shared
+    private let resilience = NetworkResilienceService.shared
+    private let scoring = ProxyScoringService.shared
+    private let connectionPool = ProxyConnectionPool.shared
     private let logger = DebugLogger.shared
 
     var localProxyEnabled: Bool = true {
@@ -209,6 +212,7 @@ class DeviceProxyService {
         if localProxyEnabled {
             localProxy.start()
         }
+        resilience.resetBackoff()
         performRotation(reason: "Activated")
         restartRotationTimer()
 
@@ -217,6 +221,12 @@ class DeviceProxyService {
                 self?.handleUpstreamFailover()
             }
         }
+
+        if case .socks5(let proxy) = activeConfig {
+            resilience.startVerificationLoop(expectedProxy: proxy)
+        }
+
+        connectionPool.prewarmConnections(count: 3, upstream: localProxy.upstreamProxy)
 
         logger.log("DeviceProxy: App-Wide United IP ENABLED (localProxy: \(localProxyEnabled), autoFailover: \(autoFailoverEnabled))", category: .network, level: .info)
     }
@@ -232,14 +242,28 @@ class DeviceProxyService {
         isActive = false
         localProxy.stop()
         wireProxyBridge.stop()
+        resilience.stopVerificationLoop()
+        resilience.resetBackoff()
+        resilience.resetThrottling()
         logger.log("DeviceProxy: App-Wide United IP DISABLED", category: .network, level: .info)
     }
 
     private func handleUpstreamFailover() {
         guard isEnabled, autoFailoverEnabled else { return }
+
+        if resilience.shouldThrottleFailover() {
+            logger.log("DeviceProxy: FAILOVER throttled — backoff \(String(format: "%.1f", resilience.failoverBackoffSeconds))s remaining", category: .proxy, level: .warning)
+            return
+        }
+
+        let backoffDelay = resilience.calculateBackoffDelay()
         failoverCount += 1
-        logger.log("DeviceProxy: FAILOVER triggered (count: \(failoverCount)) - upstream dead, rotating to next", category: .proxy, level: .error)
-        performRotation(reason: "Failover (upstream dead)")
+        logger.log("DeviceProxy: FAILOVER triggered (count: \(failoverCount), backoff: \(String(format: "%.1f", backoffDelay))s) - upstream dead, rotating to next", category: .proxy, level: .error)
+
+        Task {
+            try? await Task.sleep(for: .seconds(backoffDelay))
+            self.performRotation(reason: "Failover (upstream dead, attempt \(self.failoverCount))")
+        }
     }
 
     private func restartRotationTimer() {
@@ -301,6 +325,15 @@ class DeviceProxyService {
         }
 
         syncLocalProxyUpstream()
+
+        resilience.resetBackoff()
+
+        if case .socks5(let proxy) = config {
+            resilience.startVerificationLoop(expectedProxy: proxy)
+            connectionPool.prewarmConnections(count: 2, upstream: proxy)
+        } else {
+            resilience.stopVerificationLoop()
+        }
 
         isRotating = false
 
