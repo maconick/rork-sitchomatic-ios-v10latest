@@ -72,6 +72,8 @@ struct DualModeCarCheckAppApp: App {
                             DualFindContainerView()
                         case .settingsAndTesting:
                             SettingsAndTestingView()
+                        case .proxyManager:
+                            ProxyManagerView()
                         }
                     }
                     .transition(.asymmetric(

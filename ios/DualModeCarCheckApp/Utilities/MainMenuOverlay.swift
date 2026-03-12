@@ -3,7 +3,7 @@ import SwiftUI
 struct MainMenuOverlayModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .overlay(alignment: .bottomLeading) { MainMenuButton() }
+            .overlay(alignment: .bottomTrailing) { MainMenuButton() }
     }
 }
 

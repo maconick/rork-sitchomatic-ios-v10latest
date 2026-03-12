@@ -46,13 +46,16 @@ struct MainMenuView: View {
                         splitTestZone(geo: geo)
                         dualFindZone(geo: geo)
                     }
-                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.14)
+                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.13)
 
                     ppsrZone(geo: geo)
-                        .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.22)
+                        .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.18)
 
-                    settingsAndTestingZone(geo: geo)
-                        .frame(maxHeight: .infinity)
+                    HStack(spacing: 0) {
+                        settingsAndTestingZone(geo: geo)
+                        proxyManagerZone(geo: geo)
+                    }
+                    .frame(maxHeight: .infinity)
 
                     Spacer().frame(height: geo.safeAreaInsets.bottom + 4)
                 }
@@ -459,6 +462,63 @@ struct MainMenuView: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: activeMode == .dualFind)
     }
 
+    private func proxyManagerZone(geo: GeometryProxy) -> some View {
+        Button {
+            guard canEnterModes else { return }
+            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
+                activeMode = .proxyManager
+            }
+        } label: {
+            ZStack {
+                LinearGradient(
+                    colors: [Color(red: 0.0, green: 0.2, blue: 0.25).opacity(0.5), Color.teal.opacity(0.25)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "server.rack")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.teal)
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.cyan.opacity(0.7))
+                    }
+                    .shadow(color: .teal.opacity(0.5), radius: 8)
+
+                    Text("PROXY\nMANAGER")
+                        .font(.system(size: 13, weight: .black, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.trailing)
+                        .lineSpacing(2)
+                        .shadow(color: .black.opacity(0.6), radius: 4)
+
+                    Text("Sets · Import · Route")
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.teal.opacity(0.7))
+
+                    HStack(spacing: 3) {
+                        Text("OPEN")
+                            .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(.teal.opacity(0.6))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 7, weight: .heavy))
+                            .foregroundStyle(.teal.opacity(0.4))
+                    }
+                }
+                .padding(.trailing, 16)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(animateIn ? (canEnterModes ? 1 : 0.35) : 0)
+        .offset(x: animateIn ? 0 : 30)
+        .allowsHitTesting(canEnterModes)
+        .sensoryFeedback(.impact(weight: .medium), trigger: activeMode == .proxyManager)
+    }
+
     private var profileSwitcher: some View {
         HStack(spacing: 0) {
             ForEach(NordKeyProfile.allCases, id: \.self) { profile in
@@ -556,4 +616,5 @@ nonisolated enum ActiveAppMode: String, Sendable {
     case ipScoreTest
     case dualFind
     case settingsAndTesting
+    case proxyManager
 }

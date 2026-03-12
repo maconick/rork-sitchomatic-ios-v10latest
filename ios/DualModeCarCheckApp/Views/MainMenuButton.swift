@@ -23,7 +23,7 @@ struct MainMenuButton: View {
             .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
         }
         .buttonStyle(.plain)
-        .padding(.leading, 8)
+        .padding(.trailing, 8)
         .padding(.bottom, 8)
     }
 }
