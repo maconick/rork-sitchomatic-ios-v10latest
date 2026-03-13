@@ -43,6 +43,12 @@ class LoginViewModel {
     var siteMode: SiteMode = .joe
     var savedCropRect: CGRect? = nil
     var automationSettings: AutomationSettings = AutomationSettings()
+    var isSlowDebugModeEnabled: Bool {
+        automationSettings.slowDebugMode ?? false
+    }
+    var effectiveMaxConcurrency: Int {
+        isSlowDebugModeEnabled ? 1 : maxConcurrency
+    }
 
     nonisolated enum SiteMode: String, CaseIterable, Sendable {
         case joe = "Joe"
@@ -550,7 +556,7 @@ class LoginViewModel {
     }
 
     func testSingleCredential(_ cred: LoginCredential) {
-        guard !isRunning || activeTestCount < maxConcurrency else {
+        guard !isRunning || activeTestCount < effectiveMaxConcurrency else {
             log("Max concurrency reached", level: .warning)
             return
         }
@@ -645,7 +651,7 @@ class LoginViewModel {
         isStopping = false
         autoRetryBackoffCounts.removeAll()
         log("Starting selective batch: \(credsToTest.count) credentials")
-        logger.log("BATCH START (selective): \(credsToTest.count) creds, concurrency=\(maxConcurrency)", category: .login, level: .info)
+        logger.log("BATCH START (selective): \(credsToTest.count) creds, concurrency=\(effectiveMaxConcurrency)", category: .login, level: .info)
         testSingleSiteBatch(credsToTest)
     }
 
@@ -662,11 +668,11 @@ class LoginViewModel {
 
         if dualSiteMode {
             log("Starting DUAL-SITE batch: \(credsToTest.count) creds, Joe + Ignition simultaneously")
-            logger.log("BATCH START (dual): \(credsToTest.count) creds, concurrency=\(maxConcurrency), stealth=\(stealthEnabled)", category: .login, level: .info, metadata: ["mode": "dual", "count": "\(credsToTest.count)"])
+            logger.log("BATCH START (dual): \(credsToTest.count) creds, concurrency=\(effectiveMaxConcurrency), stealth=\(stealthEnabled)", category: .login, level: .info, metadata: ["mode": "dual", "count": "\(credsToTest.count)"])
             testDualSite(credsToTest)
         } else {
-            log("Starting batch test: \(credsToTest.count) credentials, max \(maxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
-            logger.log("BATCH START: \(credsToTest.count) creds, concurrency=\(maxConcurrency), stealth=\(stealthEnabled), site=\(targetSite.rawValue)", category: .login, level: .info, metadata: ["mode": "single", "count": "\(credsToTest.count)", "site": targetSite.rawValue])
+            log("Starting batch test: \(credsToTest.count) credentials, max \(effectiveMaxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
+            logger.log("BATCH START: \(credsToTest.count) creds, concurrency=\(effectiveMaxConcurrency), stealth=\(stealthEnabled), site=\(targetSite.rawValue)", category: .login, level: .info, metadata: ["mode": "single", "count": "\(credsToTest.count)", "site": targetSite.rawValue])
             testSingleSiteBatch(credsToTest)
         }
     }
@@ -686,6 +692,7 @@ class LoginViewModel {
         batchTask = Task {
             configureEngine()
             await withTaskGroup(of: Void.self) { group in
+                let concurrencyLimit = effectiveMaxConcurrency
                 var running = 0
 
                 for cred in credsToTest {
@@ -697,7 +704,7 @@ class LoginViewModel {
 
                     if isStopping { break }
 
-                    if running >= maxConcurrency {
+                    if running >= concurrencyLimit {
                         await group.next()
                         running -= 1
                     }
@@ -749,7 +756,8 @@ class LoginViewModel {
         var batchDead = 0
         var batchRequeued = 0
 
-        let halfConcurrency = max(1, maxConcurrency / 2)
+        let concurrencyLimit = effectiveMaxConcurrency
+        let halfConcurrency = max(1, concurrencyLimit / 2)
 
         batchTask = Task {
             configureEngine()
@@ -757,7 +765,7 @@ class LoginViewModel {
             await withTaskGroup(of: Void.self) { group in
                 var running = 0
 
-                for cred in credsToTest {
+                for (index, cred) in credsToTest.enumerated() {
                     if isStopping { break }
 
                     while isPaused && !isStopping {
@@ -765,7 +773,7 @@ class LoginViewModel {
                     }
                     if isStopping { break }
 
-                    if running >= maxConcurrency {
+                    if running >= concurrencyLimit {
                         await group.next()
                         running -= 1
                     }
@@ -774,7 +782,7 @@ class LoginViewModel {
                     cred.status = .testing
                     let sessionIdx = running
 
-                    let useIgnition = running > halfConcurrency
+                    let useIgnition = concurrencyLimit == 1 ? !index.isMultiple(of: 2) : running > halfConcurrency
                     let targetEngine = useIgnition ? secondaryEngine : engine
                     let testURL = useIgnition ? getNextTestURL(forSite: .ignition) : getNextTestURL(forSite: .joefortune)
                     let siteLabel = useIgnition ? "IGN" : "JOE"

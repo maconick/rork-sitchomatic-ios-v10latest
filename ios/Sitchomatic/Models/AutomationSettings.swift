@@ -102,6 +102,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var languageSpoof: Bool = false
 
     // MARK: - Screenshot / Debug
+    var slowDebugMode: Bool? = nil
     var screenshotOnEveryEval: Bool = true
     var screenshotOnFailure: Bool = true
     var screenshotOnSuccess: Bool = true
@@ -289,6 +290,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     func normalizedTimeouts() -> AutomationSettings {
         var normalized = self
+        normalized.slowDebugMode = normalized.slowDebugMode ?? false
         normalized.pageLoadTimeout = max(normalized.pageLoadTimeout, Self.minimumTimeoutSeconds)
         normalized.fieldVerificationTimeout = max(normalized.fieldVerificationTimeout, Self.minimumTimeoutSeconds)
         normalized.waitForResponseSeconds = max(normalized.waitForResponseSeconds, Self.minimumTimeoutSeconds)

@@ -35,3 +35,7 @@ This applies across the Network Settings screen, the banner at the top of Joe/Ig
 
 ### 6. Rename app branding and files to Sitchomatic
 - [x] Rename the app target, project references, app folder, entitlements file, and test targets from DualModeCarCheckApp to Sitchomatic
+
+### 7. Slow Debug Mode for Automation
+- [x] Add a slow debug mode in Automation Config that captures a screenshot every 2 seconds during login automation
+- [x] Force slow debug mode to run only 1 login session at a time across batch execution and dashboard controls

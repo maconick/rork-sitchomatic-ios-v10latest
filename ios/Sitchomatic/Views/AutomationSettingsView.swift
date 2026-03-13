@@ -1765,6 +1765,16 @@ struct AutomationSettingsView: View {
 
     private var screenshotDebugSection: some View {
         Section {
+            Toggle(isOn: Binding(
+                get: { vm.automationSettings.slowDebugMode ?? false },
+                set: { vm.automationSettings.slowDebugMode = $0 }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Slow Debug Mode")
+                    Text("Capture a screenshot every 2 seconds and force 1 session").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.orange)
             Toggle("Screenshot Every Evaluation", isOn: $vm.automationSettings.screenshotOnEveryEval).tint(.orange)
             Toggle("Screenshot on Failure", isOn: $vm.automationSettings.screenshotOnFailure).tint(.orange)
             Toggle("Screenshot on Success", isOn: $vm.automationSettings.screenshotOnSuccess).tint(.orange)
@@ -1778,7 +1788,13 @@ struct AutomationSettingsView: View {
 
     private var concurrencySection: some View {
         Section {
-            Stepper("Max Concurrency: \(vm.automationSettings.maxConcurrency)", value: $vm.automationSettings.maxConcurrency, in: 1...16)
+            Stepper("Max Concurrency: \((vm.automationSettings.slowDebugMode ?? false) ? 1 : vm.automationSettings.maxConcurrency)", value: $vm.automationSettings.maxConcurrency, in: 1...16)
+                .disabled(vm.automationSettings.slowDebugMode ?? false)
+            if vm.automationSettings.slowDebugMode ?? false {
+                Label("Slow Debug Mode overrides concurrency to 1 session.", systemImage: "tortoise.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             Stepper("Batch Start Delay: \(vm.automationSettings.batchDelayBetweenStartsMs)ms", value: $vm.automationSettings.batchDelayBetweenStartsMs, in: 0...5000, step: 100)
             Toggle(isOn: $vm.automationSettings.connectionTestBeforeBatch) {
                 VStack(alignment: .leading, spacing: 2) {

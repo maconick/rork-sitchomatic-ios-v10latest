@@ -182,6 +182,13 @@ struct LoginSettingsContentView: View {
                 ForEach(1...8, id: \.self) { n in Text("\(n)").tag(n) }
             }
             .pickerStyle(.menu)
+            .disabled(vm.isSlowDebugModeEnabled)
+
+            if vm.isSlowDebugModeEnabled {
+                Label("Slow Debug Mode from Automation Config forces 1 active session.", systemImage: "tortoise.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
 
             HStack {
                 Text("Test Timeout")
@@ -199,7 +206,7 @@ struct LoginSettingsContentView: View {
         } header: {
             Text("Concurrency")
         } footer: {
-            Text("Up to 8 concurrent WKWebView sessions. Timeout per test: \(Int(vm.testTimeout))s.")
+            Text("Configured max: \(vm.maxConcurrency). Active max: \(vm.effectiveMaxConcurrency). Timeout per test: \(Int(vm.testTimeout))s.")
         }
     }
 

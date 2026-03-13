@@ -98,7 +98,7 @@ struct LoginDashboardContentView: View {
                     .font(.system(.caption, design: .monospaced, weight: .heavy))
                     .foregroundStyle(.cyan)
                 Spacer()
-                Text("\(vm.maxConcurrency) sessions")
+                Text("\(vm.effectiveMaxConcurrency) session\(vm.effectiveMaxConcurrency == 1 ? "" : "s")")
                     .font(.system(.caption2, design: .monospaced, weight: .bold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
@@ -120,11 +120,11 @@ struct LoginDashboardContentView: View {
                         .foregroundStyle(.primary)
                         .clipShape(.rect(cornerRadius: 8))
                 }
-                .disabled(vm.maxConcurrency <= 1)
+                .disabled(vm.maxConcurrency <= 1 || vm.isSlowDebugModeEnabled)
 
                 GeometryReader { geo in
                     let maxSessions = 8
-                    let filledWidth = geo.size.width * CGFloat(vm.maxConcurrency) / CGFloat(maxSessions)
+                    let filledWidth = geo.size.width * CGFloat(vm.effectiveMaxConcurrency) / CGFloat(maxSessions)
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 6)
                             .fill(Color(.quaternarySystemFill))
@@ -153,13 +153,19 @@ struct LoginDashboardContentView: View {
                         .foregroundStyle(.primary)
                         .clipShape(.rect(cornerRadius: 8))
                 }
-                .disabled(vm.maxConcurrency >= 8)
+                .disabled(vm.maxConcurrency >= 8 || vm.isSlowDebugModeEnabled)
+            }
+            if vm.isSlowDebugModeEnabled {
+                Label("Slow Debug Mode is active — login automation is locked to 1 session.", systemImage: "tortoise.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(10)
         .background(Color.cyan.opacity(0.06))
         .clipShape(.rect(cornerRadius: 10))
-        .sensoryFeedback(.impact(weight: .medium), trigger: vm.maxConcurrency)
+        .sensoryFeedback(.impact(weight: .medium), trigger: vm.effectiveMaxConcurrency)
     }
 
     private var connectionBadge: some View {

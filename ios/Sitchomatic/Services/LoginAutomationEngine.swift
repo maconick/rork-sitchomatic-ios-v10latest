@@ -71,6 +71,9 @@ class LoginAutomationEngine {
             logger.log("WebView session tearDown (wipeAll: true)", category: .webView, level: .trace, sessionId: sessionId)
         }
 
+        let slowDebugTask = makeSlowDebugCaptureTaskIfNeeded(session: session, attempt: attempt, sessionId: sessionId)
+        defer { slowDebugTask?.cancel() }
+
         logger.startTimer(key: sessionId)
         let outcome: LoginOutcome = await withTaskGroup(of: LoginOutcome.self) { group in
             group.addTask {
@@ -1138,5 +1141,31 @@ class LoginAutomationEngine {
         )
         attempt.screenshotIds.append(screenshot.id)
         onScreenshot?(screenshot)
+    }
+
+    private func makeSlowDebugCaptureTaskIfNeeded(session: LoginSiteWebSession, attempt: LoginAttempt, sessionId: String) -> Task<Void, Never>? {
+        guard automationSettings.slowDebugMode ?? false else { return nil }
+        return Task { [weak self] in
+            guard let self else { return }
+            var captureIndex = 1
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                guard !attempt.status.isTerminal else { return }
+                logger.log("Slow debug capture \(captureIndex) status=\(attempt.status.rawValue)", category: .screenshot, level: .trace, sessionId: sessionId)
+                await self.captureDebugScreenshot(
+                    session: session,
+                    attempt: attempt,
+                    step: "slow_debug_\(captureIndex)",
+                    note: "Slow debug capture \(captureIndex) | status: \(attempt.status.rawValue)",
+                    autoResult: .unknown
+                )
+                captureIndex += 1
+            }
+        }
     }
 }
