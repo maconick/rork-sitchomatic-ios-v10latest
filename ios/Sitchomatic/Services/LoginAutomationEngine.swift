@@ -288,6 +288,8 @@ class LoginAutomationEngine {
         var finalOutcome: LoginOutcome = .noAcc
         var lastEvaluation: EvaluationResult?
         var usedPatterns: [LoginFormPattern] = []
+        var lastContentHash: Int = 0
+        var duplicateContentCount: Int = 0
 
         let priorityPatterns: [LoginFormPattern]
         if automationSettings.trueDetectionEnabled && automationSettings.trueDetectionPriority {
@@ -304,10 +306,14 @@ class LoginAutomationEngine {
 
             let selectedPattern: LoginFormPattern
             if cycle == 1 {
-                if automationSettings.trueDetectionEnabled {
+                let learnedBest = humanEngine.selectBestPattern(for: targetURLString)
+                if automationSettings.trueDetectionEnabled && automationSettings.trueDetectionPriority {
                     selectedPattern = .trueDetection
+                } else if learnedBest != .trueDetection {
+                    selectedPattern = learnedBest
+                    attempt.logs.append(PPSRLogEntry(message: "PatternML selected '\(learnedBest.rawValue)' as historically best for this site", level: .info))
                 } else {
-                    selectedPattern = humanEngine.selectBestPattern(for: targetURLString)
+                    selectedPattern = .trueDetection
                 }
             } else {
                 let remaining = priorityPatterns.filter { !usedPatterns.contains($0) }
@@ -468,6 +474,22 @@ class LoginAutomationEngine {
             }
             attempt.detectedURL = currentURL
             attempt.responseSnippet = String(pageContent.prefix(500))
+
+            let contentHash = pageContent.hashValue
+            if contentHash == lastContentHash && cycle > 1 {
+                duplicateContentCount += 1
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): DUPLICATE CONTENT detected (\(duplicateContentCount)x same hash) — page may be stuck", level: .warning))
+                logger.log("Duplicate content hash on cycle \(cycle) — stuck page likely", category: .evaluation, level: .warning, sessionId: sessionId)
+                if duplicateContentCount >= 2 {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): 2+ duplicate pages — skipping re-evaluation, treating as stuck", level: .error))
+                    failAttempt(attempt, message: "Page stuck — same content after \(duplicateContentCount) consecutive cycles")
+                    await captureDebugScreenshot(session: session, attempt: attempt, step: "stuck_page", note: "Same content hash after \(duplicateContentCount) cycles", autoResult: .unknown)
+                    return .connectionFailure
+                }
+            } else {
+                duplicateContentCount = 0
+            }
+            lastContentHash = contentHash
 
             let screenshotImage: UIImage?
             if let ws = pollResult.welcomeScreenshot {

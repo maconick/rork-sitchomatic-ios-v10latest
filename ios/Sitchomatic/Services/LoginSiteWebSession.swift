@@ -1724,6 +1724,16 @@ class LoginSiteWebSession: NSObject {
 }
 
 extension LoginSiteWebSession: WKNavigationDelegate {
+    nonisolated func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        Task { @MainActor in
+            if self.stealthEnabled, let profile = self.stealthProfile {
+                let earlyJS = PPSRStealthService.shared.buildComprehensiveStealthJSPublic(profile: profile)
+                _ = await self.executeJS(earlyJS)
+                self.logger.log("LoginSiteWebSession: early stealth injection on didCommit", category: .stealth, level: .trace)
+            }
+        }
+    }
+
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor in
             self.isPageLoaded = true

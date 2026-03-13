@@ -68,6 +68,19 @@ class HumanInteractionEngine {
     }
 
     func selectBestPattern(for url: String) -> LoginFormPattern {
+        if let learned = patternLearning.bestPattern(for: url) {
+            if learned == .trueDetection {
+                return .trueDetection
+            }
+            let ranking = patternLearning.patternRanking(for: url)
+            if let trueDetStats = ranking.first(where: { $0.pattern == .trueDetection }) {
+                if trueDetStats.stats.totalAttempts < 3 {
+                    return .trueDetection
+                }
+            }
+            logger.log("PatternSelect: learned best pattern for \(URL(string: url)?.host ?? url) → \(learned.rawValue)", category: .automation, level: .info)
+            return learned
+        }
         return .trueDetection
     }
 

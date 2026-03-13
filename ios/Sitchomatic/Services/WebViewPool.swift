@@ -9,8 +9,62 @@ class WebViewPool {
     private let logger = DebugLogger.shared
     private(set) var processTerminationCount: Int = 0
     private let networkFactory = NetworkSessionFactory.shared
+    private var preWarmedViews: [WKWebView] = []
+    private let maxPreWarmed: Int = 3
+    private(set) var preWarmCount: Int = 0
 
     var activeCount: Int { inUseCount }
+    var preWarmedCount: Int { preWarmedViews.count }
+
+    func preWarm(count: Int = 2, stealthEnabled: Bool = true, networkConfig: ActiveNetworkConfig = .direct, target: ProxyRotationService.ProxyTarget = .joe) {
+        let toCreate = min(count, maxPreWarmed - preWarmedViews.count)
+        guard toCreate > 0 else { return }
+
+        for _ in 0..<toCreate {
+            let config = WKWebViewConfiguration()
+            config.websiteDataStore = .nonPersistent()
+            config.preferences.javaScriptCanOpenWindowsAutomatically = true
+            config.defaultWebpagePreferences.allowsContentJavaScript = true
+
+            let _ = networkFactory.configureWKWebView(config: config, networkConfig: networkConfig, target: target)
+
+            let wv: WKWebView
+            if stealthEnabled {
+                let stealth = PPSRStealthService.shared
+                let profile = stealth.nextProfile()
+                let userScript = stealth.createStealthUserScript(profile: profile)
+                config.userContentController.addUserScript(userScript)
+                wv = WKWebView(frame: CGRect(origin: .zero, size: CGSize(width: profile.viewport.width, height: profile.viewport.height)), configuration: config)
+                wv.customUserAgent = profile.userAgent
+            } else {
+                wv = WKWebView(frame: CGRect(origin: .zero, size: CGSize(width: 390, height: 844)), configuration: config)
+                wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+            }
+            preWarmedViews.append(wv)
+        }
+        preWarmCount += toCreate
+        logger.log("WebViewPool: pre-warmed \(toCreate) WebViews (pool: \(preWarmedViews.count))", category: .webView, level: .info)
+    }
+
+    func acquirePreWarmed() -> WKWebView? {
+        guard !preWarmedViews.isEmpty else { return nil }
+        let wv = preWarmedViews.removeFirst()
+        inUseCount += 1
+        logger.log("WebViewPool: acquired pre-warmed WebView (remaining: \(preWarmedViews.count), active: \(inUseCount))", category: .webView, level: .trace)
+        return wv
+    }
+
+    func drainPreWarmed() {
+        for wv in preWarmedViews {
+            wv.stopLoading()
+            wv.configuration.userContentController.removeAllUserScripts()
+        }
+        let count = preWarmedViews.count
+        preWarmedViews.removeAll()
+        if count > 0 {
+            logger.log("WebViewPool: drained \(count) pre-warmed WebViews", category: .webView, level: .debug)
+        }
+    }
 
     func acquire(stealthEnabled: Bool = false, viewportSize: CGSize = CGSize(width: 390, height: 844), networkConfig: ActiveNetworkConfig = .direct, target: ProxyRotationService.ProxyTarget = .joe) async -> WKWebView {
         var effectiveConfig = networkConfig

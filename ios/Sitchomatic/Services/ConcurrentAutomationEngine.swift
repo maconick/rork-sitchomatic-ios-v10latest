@@ -66,6 +66,10 @@ class ConcurrentAutomationEngine {
     private let throttler = AutomationThrottler(maxConcurrency: 5)
     private(set) var isRunning: Bool = false
     private var cancelFlag: Bool = false
+    private var deadAccounts: Set<String> = []
+    private var deadCards: Set<String> = []
+    private var consecutiveConnectionFailures: Int = 0
+    private let nodeMavenAutoRotateThreshold: Int = 3
 
     func cancel() {
         cancelFlag = true
@@ -80,6 +84,7 @@ class ConcurrentAutomationEngine {
     ) async -> ConcurrentBatchResult<(String, CheckOutcome)> {
         isRunning = true
         cancelFlag = false
+        deadCards.removeAll()
         let startTime = Date()
         let batchId = "concurrent_ppsr_\(UUID().uuidString.prefix(8))"
 
@@ -111,6 +116,10 @@ class ConcurrentAutomationEngine {
                 for check in batch {
                     if self.cancelFlag { break }
                     let cardId = check.card.id
+                    if self.deadCards.contains(cardId) {
+                        self.logger.log("ConcurrentEngine: skipping dead card \(check.card.displayNumber)", category: .automation, level: .info)
+                        continue
+                    }
                     group.addTask {
                         guard !Task.isCancelled else { return (cardId, CheckOutcome.timeout, 0) }
                         await self.throttler.acquire()
@@ -145,6 +154,10 @@ class ConcurrentAutomationEngine {
                     successCount += 1
                 } else {
                     failureCount += 1
+                    if outcome == .failInstitution {
+                        deadCards.insert(cardId)
+                        logger.log("ConcurrentEngine: card \(cardId) marked DEAD (failInstitution)", category: .automation, level: .warning)
+                    }
                 }
                 processed += 1
                 onProgress(processed, checks.count, outcome)
@@ -166,7 +179,16 @@ class ConcurrentAutomationEngine {
             }
 
             if batchEnd < checks.count && !cancelFlag {
-                let cooldown = Int.random(in: 300...800)
+                let batchSuccessRate = batchResults.isEmpty ? 0.5 : Double(batchResults.filter { $0.1 == .pass }.count) / Double(batchResults.count)
+                let cooldown: Int
+                if batchSuccessRate > 0.8 {
+                    cooldown = Int.random(in: 150...400)
+                } else if batchSuccessRate < 0.3 {
+                    cooldown = Int.random(in: 1200...2500)
+                    logger.log("ConcurrentEngine: low success rate (\(Int(batchSuccessRate * 100))%) — extended cooldown \(cooldown)ms", category: .automation, level: .warning)
+                } else {
+                    cooldown = Int.random(in: 300...800)
+                }
                 try? await Task.sleep(for: .milliseconds(cooldown))
             }
         }
@@ -197,6 +219,7 @@ class ConcurrentAutomationEngine {
     ) async -> ConcurrentBatchResult<(String, LoginOutcome)> {
         isRunning = true
         cancelFlag = false
+        deadAccounts.removeAll()
         let startTime = Date()
         let batchId = "concurrent_login_\(UUID().uuidString.prefix(8))"
 
@@ -211,6 +234,11 @@ class ConcurrentAutomationEngine {
         logger.startSession(batchId, category: .login, message: "ConcurrentEngine: starting \(attempts.count) login tests across \(urls.count) URLs | network=\(networkSummary) mode=\(networkMode.label) target=\(proxyTarget.rawValue)")
 
         ScreenshotCacheService.shared.resetBatchCounter()
+        consecutiveConnectionFailures = 0
+
+        let stealthOn = engine.stealthEnabled
+        let netConfig = networkFactory.nextConfig(for: proxyTarget)
+        WebViewPool.shared.preWarm(count: min(maxConcurrency, 3), stealthEnabled: stealthOn, networkConfig: netConfig, target: proxyTarget)
 
         let proxyOK = await performProxyPreCheck(batchId: batchId)
         if !proxyOK {
@@ -249,6 +277,11 @@ class ConcurrentAutomationEngine {
                     let attempt = attempts[index]
                     let effectiveURL = effectiveURLs[index] ?? urls[index % urls.count]
                     let username = attempt.credential.username
+
+                    if self.deadAccounts.contains(username) {
+                        self.logger.log("ConcurrentEngine: skipping dead account \(username)", category: .automation, level: .info)
+                        continue
+                    }
 
                     group.addTask {
                         guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0) }
@@ -304,15 +337,39 @@ class ConcurrentAutomationEngine {
                 latencies.append(latency)
                 if outcome == .success {
                     successCount += 1
+                    consecutiveConnectionFailures = 0
                 } else {
                     failureCount += 1
+                    if outcome == .permDisabled {
+                        deadAccounts.insert(username)
+                        logger.log("ConcurrentEngine: account '\(username)' marked DEAD (permDisabled)", category: .automation, level: .warning)
+                    }
+                    if outcome == .connectionFailure || outcome == .timeout {
+                        consecutiveConnectionFailures += 1
+                        if consecutiveConnectionFailures >= nodeMavenAutoRotateThreshold && NodeMavenService.shared.isEnabled {
+                            logger.log("ConcurrentEngine: \(consecutiveConnectionFailures) consecutive connection failures — rotating NodeMaven session IP", category: .network, level: .warning)
+                            let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "autorotate_\(Int(Date().timeIntervalSince1970))")
+                            consecutiveConnectionFailures = 0
+                        }
+                    } else {
+                        consecutiveConnectionFailures = 0
+                    }
                 }
                 processed += 1
                 onProgress(processed, attempts.count, outcome)
             }
 
             if batchEnd < attempts.count && !cancelFlag {
-                let cooldown = Int.random(in: 500...1200)
+                let batchSuccessRate = batchResults.isEmpty ? 0.5 : Double(batchResults.filter { $0.1 == .success }.count) / Double(batchResults.count)
+                let cooldown: Int
+                if batchSuccessRate > 0.8 {
+                    cooldown = Int.random(in: 250...600)
+                } else if batchSuccessRate < 0.3 {
+                    cooldown = Int.random(in: 1500...3000)
+                    logger.log("ConcurrentEngine: low login success rate (\(Int(batchSuccessRate * 100))%) — extended cooldown \(cooldown)ms", category: .automation, level: .warning)
+                } else {
+                    cooldown = Int.random(in: 500...1200)
+                }
                 try? await Task.sleep(for: .milliseconds(cooldown))
             }
         }
