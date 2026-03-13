@@ -93,7 +93,6 @@ class ConcurrentAutomationEngine {
     private let autoPauseWindowSize: Int = 10
     private let autoPauseDurationSeconds: Int = 30
     private var recentOutcomeWindow: [Bool] = []
-    private var networkFallbackAttempted: Bool = false
     var onBatchStats: ((BatchLiveStats) -> Void)?
 
     func cancel() {
@@ -344,6 +343,7 @@ class ConcurrentAutomationEngine {
         var failureCount = 0
         var latencies: [Int] = []
         var processed = 0
+        var carryOverIndices: [Int] = []
 
         let batchSize = maxConcurrency
         for batchStart in stride(from: 0, to: attempts.count, by: batchSize) {
@@ -375,7 +375,7 @@ class ConcurrentAutomationEngine {
                 }
             }
 
-            let batchResults: [(String, LoginOutcome, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int).self) { group in
+            let batchResults: [(String, LoginOutcome, Int, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int, Int).self) { group in
                 for index in batchIndices {
                     if self.cancelFlag { break }
                     let attempt = attempts[index]
@@ -388,35 +388,22 @@ class ConcurrentAutomationEngine {
                     }
 
                     group.addTask {
-                        guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0) }
+                        guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0, index) }
                         await self.throttler.acquire()
                         guard !Task.isCancelled else {
                             await self.throttler.release(succeeded: false)
-                            return (username, LoginOutcome.timeout, 0)
+                            return (username, LoginOutcome.timeout, 0, index)
                         }
                         let taskStart = Date()
-
-                        var outcome = await engine.runLoginTest(attempt, targetURL: effectiveURL, timeout: timeout)
-
-                        var retries = 0
-                        let maxRetries = 2
-
-                        while (outcome == .connectionFailure || outcome == .timeout) && retries < maxRetries && !Task.isCancelled {
-                            retries += 1
-                            let backoff = 1000 * (1 << (retries - 1))
-                            try? await Task.sleep(for: .milliseconds(backoff))
-                            let nextURL = urls[(index + retries) % urls.count]
-                            outcome = await engine.runLoginTest(attempt, targetURL: nextURL, timeout: timeout)
-                        }
-
+                        let outcome = await engine.runLoginTest(attempt, targetURL: effectiveURL, timeout: timeout)
                         let latency = Int(Date().timeIntervalSince(taskStart) * 1000)
                         let succeeded = outcome == .success
                         await self.throttler.release(succeeded: succeeded)
-                        return (username, outcome, latency)
+                        return (username, outcome, latency, index)
                     }
                 }
 
-                var results: [(String, LoginOutcome, Int)] = []
+                var results: [(String, LoginOutcome, Int, Int)] = []
                 for await result in group {
                     results.append(result)
                     if self.cancelFlag {
@@ -427,45 +414,146 @@ class ConcurrentAutomationEngine {
                 return results
             }
 
-            for (_, outcome, _) in batchResults {
-                let matchingURL = effectiveURLs[batchIndices.first ?? 0]?.absoluteString ?? ""
-                if outcome == .connectionFailure || outcome == .timeout {
-                    urlCooldown.recordFailure(for: matchingURL)
-                } else {
+            let connectionFailedSessions = batchResults.filter { $0.1 == .connectionFailure || $0.1 == .timeout }
+            let succeededSessions = batchResults.filter { $0.1 != .connectionFailure && $0.1 != .timeout }
+            let allFailed = !batchResults.isEmpty && connectionFailedSessions.count == batchResults.count
+            let someFailed = !connectionFailedSessions.isEmpty && !succeededSessions.isEmpty
+
+            if allFailed && !cancelFlag {
+                logger.log("ConcurrentEngine: ALL \(batchResults.count) sessions in batch hit connection failure — rotating IP and retrying batch", category: .network, level: .critical)
+
+                rotateIP(for: proxyTarget)
+                try? await Task.sleep(for: .milliseconds(2000))
+
+                var retryEffectiveURLs: [Int: URL] = [:]
+                for (_, _, _, originalIndex) in connectionFailedSessions {
+                    retryEffectiveURLs[originalIndex] = urls[originalIndex % urls.count]
+                }
+
+                let retryResults: [(String, LoginOutcome, Int, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int, Int).self) { group in
+                    for (_, _, _, originalIndex) in connectionFailedSessions {
+                        if self.cancelFlag { break }
+                        let attempt = attempts[originalIndex]
+                        let retryURL = retryEffectiveURLs[originalIndex] ?? urls[originalIndex % urls.count]
+                        let username = attempt.credential.username
+
+                        group.addTask {
+                            guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0, originalIndex) }
+                            await self.throttler.acquire()
+                            guard !Task.isCancelled else {
+                                await self.throttler.release(succeeded: false)
+                                return (username, LoginOutcome.timeout, 0, originalIndex)
+                            }
+                            let taskStart = Date()
+                            let outcome = await engine.runLoginTest(attempt, targetURL: retryURL, timeout: timeout)
+                            let latency = Int(Date().timeIntervalSince(taskStart) * 1000)
+                            await self.throttler.release(succeeded: outcome == .success)
+                            return (username, outcome, latency, originalIndex)
+                        }
+                    }
+                    var results: [(String, LoginOutcome, Int, Int)] = []
+                    for await result in group {
+                        results.append(result)
+                        if self.cancelFlag { group.cancelAll(); break }
+                    }
+                    return results
+                }
+
+                let finalBatchResults = retryResults
+                for (_, outcome, _, _) in finalBatchResults {
+                    let matchingURL = effectiveURLs[batchIndices.first ?? 0]?.absoluteString ?? ""
+                    if outcome == .connectionFailure || outcome == .timeout {
+                        urlCooldown.recordFailure(for: matchingURL)
+                    } else {
+                        urlCooldown.recordSuccess(for: matchingURL)
+                    }
+                }
+                for (username, outcome, latency, _) in finalBatchResults {
+                    allResults.append((username, outcome))
+                    latencies.append(latency)
+                    if outcome == .success {
+                        successCount += 1
+                        consecutiveConnectionFailures = 0
+                    } else {
+                        failureCount += 1
+                        if outcome == .permDisabled {
+                            deadAccounts.insert(username)
+                            logger.log("ConcurrentEngine: account '\(username)' marked DEAD (permDisabled)", category: .automation, level: .warning)
+                        }
+                        if outcome == .connectionFailure || outcome == .timeout {
+                            consecutiveConnectionFailures += 1
+                        } else {
+                            consecutiveConnectionFailures = 0
+                        }
+                    }
+                    processed += 1
+                    recentOutcomeWindow.append(outcome == .success)
+                    onProgress(processed, attempts.count, outcome)
+                }
+            } else if someFailed && !cancelFlag {
+                for (_, outcome, _, _) in succeededSessions {
+                    let matchingURL = effectiveURLs[batchIndices.first ?? 0]?.absoluteString ?? ""
                     urlCooldown.recordSuccess(for: matchingURL)
+                }
+                for (username, outcome, latency, _) in succeededSessions {
+                    allResults.append((username, outcome))
+                    latencies.append(latency)
+                    if outcome == .success {
+                        successCount += 1
+                        consecutiveConnectionFailures = 0
+                    } else {
+                        failureCount += 1
+                        if outcome == .permDisabled {
+                            deadAccounts.insert(username)
+                            logger.log("ConcurrentEngine: account '\(username)' marked DEAD (permDisabled)", category: .automation, level: .warning)
+                        }
+                        consecutiveConnectionFailures = 0
+                    }
+                    processed += 1
+                    recentOutcomeWindow.append(outcome == .success)
+                    onProgress(processed, attempts.count, outcome)
+                }
+
+                let failedIndices = connectionFailedSessions.map { $0.3 }
+                logger.log("ConcurrentEngine: \(connectionFailedSessions.count) sessions failed connection — carrying over to next batch (indices: \(failedIndices))", category: .network, level: .warning)
+                carryOverIndices.append(contentsOf: failedIndices)
+            } else {
+                for (_, outcome, _, _) in batchResults {
+                    let matchingURL = effectiveURLs[batchIndices.first ?? 0]?.absoluteString ?? ""
+                    if outcome == .connectionFailure || outcome == .timeout {
+                        urlCooldown.recordFailure(for: matchingURL)
+                    } else {
+                        urlCooldown.recordSuccess(for: matchingURL)
+                    }
+                }
+                for (username, outcome, latency, _) in batchResults {
+                    allResults.append((username, outcome))
+                    latencies.append(latency)
+                    if outcome == .success {
+                        successCount += 1
+                        consecutiveConnectionFailures = 0
+                    } else {
+                        failureCount += 1
+                        if outcome == .permDisabled {
+                            deadAccounts.insert(username)
+                            logger.log("ConcurrentEngine: account '\(username)' marked DEAD (permDisabled)", category: .automation, level: .warning)
+                        }
+                        if outcome == .connectionFailure || outcome == .timeout {
+                            consecutiveConnectionFailures += 1
+                        } else {
+                            consecutiveConnectionFailures = 0
+                        }
+                    }
+                    processed += 1
+                    recentOutcomeWindow.append(outcome == .success)
+                    onProgress(processed, attempts.count, outcome)
                 }
             }
 
-            for (username, outcome, latency) in batchResults {
-                allResults.append((username, outcome))
-                latencies.append(latency)
-                if outcome == .success {
-                    successCount += 1
-                    consecutiveConnectionFailures = 0
-                } else {
-                    failureCount += 1
-                    if outcome == .permDisabled {
-                        deadAccounts.insert(username)
-                        logger.log("ConcurrentEngine: account '\(username)' marked DEAD (permDisabled)", category: .automation, level: .warning)
-                    }
-                    if outcome == .connectionFailure || outcome == .timeout {
-                        consecutiveConnectionFailures += 1
-                        if consecutiveConnectionFailures >= nodeMavenAutoRotateThreshold && NodeMavenService.shared.isEnabled {
-                            logger.log("ConcurrentEngine: \(consecutiveConnectionFailures) consecutive connection failures — rotating NodeMaven session IP", category: .network, level: .warning)
-                            let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "autorotate_\(Int(Date().timeIntervalSince1970))")
-                            consecutiveConnectionFailures = 0
-                        }
-                        if consecutiveConnectionFailures >= 5 && !networkFallbackAttempted {
-                            networkFallbackAttempted = true
-                            attemptNetworkFallback(for: proxyTarget)
-                        }
-                    } else {
-                        consecutiveConnectionFailures = 0
-                    }
-                }
-                processed += 1
-                recentOutcomeWindow.append(outcome == .success)
-                onProgress(processed, attempts.count, outcome)
+            if consecutiveConnectionFailures >= nodeMavenAutoRotateThreshold && NodeMavenService.shared.isEnabled {
+                logger.log("ConcurrentEngine: \(consecutiveConnectionFailures) consecutive connection failures — rotating NodeMaven IP", category: .network, level: .warning)
+                let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "autorotate_\(Int(Date().timeIntervalSince1970))")
+                consecutiveConnectionFailures = 0
             }
 
             if processed % 5 == 0 || processed == attempts.count {
@@ -488,6 +576,55 @@ class ConcurrentAutomationEngine {
                     cooldown = Int.random(in: 500...1200)
                 }
                 try? await Task.sleep(for: .milliseconds(cooldown))
+            }
+        }
+
+        if !carryOverIndices.isEmpty && !cancelFlag {
+            logger.log("ConcurrentEngine: processing \(carryOverIndices.count) carried-over sessions from previous batches", category: .automation, level: .info)
+
+            rotateIP(for: proxyTarget)
+            try? await Task.sleep(for: .milliseconds(2000))
+
+            let carryOverResults: [(String, LoginOutcome, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int).self) { group in
+                for index in carryOverIndices {
+                    if self.cancelFlag { break }
+                    let attempt = attempts[index]
+                    let retryURL = urls[index % urls.count]
+                    let username = attempt.credential.username
+                    if self.deadAccounts.contains(username) { continue }
+
+                    group.addTask {
+                        guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0) }
+                        await self.throttler.acquire()
+                        guard !Task.isCancelled else {
+                            await self.throttler.release(succeeded: false)
+                            return (username, LoginOutcome.timeout, 0)
+                        }
+                        let taskStart = Date()
+                        let outcome = await engine.runLoginTest(attempt, targetURL: retryURL, timeout: timeout)
+                        let latency = Int(Date().timeIntervalSince(taskStart) * 1000)
+                        await self.throttler.release(succeeded: outcome == .success)
+                        return (username, outcome, latency)
+                    }
+                }
+                var results: [(String, LoginOutcome, Int)] = []
+                for await result in group {
+                    results.append(result)
+                    if self.cancelFlag { group.cancelAll(); break }
+                }
+                return results
+            }
+
+            for (username, outcome, latency) in carryOverResults {
+                allResults.append((username, outcome))
+                latencies.append(latency)
+                if outcome == .success { successCount += 1 } else { failureCount += 1 }
+                if outcome == .permDisabled {
+                    deadAccounts.insert(username)
+                }
+                processed += 1
+                recentOutcomeWindow.append(outcome == .success)
+                onProgress(processed, attempts.count, outcome)
             }
         }
 
@@ -514,32 +651,35 @@ class ConcurrentAutomationEngine {
         await throttler.currentStats()
     }
 
-    private func attemptNetworkFallback(for target: ProxyRotationService.ProxyTarget) {
-        let proxyService = ProxyRotationService.shared
-        let currentMode = proxyService.connectionMode(for: target)
-        let settings = AutomationSettings()
-
-        let fallbackChain: [(ConnectionMode, Bool)] = [
-            (.wireguard, true),
-            (.openvpn, settings.autoFallbackWGtoOVPN),
-            (.proxy, settings.autoFallbackOVPNtoSOCKS5),
-            (.dns, true),
-        ]
-
-        var foundCurrent = false
-        for (mode, enabled) in fallbackChain {
-            if mode == currentMode {
-                foundCurrent = true
-                continue
-            }
-            if foundCurrent && enabled {
-                logger.log("ConcurrentEngine: NETWORK FALLBACK \(currentMode.label) → \(mode.label) after 5 consecutive connection failures", category: .network, level: .critical)
-                proxyService.setConnectionMode(mode, for: target)
-                consecutiveConnectionFailures = 0
-                return
-            }
+    private func rotateIP(for target: ProxyRotationService.ProxyTarget) {
+        let deviceProxy = DeviceProxyService.shared
+        if deviceProxy.isEnabled {
+            deviceProxy.rotateNow(reason: "Batch connection failure — IP rotation")
+            logger.log("ConcurrentEngine: rotated united IP (DeviceProxy) for \(target.rawValue)", category: .network, level: .warning)
+            return
         }
-        logger.log("ConcurrentEngine: no fallback network mode available from \(currentMode.label)", category: .network, level: .error)
+
+        if NodeMavenService.shared.isEnabled {
+            let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "batch_rotate_\(Int(Date().timeIntervalSince1970))")
+            logger.log("ConcurrentEngine: rotated NodeMaven session IP for \(target.rawValue)", category: .network, level: .warning)
+            return
+        }
+
+        let proxyService = ProxyRotationService.shared
+        let mode = proxyService.connectionMode(for: target)
+        switch mode {
+        case .wireguard:
+            let _ = proxyService.nextReachableWGConfig(for: target)
+            logger.log("ConcurrentEngine: rotated to next WireGuard IP for \(target.rawValue)", category: .network, level: .warning)
+        case .openvpn:
+            let _ = proxyService.nextReachableOVPNConfig(for: target)
+            logger.log("ConcurrentEngine: rotated to next OpenVPN IP for \(target.rawValue)", category: .network, level: .warning)
+        case .proxy:
+            let _ = proxyService.nextWorkingProxy(for: target)
+            logger.log("ConcurrentEngine: rotated to next SOCKS5 IP for \(target.rawValue)", category: .network, level: .warning)
+        case .dns, .nodeMaven:
+            logger.log("ConcurrentEngine: no IP pool to rotate for mode \(mode.label) on \(target.rawValue)", category: .network, level: .warning)
+        }
     }
 
     private func performProxyPreCheck(batchId: String) async -> Bool {
