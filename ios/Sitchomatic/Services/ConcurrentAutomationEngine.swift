@@ -62,6 +62,7 @@ class ConcurrentAutomationEngine {
     private let logger = DebugLogger.shared
     private let coordinator = AIAutomationCoordinator.shared
     private let networkFactory = NetworkSessionFactory.shared
+    private let urlCooldown = URLCooldownService.shared
     private let throttler = AutomationThrottler(maxConcurrency: 5)
     private(set) var isRunning: Bool = false
     private var cancelFlag: Bool = false
@@ -86,6 +87,13 @@ class ConcurrentAutomationEngine {
         let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         logger.startSession(batchId, category: .ppsr, message: "ConcurrentEngine: starting \(checks.count) PPSR checks, maxConcurrency=\(maxConcurrency)")
 
+        ScreenshotCacheService.shared.resetBatchCounter()
+
+        let proxyOK = await performProxyPreCheck(batchId: batchId)
+        if !proxyOK {
+            logger.log("ConcurrentEngine: proxy pre-check FAILED — rotating proxy before batch", category: .network, level: .warning)
+        }
+
         var allResults: [(String, CheckOutcome)] = []
         var successCount = 0
         var failureCount = 0
@@ -101,9 +109,15 @@ class ConcurrentAutomationEngine {
 
             let batchResults: [(String, CheckOutcome, Int)] = await withTaskGroup(of: (String, CheckOutcome, Int).self) { group in
                 for check in batch {
+                    if self.cancelFlag { break }
                     let cardId = check.card.id
                     group.addTask {
+                        guard !Task.isCancelled else { return (cardId, CheckOutcome.timeout, 0) }
                         await self.throttler.acquire()
+                        guard !Task.isCancelled else {
+                            await self.throttler.release(succeeded: false)
+                            return (cardId, CheckOutcome.timeout, 0)
+                        }
                         let taskStart = Date()
                         let outcome = await engine.runCheck(check, timeout: timeout)
                         let latency = Int(Date().timeIntervalSince(taskStart) * 1000)
@@ -116,6 +130,10 @@ class ConcurrentAutomationEngine {
                 var results: [(String, CheckOutcome, Int)] = []
                 for await result in group {
                     results.append(result)
+                    if self.cancelFlag {
+                        group.cancelAll()
+                        break
+                    }
                 }
                 return results
             }
@@ -192,6 +210,13 @@ class ConcurrentAutomationEngine {
 
         logger.startSession(batchId, category: .login, message: "ConcurrentEngine: starting \(attempts.count) login tests across \(urls.count) URLs | network=\(networkSummary) mode=\(networkMode.label) target=\(proxyTarget.rawValue)")
 
+        ScreenshotCacheService.shared.resetBatchCounter()
+
+        let proxyOK = await performProxyPreCheck(batchId: batchId)
+        if !proxyOK {
+            logger.log("ConcurrentEngine: proxy pre-check FAILED for login batch — proceeding with caution", category: .network, level: .warning)
+        }
+
         var allResults: [(String, LoginOutcome)] = []
         var successCount = 0
         var failureCount = 0
@@ -205,21 +230,41 @@ class ConcurrentAutomationEngine {
             let batchEnd = min(batchStart + batchSize, attempts.count)
             let batchIndices = Array(batchStart..<batchEnd)
 
+            var effectiveURLs: [Int: URL] = [:]
+            for index in batchIndices {
+                let url = urls[index % urls.count]
+                if urlCooldown.isOnCooldown(url.absoluteString) {
+                    let remaining = Int(urlCooldown.cooldownRemaining(url.absoluteString))
+                    logger.log("ConcurrentEngine: URL \(url.host ?? "") on cooldown (\(remaining)s left) — rotating", category: .network, level: .warning)
+                    let alternate = urls.first { !self.urlCooldown.isOnCooldown($0.absoluteString) && $0 != url }
+                    effectiveURLs[index] = alternate ?? url
+                } else {
+                    effectiveURLs[index] = url
+                }
+            }
+
             let batchResults: [(String, LoginOutcome, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int).self) { group in
                 for index in batchIndices {
+                    if self.cancelFlag { break }
                     let attempt = attempts[index]
-                    let url = urls[index % urls.count]
+                    let effectiveURL = effectiveURLs[index] ?? urls[index % urls.count]
                     let username = attempt.credential.username
 
                     group.addTask {
+                        guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0) }
                         await self.throttler.acquire()
+                        guard !Task.isCancelled else {
+                            await self.throttler.release(succeeded: false)
+                            return (username, LoginOutcome.timeout, 0)
+                        }
                         let taskStart = Date()
 
-                        var outcome = await engine.runLoginTest(attempt, targetURL: url, timeout: timeout)
+                        var outcome = await engine.runLoginTest(attempt, targetURL: effectiveURL, timeout: timeout)
+
                         var retries = 0
                         let maxRetries = 2
 
-                        while (outcome == .connectionFailure || outcome == .timeout) && retries < maxRetries {
+                        while (outcome == .connectionFailure || outcome == .timeout) && retries < maxRetries && !Task.isCancelled {
                             retries += 1
                             let backoff = 1000 * (1 << (retries - 1))
                             try? await Task.sleep(for: .milliseconds(backoff))
@@ -237,8 +282,21 @@ class ConcurrentAutomationEngine {
                 var results: [(String, LoginOutcome, Int)] = []
                 for await result in group {
                     results.append(result)
+                    if self.cancelFlag {
+                        group.cancelAll()
+                        break
+                    }
                 }
                 return results
+            }
+
+            for (_, outcome, _) in batchResults {
+                let matchingURL = effectiveURLs[batchIndices.first ?? 0]?.absoluteString ?? ""
+                if outcome == .connectionFailure || outcome == .timeout {
+                    urlCooldown.recordFailure(for: matchingURL)
+                } else {
+                    urlCooldown.recordSuccess(for: matchingURL)
+                }
             }
 
             for (username, outcome, latency) in batchResults {
@@ -280,5 +338,49 @@ class ConcurrentAutomationEngine {
 
     func getThrottlerStats() async -> (active: Int, maxConcurrency: Int, backoffMs: Int, consecutiveFailures: Int) {
         await throttler.currentStats()
+    }
+
+    private func performProxyPreCheck(batchId: String) async -> Bool {
+        logger.log("ConcurrentEngine: running proxy pre-check...", category: .network, level: .info)
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.timeoutIntervalForRequest = 8
+        sessionConfig.timeoutIntervalForResource = 10
+
+        let deviceProxy = DeviceProxyService.shared
+        if deviceProxy.isEnabled, let netConfig = deviceProxy.activeConfig {
+            if case .socks5(let proxy) = netConfig {
+                var proxyDict: [String: Any] = [
+                    "SOCKSEnable": 1,
+                    "SOCKSProxy": proxy.host,
+                    "SOCKSPort": proxy.port,
+                ]
+                if let u = proxy.username { proxyDict["SOCKSUser"] = u }
+                if let p = proxy.password { proxyDict["SOCKSPassword"] = p }
+                sessionConfig.connectionProxyDictionary = proxyDict
+            }
+        }
+
+        let session = URLSession(configuration: sessionConfig)
+        defer { session.invalidateAndCancel() }
+
+        guard let url = URL(string: "https://api.ipify.org?format=json") else { return true }
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 6
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let ip = json["ip"] as? String {
+                    logger.log("ConcurrentEngine: proxy pre-check PASSED — IP: \(ip)", category: .network, level: .success)
+                }
+                return true
+            }
+            logger.log("ConcurrentEngine: proxy pre-check got HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)", category: .network, level: .warning)
+            return false
+        } catch {
+            logger.log("ConcurrentEngine: proxy pre-check FAILED — \(error.localizedDescription)", category: .network, level: .error)
+            return false
+        }
     }
 }

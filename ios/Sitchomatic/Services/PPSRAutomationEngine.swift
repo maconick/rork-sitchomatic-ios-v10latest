@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import WebKit
 
 nonisolated enum CheckOutcome: Sendable {
     case pass
@@ -26,6 +27,7 @@ class PPSRAutomationEngine {
     private let dohService = PPSRDoHService.shared
     private let networkFactory = NetworkSessionFactory.shared
     private let deviceProxy = DeviceProxyService.shared
+    private let deadSessionDetector = DeadSessionDetector.shared
 
     var canStartSession: Bool {
         activeSessions < maxConcurrency
@@ -202,6 +204,30 @@ class PPSRAutomationEngine {
                 await captureScreenshotForCheck(session: session, check: check, step: "reload_failed", note: "Reload failed", autoResult: .fail)
                 return .connectionFailure
             }
+        }
+
+        let ppsr_wv: WKWebView? = session.webView
+        let sessionAlive: Bool = await deadSessionDetector.isSessionAlive(ppsr_wv, sessionId: sessionId)
+        if !sessionAlive {
+            check.logs.append(PPSRLogEntry(message: "DEAD SESSION: WebView hung — no JS response in 15s. Tearing down.", level: .error))
+            logger.log("DEAD SESSION detected for \(check.card.displayNumber) — tearing down and failing", category: .webView, level: .critical, sessionId: sessionId)
+            failCheck(check, message: "Dead session — WebView hung, no JS response")
+            onUnusualFailure?("Dead session for \(check.card.displayNumber) — WebView hung")
+            return .connectionFailure
+        }
+
+        let interactiveCheck = await checkInteractiveElementsExist(session: session, sessionId: sessionId)
+        if !interactiveCheck.hasElements {
+            check.logs.append(PPSRLogEntry(message: "NO INTERACTIVE ELEMENTS: page loaded but \(interactiveCheck.detail) — treating as blank", level: .warning))
+            logger.log("No interactive elements after load for \(check.card.displayNumber): \(interactiveCheck.detail)", category: .automation, level: .error, sessionId: sessionId)
+            try? await Task.sleep(for: .seconds(3))
+            let retryInteractive = await checkInteractiveElementsExist(session: session, sessionId: sessionId)
+            if !retryInteractive.hasElements {
+                failCheck(check, message: "No interactive elements found after extended wait")
+                await captureScreenshotForCheck(session: session, check: check, step: "no_interactive", note: "Page loaded but no interactive elements", autoResult: .unknown)
+                return .connectionFailure
+            }
+            check.logs.append(PPSRLogEntry(message: "Interactive elements appeared after extended wait: \(retryInteractive.detail)", level: .success))
         }
 
         logger.startTimer(key: "\(sessionId)_fieldverify")
@@ -486,7 +512,11 @@ class PPSRAutomationEngine {
             }
             check.logs.append(PPSRLogEntry(message: "\(fieldName) attempt \(attempt)/3 FAILED: \(result.detail)", level: .warning))
             if attempt < 3 {
-                try? await Task.sleep(for: .milliseconds(Double(attempt) * 500))
+                let baseMs = 500 * (1 << (attempt - 1))
+                let jitter = Int.random(in: 0...Int(Double(baseMs) * 0.3))
+                let delayMs = baseMs + jitter
+                check.logs.append(PPSRLogEntry(message: "\(fieldName): backoff \(delayMs)ms before retry \(attempt + 1)", level: .info))
+                try? await Task.sleep(for: .milliseconds(delayMs))
             }
         }
         failCheck(check, message: "\(fieldName) FILL FAILED after 3 attempts")
@@ -543,6 +573,36 @@ class PPSRAutomationEngine {
         } else {
             check.logs.append(PPSRLogEntry(message: "DoH preflight failed — falling back to system DNS", level: .warning))
             logger.log("DoH preflight FAILED — falling back to system DNS", category: .dns, level: .warning, sessionId: sessionId)
+        }
+    }
+
+    private func checkInteractiveElementsExist(session: LoginWebSession, sessionId: String) async -> (hasElements: Bool, detail: String) {
+        let js = """
+        (function(){
+            var inputs = document.querySelectorAll('input:not([type="hidden"]), select, textarea, button[type="submit"], button:not([disabled])');
+            var visible = 0;
+            for (var i = 0; i < inputs.length; i++) {
+                var el = inputs[i];
+                if (el.offsetParent !== null || el.offsetHeight > 0 || el.offsetWidth > 0) visible++;
+            }
+            return 'INTERACTIVE:' + visible + '/' + inputs.length;
+        })()
+        """
+        guard let wv: WKWebView = session.webView else {
+            return (false, "webView nil")
+        }
+        do {
+            let result = try await wv.evaluateJavaScript(js)
+            if let str = result as? String, str.hasPrefix("INTERACTIVE:") {
+                let parts = str.replacingOccurrences(of: "INTERACTIVE:", with: "").split(separator: "/")
+                let visible = Int(parts.first ?? "0") ?? 0
+                let total = Int(parts.last ?? "0") ?? 0
+                logger.log("Interactive elements: \(visible) visible / \(total) total", category: .automation, level: visible > 0 ? .debug : .warning, sessionId: sessionId)
+                return (visible > 0, "\(visible) visible / \(total) total")
+            }
+            return (false, "unexpected JS result")
+        } catch {
+            return (false, "JS eval error: \(error.localizedDescription)")
         }
     }
 

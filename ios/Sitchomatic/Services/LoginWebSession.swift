@@ -4,7 +4,7 @@ import UIKit
 
 @MainActor
 class LoginWebSession: NSObject {
-    private var webView: WKWebView?
+    private(set) var webView: WKWebView?
     private let sessionId: UUID = UUID()
     private var pageLoadContinuation: CheckedContinuation<Bool, Never>?
     private var isPageLoaded: Bool = false

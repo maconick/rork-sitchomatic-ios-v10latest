@@ -26,6 +26,7 @@ class LoginAutomationEngine {
     private let debugButtonService = DebugLoginButtonService.shared
     private let trueDetection = TrueDetectionService.shared
     private let networkFactory = NetworkSessionFactory.shared
+    private let deadSessionDetector = DeadSessionDetector.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
@@ -230,6 +231,29 @@ class LoginAutomationEngine {
             }
         } else {
             attempt.logs.append(PPSRLogEntry(message: "Both login fields verified present and enabled", level: .success))
+        }
+
+        let sessionAlive = await deadSessionDetector.isSessionAlive(session.webView, sessionId: sessionId)
+        if !sessionAlive {
+            attempt.logs.append(PPSRLogEntry(message: "DEAD SESSION: WebView hung — no JS response in 15s. Tearing down.", level: .error))
+            logger.log("DEAD SESSION detected for \(attempt.credential.username) — tearing down", category: .webView, level: .critical, sessionId: sessionId)
+            failAttempt(attempt, message: "Dead session — WebView hung, no JS response")
+            onUnusualFailure?("Dead session for \(attempt.credential.username) — WebView hung")
+            return .connectionFailure
+        }
+
+        let interactiveCheck = await checkInteractiveElementsExist(session: session, sessionId: sessionId)
+        if !interactiveCheck.hasElements {
+            attempt.logs.append(PPSRLogEntry(message: "NO INTERACTIVE ELEMENTS: page loaded but \(interactiveCheck.detail) — waiting for JS render", level: .warning))
+            logger.log("No interactive elements for \(attempt.credential.username): \(interactiveCheck.detail)", category: .automation, level: .error, sessionId: sessionId)
+            try? await Task.sleep(for: .seconds(3))
+            let retryInteractive = await checkInteractiveElementsExist(session: session, sessionId: sessionId)
+            if !retryInteractive.hasElements {
+                failAttempt(attempt, message: "No interactive elements found after extended wait")
+                await captureDebugScreenshot(session: session, attempt: attempt, step: "no_interactive", note: "Page loaded but no interactive elements", autoResult: .unknown)
+                return .connectionFailure
+            }
+            attempt.logs.append(PPSRLogEntry(message: "Interactive elements appeared after wait: \(retryInteractive.detail)", level: .success))
         }
 
         let humanEngine = HumanInteractionEngine.shared
@@ -858,7 +882,11 @@ class LoginAutomationEngine {
             attempt.logs.append(PPSRLogEntry(message: "\(fieldName) attempt \(attemptNum)/3 FAILED: \(result.detail)", level: .warning))
             logger.log("\(fieldName) fill attempt \(attemptNum)/3 FAILED: \(result.detail)", category: .automation, level: .warning, sessionId: sessionId, durationMs: ms)
             if attemptNum < 3 {
-                try? await Task.sleep(for: .milliseconds(Double(attemptNum) * 500))
+                let baseMs = 500 * (1 << (attemptNum - 1))
+                let jitter = Int.random(in: 0...Int(Double(baseMs) * 0.3))
+                let delayMs = baseMs + jitter
+                attempt.logs.append(PPSRLogEntry(message: "\(fieldName): backoff \(delayMs)ms before retry \(attemptNum + 1)", level: .info))
+                try? await Task.sleep(for: .milliseconds(delayMs))
             }
         }
         failAttempt(attempt, message: "\(fieldName) FILL FAILED after 3 attempts")
@@ -1141,6 +1169,28 @@ class LoginAutomationEngine {
         )
         attempt.screenshotIds.append(screenshot.id)
         onScreenshot?(screenshot)
+    }
+
+    private func checkInteractiveElementsExist(session: LoginSiteWebSession, sessionId: String) async -> (hasElements: Bool, detail: String) {
+        let js = """
+        (function(){
+            var inputs = document.querySelectorAll('input:not([type="hidden"]), select, textarea, button[type="submit"], button:not([disabled])');
+            var visible = 0;
+            for (var i = 0; i < inputs.length; i++) {
+                var el = inputs[i];
+                if (el.offsetParent !== null || el.offsetHeight > 0 || el.offsetWidth > 0) visible++;
+            }
+            return 'INTERACTIVE:' + visible + '/' + inputs.length;
+        })()
+        """
+        if let result = await session.executeJS(js), result.hasPrefix("INTERACTIVE:") {
+            let parts = result.replacingOccurrences(of: "INTERACTIVE:", with: "").split(separator: "/")
+            let visible = Int(parts.first ?? "0") ?? 0
+            let total = Int(parts.last ?? "0") ?? 0
+            logger.log("Interactive elements: \(visible) visible / \(total) total", category: .automation, level: visible > 0 ? .debug : .warning, sessionId: sessionId)
+            return (visible > 0, "\(visible) visible / \(total) total")
+        }
+        return (false, "JS eval failed or webView nil")
     }
 
     private func makeSlowDebugCaptureTaskIfNeeded(session: LoginSiteWebSession, attempt: LoginAttempt, sessionId: String) -> Task<Void, Never>? {

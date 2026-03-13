@@ -11,6 +11,9 @@ class ScreenshotCacheService {
     private let maxDiskCacheSizeBytes: Int64 = 200 * 1024 * 1024
     private var memoryCache: [String: UIImage] = [:]
     private var accessOrder: [String] = []
+    private let logger = DebugLogger.shared
+    private var batchScreenshotCount: Int = 0
+    private let autoOffloadThreshold: Int = 30
 
     init() {
         let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -19,20 +22,73 @@ class ScreenshotCacheService {
     }
 
     func store(_ image: UIImage, forKey key: String) {
-        memoryCache[key] = image
+        let compressed = compressForMemory(image)
+        memoryCache[key] = compressed
         accessOrder.removeAll { $0 == key }
         accessOrder.append(key)
+        batchScreenshotCount += 1
         evictMemoryCacheIfNeeded()
+
+        if batchScreenshotCount > autoOffloadThreshold && batchScreenshotCount % 10 == 0 {
+            aggressiveMemoryEvict()
+        }
 
         Task.detached(priority: .utility) {
             let fileURL = self.fileURL(for: key)
-            if let data = image.jpegData(compressionQuality: 0.5) {
+            if let data = compressed.jpegData(compressionQuality: 0.4) {
                 try? data.write(to: fileURL, options: .atomic)
             }
             await MainActor.run {
                 self.evictDiskCacheIfNeeded()
             }
         }
+    }
+
+    func compressForMemory(_ image: UIImage) -> UIImage {
+        let maxDimension: CGFloat = 800
+        let size = image.size
+        if size.width <= maxDimension && size.height <= maxDimension {
+            if let data = image.jpegData(compressionQuality: 0.3), let compressed = UIImage(data: data) {
+                return compressed
+            }
+            return image
+        }
+        let scale = maxDimension / max(size.width, size.height)
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+        if let data = resized.jpegData(compressionQuality: 0.3), let compressed = UIImage(data: data) {
+            return compressed
+        }
+        return resized
+    }
+
+    func compressScreenshotForStorage(_ image: UIImage) -> UIImage {
+        return compressForMemory(image)
+    }
+
+    func resetBatchCounter() {
+        batchScreenshotCount = 0
+    }
+
+    private func aggressiveMemoryEvict() {
+        let targetCount = maxMemoryCacheCount / 2
+        while memoryCache.count > targetCount, let oldest = accessOrder.first {
+            memoryCache.removeValue(forKey: oldest)
+            accessOrder.removeFirst()
+        }
+        logger.log("ScreenshotCache: aggressive evict to \(memoryCache.count) items (batch count: \(batchScreenshotCount))", category: .screenshot, level: .debug)
+    }
+
+    var estimatedMemoryUsageMB: Int {
+        var total: Int = 0
+        for (_, img) in memoryCache {
+            let bytes = Int(img.size.width * img.size.height * img.scale * img.scale * 4)
+            total += bytes
+        }
+        return total / (1024 * 1024)
     }
 
     func retrieve(forKey key: String) -> UIImage? {
@@ -137,6 +193,10 @@ class ScreenshotCacheService {
                 }
             }
         }
+    }
+
+    var memoryCacheCount: Int {
+        memoryCache.count
     }
 
     var diskFileCount: Int {
