@@ -142,7 +142,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Login Button (Fallback modes only)
     var loginButtonDetectionMode: ButtonDetectionMode = .trueDetection
-    var loginButtonTextMatches: [String] = ["Log in", "Login", "Sign in", "Sign In", "Submit", "Continue", "Next", "Go", "Enter"]
+    var loginButtonTextMatches: [String] = ["LOGIN", "Sign in", "Sign In", "Submit", "Continue", "Next", "Go", "Enter", "Login", "Lo gin"]
     var loginButtonCustomSelector: String = ""
     var loginButtonClickMethod: ButtonClickMethod = .humanClick
     var loginButtonPreClickDelayMs: Int = 250
