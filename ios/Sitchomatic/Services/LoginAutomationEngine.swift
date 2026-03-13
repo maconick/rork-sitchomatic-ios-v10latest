@@ -27,6 +27,7 @@ class LoginAutomationEngine {
     private let trueDetection = TrueDetectionService.shared
     private let networkFactory = NetworkSessionFactory.shared
     private let deadSessionDetector = DeadSessionDetector.shared
+    private let replayLogger = SessionReplayLogger.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
@@ -48,6 +49,9 @@ class LoginAutomationEngine {
 
         let sessionId = "login_\(attempt.credential.username.prefix(12))_\(UUID().uuidString.prefix(6))"
         attempt.startedAt = Date()
+
+        replayLogger.startSession(id: sessionId, targetURL: targetURL.absoluteString, credential: attempt.credential.username)
+        replayLogger.log(sessionId: sessionId, action: "init", detail: "timeout=\(Int(timeout))s stealth=\(stealthEnabled)")
 
         logger.startSession(sessionId, category: .login, message: "Starting login test for \(attempt.credential.username) → \(targetURL.host ?? targetURL.absoluteString)")
         logger.log("Config: timeout=\(Int(timeout))s stealth=\(stealthEnabled) activeSessions=\(activeSessions)/\(maxConcurrency)", category: .login, level: .debug, sessionId: sessionId, metadata: ["url": targetURL.absoluteString, "username": attempt.credential.username])
@@ -117,6 +121,17 @@ class LoginAutomationEngine {
             onResponseTime?(targetURL.absoluteString, responseTime)
         }
 
+        replayLogger.log(sessionId: sessionId, action: "complete", detail: "outcome=\(outcome)", level: outcome == .success ? "success" : "error")
+        replayLogger.addMetadata(sessionId: sessionId, key: "outcome", value: "\(outcome)")
+        if let replayLog = replayLogger.endSession(id: sessionId, outcome: "\(outcome)") {
+            if let jsonData = replayLogger.exportAsJSON(replayLog) {
+                let dir = FileManager.default.temporaryDirectory.appendingPathComponent("session_replays", isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let file = dir.appendingPathComponent("\(sessionId).json")
+                try? jsonData.write(to: file)
+            }
+        }
+
         logger.endSession(sessionId, category: .login, message: "Login test COMPLETE: \(outcome) for \(attempt.credential.username)", level: outcome == .success ? .success : outcome == .noAcc ? .warning : .error)
 
         return outcome
@@ -125,6 +140,7 @@ class LoginAutomationEngine {
     private func performLoginTest(session: LoginSiteWebSession, attempt: LoginAttempt, sessionId: String = "") async -> LoginOutcome {
         advanceTo(.loadingPage, attempt: attempt, message: "Loading login page: \(session.targetURL.absoluteString)")
         logger.log("Phase: LOAD PAGE → \(session.targetURL.absoluteString)", category: .automation, level: .info, sessionId: sessionId)
+        replayLogger.log(sessionId: sessionId, action: "page_load", detail: session.targetURL.absoluteString)
 
         let preLoginURL = session.targetURL.absoluteString.lowercased()
 
@@ -157,11 +173,13 @@ class LoginAutomationEngine {
         guard loaded else {
             let errorDetail = session.lastNavigationError ?? "Unknown error"
             logger.log("FATAL: Page load failed after 3 attempts — \(errorDetail)", category: .network, level: .critical, sessionId: sessionId)
+            replayLogger.log(sessionId: sessionId, action: "page_load_failed", detail: errorDetail, level: "error")
             failAttempt(attempt, message: "FATAL: Failed to load login page after 3 attempts — \(errorDetail)")
             onConnectionFailure?("Page load failed: \(errorDetail)")
             await captureDebugScreenshot(session: session, attempt: attempt, step: "page_load_failed", note: "Failed to load", autoResult: .unknown)
             return .connectionFailure
         }
+        replayLogger.log(sessionId: sessionId, action: "page_loaded", detail: "loaded after retries")
 
         let extraDelay = automationSettings.pageLoadExtraDelayMs
         if extraDelay > 0 {

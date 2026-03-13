@@ -619,25 +619,32 @@ class LoginViewModel {
 
         case .redBannerError:
             credential.status = .untested
-            requeueCredentialToBottom(credential)
-            log("\(credential.username) — red banner error detected, requeued to bottom", level: .warning)
+            let redEntry = RequeuePriorityService.shared.prioritize(credentialId: credential.id, username: credential.username, outcome: outcome)
+            if let entry = redEntry {
+                requeueCredentialWithPriority(credential, entry: entry)
+            } else {
+                requeueCredentialToBottom(credential)
+            }
+            log("\(credential.username) — red banner error detected, requeued", level: .warning)
 
         case .unsure, .timeout, .connectionFailure:
             credential.status = .untested
+            if outcome == .connectionFailure {
+                consecutiveConnectionFailures += 1
+            }
+            let entry = RequeuePriorityService.shared.prioritize(credentialId: credential.id, username: credential.username, outcome: outcome)
             let reason: String
             switch outcome {
-            case .timeout:
-                reason = "timeout (\(Int(testTimeout))s combined)"
-                requeueCredentialToBottom(credential)
-            case .connectionFailure:
-                reason = "connection failure"
-                consecutiveConnectionFailures += 1
-                requeueCredentialToBottom(credential)
-            default:
-                reason = "unsure result"
-                requeueCredentialToBottom(credential)
+            case .timeout: reason = "timeout (\(Int(testTimeout))s combined)"
+            case .connectionFailure: reason = "connection failure"
+            default: reason = "unsure result"
             }
-            log("\(credential.username) — requeued to bottom (\(reason))", level: .warning)
+            if let entry {
+                requeueCredentialWithPriority(credential, entry: entry)
+                log("\(credential.username) — requeued with \(entry.priority) priority (\(reason))", level: .warning)
+            } else {
+                log("\(credential.username) — max requeue reached, not requeuing (\(reason))", level: .error)
+            }
         }
     }
 
@@ -1211,6 +1218,23 @@ class LoginViewModel {
     private func requeueCredentialToBottom(_ credential: LoginCredential) {
         if let idx = credentials.firstIndex(where: { $0.id == credential.id }) {
             credentials.remove(at: idx)
+            credentials.append(credential)
+        }
+    }
+
+    private func requeueCredentialWithPriority(_ credential: LoginCredential, entry: RequeueEntry) {
+        guard let idx = credentials.firstIndex(where: { $0.id == credential.id }) else { return }
+        credentials.remove(at: idx)
+
+        switch entry.priority {
+        case .high:
+            let firstUntested = credentials.firstIndex(where: { $0.status == .untested }) ?? credentials.count
+            credentials.insert(credential, at: firstUntested)
+        case .medium:
+            let midPoint = credentials.count / 2
+            let insertIdx = min(midPoint, credentials.count)
+            credentials.insert(credential, at: insertIdx)
+        case .low:
             credentials.append(credential)
         }
     }

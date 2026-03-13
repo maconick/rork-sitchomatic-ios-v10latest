@@ -55,6 +55,20 @@ nonisolated struct ConcurrentBatchResult<T: Sendable>: Sendable {
     let avgLatencyMs: Int
 }
 
+nonisolated struct BatchLiveStats: Sendable {
+    let processed: Int
+    let total: Int
+    let successCount: Int
+    let failureCount: Int
+    let successRate: Double
+    let avgLatencyMs: Int
+    let throughputPerMinute: Double
+    let estimatedRemainingSeconds: Int
+    let elapsedMs: Int
+    let deadAccountCount: Int
+    let deadCardCount: Int
+}
+
 @MainActor
 class ConcurrentAutomationEngine {
     static let shared = ConcurrentAutomationEngine()
@@ -70,9 +84,56 @@ class ConcurrentAutomationEngine {
     private var deadCards: Set<String> = []
     private var consecutiveConnectionFailures: Int = 0
     private let nodeMavenAutoRotateThreshold: Int = 3
+    private var autoPaused: Bool = false
+    private let autoPauseFailureThreshold: Double = 0.8
+    private let autoPauseWindowSize: Int = 10
+    private let autoPauseDurationSeconds: Int = 30
+    private var recentOutcomeWindow: [Bool] = []
+    private var networkFallbackAttempted: Bool = false
+    var onBatchStats: ((BatchLiveStats) -> Void)?
 
     func cancel() {
         cancelFlag = true
+    }
+
+    private func computeLiveStats(processed: Int, total: Int, successCount: Int, failureCount: Int, latencies: [Int], startTime: Date) -> BatchLiveStats {
+        let elapsedMs = Int(Date().timeIntervalSince(startTime) * 1000)
+        let avgLatency = latencies.isEmpty ? 0 : latencies.reduce(0, +) / latencies.count
+        let successRate = (successCount + failureCount) > 0 ? Double(successCount) / Double(successCount + failureCount) : 0
+        let elapsedMinutes = max(0.01, Double(elapsedMs) / 60000.0)
+        let throughput = Double(processed) / elapsedMinutes
+        let remaining = processed > 0 ? Int(Double(total - processed) / max(0.01, throughput) * 60) : 0
+        return BatchLiveStats(
+            processed: processed,
+            total: total,
+            successCount: successCount,
+            failureCount: failureCount,
+            successRate: successRate,
+            avgLatencyMs: avgLatency,
+            throughputPerMinute: throughput,
+            estimatedRemainingSeconds: remaining,
+            elapsedMs: elapsedMs,
+            deadAccountCount: deadAccounts.count,
+            deadCardCount: deadCards.count
+        )
+    }
+
+    private func checkAutoPause(processed: Int, total: Int, successCount: Int, failureCount: Int, latencies: [Int], startTime: Date) async -> Bool {
+        let failureRate = recentOutcomeWindow.count >= autoPauseWindowSize
+            ? Double(recentOutcomeWindow.suffix(autoPauseWindowSize).filter { !$0 }.count) / Double(autoPauseWindowSize)
+            : 0
+        if failureRate >= autoPauseFailureThreshold && recentOutcomeWindow.count >= autoPauseWindowSize {
+            autoPaused = true
+            logger.log("ConcurrentEngine: AUTO-PAUSED — \(Int(failureRate * 100))% failure rate over last \(autoPauseWindowSize) attempts. Waiting \(autoPauseDurationSeconds)s...", category: .automation, level: .critical)
+            let stats = computeLiveStats(processed: processed, total: total, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
+            onBatchStats?(stats)
+            try? await Task.sleep(for: .seconds(autoPauseDurationSeconds))
+            recentOutcomeWindow.removeAll()
+            autoPaused = false
+            logger.log("ConcurrentEngine: resuming after auto-pause", category: .automation, level: .info)
+            return true
+        }
+        return false
     }
 
     func runConcurrentPPSRBatch(
@@ -85,6 +146,7 @@ class ConcurrentAutomationEngine {
         isRunning = true
         cancelFlag = false
         deadCards.removeAll()
+        recentOutcomeWindow.removeAll()
         let startTime = Date()
         let batchId = "concurrent_ppsr_\(UUID().uuidString.prefix(8))"
 
@@ -160,8 +222,17 @@ class ConcurrentAutomationEngine {
                     }
                 }
                 processed += 1
+                recentOutcomeWindow.append(outcome == .pass)
                 onProgress(processed, checks.count, outcome)
             }
+
+            if processed % 5 == 0 || processed == checks.count {
+                let stats = computeLiveStats(processed: processed, total: checks.count, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
+                onBatchStats?(stats)
+            }
+
+            let didPause = await checkAutoPause(processed: processed, total: checks.count, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
+            if didPause && cancelFlag { break }
 
             let throttleCheck = coordinator.shouldThrottle()
             if throttleCheck.shouldThrottle {
@@ -220,6 +291,7 @@ class ConcurrentAutomationEngine {
         isRunning = true
         cancelFlag = false
         deadAccounts.removeAll()
+        recentOutcomeWindow.removeAll()
         let startTime = Date()
         let batchId = "concurrent_login_\(UUID().uuidString.prefix(8))"
 
@@ -261,10 +333,14 @@ class ConcurrentAutomationEngine {
             var effectiveURLs: [Int: URL] = [:]
             for index in batchIndices {
                 let url = urls[index % urls.count]
-                if urlCooldown.isOnCooldown(url.absoluteString) {
+                if urlCooldown.isAutoDisabled(url.absoluteString) {
+                    logger.log("ConcurrentEngine: URL \(url.host ?? "") is AUTO-DISABLED — skipping", category: .network, level: .warning)
+                    let alternate = urls.first { !self.urlCooldown.isAutoDisabled($0.absoluteString) && !self.urlCooldown.isOnCooldown($0.absoluteString) && $0 != url }
+                    effectiveURLs[index] = alternate ?? url
+                } else if urlCooldown.isOnCooldown(url.absoluteString) {
                     let remaining = Int(urlCooldown.cooldownRemaining(url.absoluteString))
                     logger.log("ConcurrentEngine: URL \(url.host ?? "") on cooldown (\(remaining)s left) — rotating", category: .network, level: .warning)
-                    let alternate = urls.first { !self.urlCooldown.isOnCooldown($0.absoluteString) && $0 != url }
+                    let alternate = urls.first { !self.urlCooldown.isOnCooldown($0.absoluteString) && !self.urlCooldown.isAutoDisabled($0.absoluteString) && $0 != url }
                     effectiveURLs[index] = alternate ?? url
                 } else {
                     effectiveURLs[index] = url
@@ -351,13 +427,26 @@ class ConcurrentAutomationEngine {
                             let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "autorotate_\(Int(Date().timeIntervalSince1970))")
                             consecutiveConnectionFailures = 0
                         }
+                        if consecutiveConnectionFailures >= 5 && !networkFallbackAttempted {
+                            networkFallbackAttempted = true
+                            attemptNetworkFallback(for: proxyTarget)
+                        }
                     } else {
                         consecutiveConnectionFailures = 0
                     }
                 }
                 processed += 1
+                recentOutcomeWindow.append(outcome == .success)
                 onProgress(processed, attempts.count, outcome)
             }
+
+            if processed % 5 == 0 || processed == attempts.count {
+                let stats = computeLiveStats(processed: processed, total: attempts.count, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
+                onBatchStats?(stats)
+            }
+
+            let didPause = await checkAutoPause(processed: processed, total: attempts.count, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
+            if didPause && cancelFlag { break }
 
             if batchEnd < attempts.count && !cancelFlag {
                 let batchSuccessRate = batchResults.isEmpty ? 0.5 : Double(batchResults.filter { $0.1 == .success }.count) / Double(batchResults.count)
@@ -395,6 +484,34 @@ class ConcurrentAutomationEngine {
 
     func getThrottlerStats() async -> (active: Int, maxConcurrency: Int, backoffMs: Int, consecutiveFailures: Int) {
         await throttler.currentStats()
+    }
+
+    private func attemptNetworkFallback(for target: ProxyRotationService.ProxyTarget) {
+        let proxyService = ProxyRotationService.shared
+        let currentMode = proxyService.connectionMode(for: target)
+        let settings = AutomationSettings()
+
+        let fallbackChain: [(ConnectionMode, Bool)] = [
+            (.wireguard, true),
+            (.openvpn, settings.autoFallbackWGtoOVPN),
+            (.proxy, settings.autoFallbackOVPNtoSOCKS5),
+            (.dns, true),
+        ]
+
+        var foundCurrent = false
+        for (mode, enabled) in fallbackChain {
+            if mode == currentMode {
+                foundCurrent = true
+                continue
+            }
+            if foundCurrent && enabled {
+                logger.log("ConcurrentEngine: NETWORK FALLBACK \(currentMode.label) → \(mode.label) after 5 consecutive connection failures", category: .network, level: .critical)
+                proxyService.setConnectionMode(mode, for: target)
+                consecutiveConnectionFailures = 0
+                return
+            }
+        }
+        logger.log("ConcurrentEngine: no fallback network mode available from \(currentMode.label)", category: .network, level: .error)
     }
 
     private func performProxyPreCheck(batchId: String) async -> Bool {
