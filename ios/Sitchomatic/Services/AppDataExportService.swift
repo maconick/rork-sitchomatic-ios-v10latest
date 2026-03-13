@@ -95,9 +95,9 @@ nonisolated struct ComprehensiveExportConfig: Codable, Sendable {
     }
 
     nonisolated struct ExportIPRoutingSettings: Codable, Sendable {
-        var mode: String = "Separate IP per Session"
-        var rotationInterval: String = "Every 5 Minutes"
-        var rotateOnBatchStart: Bool = true
+        var mode: String = "App-Wide United IP"
+        var rotationInterval: String = "Every Batch"
+        var rotateOnBatchStart: Bool = false
         var rotateOnFingerprintDetection: Bool = true
         var localProxyEnabled: Bool = true
         var autoFailoverEnabled: Bool = true

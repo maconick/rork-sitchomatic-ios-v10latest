@@ -43,6 +43,9 @@ class DefaultSettingsService {
         proxyService.setUnifiedConnectionMode(.wireguard)
 
         let deviceProxy = DeviceProxyService.shared
+        deviceProxy.ipRoutingMode = .appWideUnited
+        deviceProxy.rotationInterval = .everyBatch
+        deviceProxy.rotateOnBatchStart = false
         deviceProxy.localProxyEnabled = true
 
         blacklistService.autoExcludeBlacklist = true

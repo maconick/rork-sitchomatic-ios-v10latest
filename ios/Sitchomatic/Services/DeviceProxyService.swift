@@ -103,7 +103,7 @@ class DeviceProxyService {
         }
     }
 
-    var ipRoutingMode: IPRoutingMode = .separatePerSession {
+    var ipRoutingMode: IPRoutingMode = .appWideUnited {
         didSet {
             persistSettings()
             if ipRoutingMode == .appWideUnited {
@@ -146,14 +146,14 @@ class DeviceProxyService {
     private(set) var perSessionWireProxyActive: Bool = false
     private var perSessionWGConfig: WireGuardConfig?
 
-    var rotationInterval: RotationInterval = .every5Min {
+    var rotationInterval: RotationInterval = .everyBatch {
         didSet {
             persistSettings()
             restartRotationTimer()
         }
     }
 
-    var rotateOnBatchStart: Bool = true {
+    var rotateOnBatchStart: Bool = false {
         didSet { persistSettings() }
     }
 
@@ -229,7 +229,8 @@ class DeviceProxyService {
     }
 
     func notifyBatchStart() {
-        guard isEnabled, rotateOnBatchStart else { return }
+        guard isEnabled else { return }
+        guard rotateOnBatchStart || rotationInterval == .everyBatch else { return }
         performRotation(reason: "Batch Start")
     }
 
@@ -509,8 +510,14 @@ class DeviceProxyService {
         }
     }
 
+    private(set) var perSessionWireProxyStarting: Bool = false
+
     func activatePerSessionWireProxy() {
         guard !isEnabled, isWireProxyCompatibleMode else { return }
+        guard !perSessionWireProxyStarting else {
+            logger.log("DeviceProxy: per-session WireProxy activation already in progress", category: .vpn, level: .debug)
+            return
+        }
         let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
         let allWG = collectUniqueWG(targets: targets)
         guard !allWG.isEmpty else {
@@ -518,54 +525,68 @@ class DeviceProxyService {
             return
         }
 
+        perSessionWireProxyStarting = true
         perSessionWireProxyActive = true
 
+        wireProxyBridge.stop()
+        localProxy.enableWireProxyMode(false)
+
         if localProxyEnabled {
-            localProxy.start()
+            if !localProxy.isRunning {
+                localProxy.start()
+            }
         }
 
-        if allWG.count >= 2 {
-            let multiConfigs = Array(allWG.prefix(min(allWG.count, 6)))
-            perSessionWGConfig = multiConfigs.first
+        Task {
+            try? await Task.sleep(for: .seconds(0.5))
 
-            Task {
-                if wireProxyBridge.isActive {
-                    wireProxyBridge.stop()
-                }
+            if !localProxy.isRunning && localProxyEnabled {
+                localProxy.start()
+                try? await Task.sleep(for: .seconds(0.3))
+            }
+
+            if allWG.count >= 2 {
+                let multiConfigs = Array(allWG.prefix(min(allWG.count, 6)))
+                perSessionWGConfig = multiConfigs.first
+
                 await wireProxyBridge.startMultiple(configs: multiConfigs)
                 if wireProxyBridge.isActive {
                     localProxy.enableWireProxyMode(true)
                     logger.log("DeviceProxy: per-session multi-tunnel WireProxy active → \(wireProxyBridge.activeTunnelCount)/\(multiConfigs.count) tunnels", category: .vpn, level: .success)
                 } else {
-                    localProxy.enableWireProxyMode(false)
                     logger.log("DeviceProxy: per-session multi-tunnel WireProxy failed — falling back to single", category: .vpn, level: .error)
                     await fallbackToSingleTunnel(allWG: allWG)
                 }
-            }
-        } else {
-            let wg = allWG[wgIndex % allWG.count]
-            wgIndex += 1
-            perSessionWGConfig = wg
+            } else {
+                let wg = allWG[wgIndex % allWG.count]
+                wgIndex += 1
+                perSessionWGConfig = wg
 
-            Task {
-                if wireProxyBridge.isActive {
-                    wireProxyBridge.stop()
-                }
                 await wireProxyBridge.start(with: wg)
                 if wireProxyBridge.isActive {
                     localProxy.enableWireProxyMode(true)
                     logger.log("DeviceProxy: per-session WireProxy active → \(wg.serverName)", category: .vpn, level: .success)
                 } else {
-                    localProxy.enableWireProxyMode(false)
                     logger.log("DeviceProxy: per-session WireProxy failed for \(wg.serverName) — retrying", category: .vpn, level: .error)
                     await retryPerSessionWireProxy(failedServer: wg.serverName)
                 }
             }
+
+            if !wireProxyBridge.isActive {
+                perSessionWireProxyActive = false
+                perSessionWGConfig = nil
+                localProxy.enableWireProxyMode(false)
+                logger.log("DeviceProxy: per-session WireProxy failed to start after all attempts", category: .vpn, level: .error)
+            }
+
+            perSessionWireProxyStarting = false
         }
     }
 
     private func fallbackToSingleTunnel(allWG: [WireGuardConfig]) async {
         for wg in allWG {
+            wireProxyBridge.stop()
+            try? await Task.sleep(for: .seconds(0.3))
             await wireProxyBridge.start(with: wg)
             if wireProxyBridge.isActive {
                 perSessionWGConfig = wg
@@ -574,8 +595,6 @@ class DeviceProxyService {
                 return
             }
         }
-        perSessionWireProxyActive = false
-        perSessionWGConfig = nil
         localProxy.enableWireProxyMode(false)
         logger.log("DeviceProxy: all WG tunnel fallbacks failed", category: .vpn, level: .error)
     }
@@ -585,25 +604,30 @@ class DeviceProxyService {
         let allWG = collectUniqueWG(targets: targets)
         let candidates = allWG.filter { $0.serverName != failedServer }
         guard !candidates.isEmpty else {
-            perSessionWireProxyActive = false
-            perSessionWGConfig = nil
             logger.log("DeviceProxy: no alternative WG configs for per-session retry", category: .vpn, level: .error)
             return
         }
-        let nextWG = candidates[wgIndex % candidates.count]
-        wgIndex += 1
-        perSessionWGConfig = nextWG
 
-        await wireProxyBridge.start(with: nextWG)
-        if wireProxyBridge.isActive {
-            localProxy.enableWireProxyMode(true)
-            logger.log("DeviceProxy: per-session WireProxy retry succeeded → \(nextWG.serverName)", category: .vpn, level: .success)
-        } else {
-            localProxy.enableWireProxyMode(false)
-            perSessionWireProxyActive = false
-            perSessionWGConfig = nil
-            logger.log("DeviceProxy: per-session WireProxy retry also failed for \(nextWG.serverName)", category: .vpn, level: .error)
+        for i in 0..<min(candidates.count, 3) {
+            let nextWG = candidates[(wgIndex + i) % candidates.count]
+            perSessionWGConfig = nextWG
+
+            wireProxyBridge.stop()
+            try? await Task.sleep(for: .seconds(0.3))
+
+            await wireProxyBridge.start(with: nextWG)
+            if wireProxyBridge.isActive {
+                wgIndex += i + 1
+                localProxy.enableWireProxyMode(true)
+                logger.log("DeviceProxy: per-session WireProxy retry succeeded → \(nextWG.serverName)", category: .vpn, level: .success)
+                return
+            }
+            logger.log("DeviceProxy: per-session WireProxy retry failed for \(nextWG.serverName) — trying next", category: .vpn, level: .warning)
         }
+
+        wgIndex += min(candidates.count, 3)
+        localProxy.enableWireProxyMode(false)
+        logger.log("DeviceProxy: per-session WireProxy all retries exhausted", category: .vpn, level: .error)
     }
 
     private func stopPerSessionWireProxy() {
@@ -616,9 +640,10 @@ class DeviceProxyService {
     }
 
     func rotatePerSessionWireProxy() {
-        guard perSessionWireProxyActive, !isEnabled else { return }
+        guard perSessionWireProxyActive, !isEnabled, !perSessionWireProxyStarting else { return }
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
+        perSessionWireProxyActive = false
         activatePerSessionWireProxy()
     }
 
