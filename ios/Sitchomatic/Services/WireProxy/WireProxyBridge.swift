@@ -21,6 +21,17 @@ nonisolated struct WireProxyStats: Sendable {
     var connectionsFailed: Int = 0
 }
 
+struct WireProxyTunnelSlot {
+    let index: Int
+    let config: WireGuardConfig
+    let wgSession: WireGuardSession
+    let tcpManager: TCPSessionManager
+    let dnsResolver: TunnelDNSResolver
+    var localIP: UInt32 = 0
+    var isEstablished: Bool = false
+    var serverName: String { config.serverName }
+}
+
 @Observable
 @MainActor
 class WireProxyBridge {
@@ -45,6 +56,11 @@ class WireProxyBridge {
     private let healthCheckInterval: TimeInterval = 20
     private var pendingReconnectHosts: [(host: String, port: UInt16)] = []
     private var isReconnecting: Bool = false
+
+    private(set) var tunnelSlots: [WireProxyTunnelSlot] = []
+    private var nextSlotIndex: Int = 0
+    private(set) var multiTunnelMode: Bool = false
+    var activeTunnelCount: Int { tunnelSlots.filter(\.isEstablished).count }
 
     var isActive: Bool { status == .established }
 
@@ -136,6 +152,16 @@ class WireProxyBridge {
         tcpManager.shutdown()
         dnsResolver.clearCache()
         wgSession.disconnect()
+
+        for slot in tunnelSlots {
+            slot.dnsResolver.stopBackgroundRefresh()
+            slot.tcpManager.shutdown()
+            slot.dnsResolver.clearCache()
+            slot.wgSession.disconnect()
+        }
+        tunnelSlots.removeAll()
+        nextSlotIndex = 0
+        multiTunnelMode = false
 
         status = .stopped
         connectedSince = nil
@@ -242,11 +268,147 @@ class WireProxyBridge {
     private func checkTunnelHealth() {
         guard status == .established else { return }
 
+        if multiTunnelMode {
+            var anyDown = false
+            for (i, slot) in tunnelSlots.enumerated() where slot.isEstablished {
+                if !slot.wgSession.isEstablished {
+                    logger.log("WireProxyBridge: health check — slot \(i) (\(slot.serverName)) DOWN", category: .vpn, level: .error)
+                    tunnelSlots[i].isEstablished = false
+                    anyDown = true
+                }
+            }
+            let activeCount = tunnelSlots.filter(\.isEstablished).count
+            if activeCount == 0 {
+                logger.log("WireProxyBridge: all multi-tunnel slots DOWN — initiating reconnect", category: .vpn, level: .error)
+                Task { await reconnectPreservingSessions() }
+            } else if anyDown {
+                logger.log("WireProxyBridge: \(activeCount)/\(tunnelSlots.count) slots still active", category: .vpn, level: .warning)
+            }
+            return
+        }
+
         if !wgSession.isEstablished {
             logger.log("WireProxyBridge: health check detected tunnel DOWN — initiating reconnect", category: .vpn, level: .error)
             Task {
                 await reconnectPreservingSessions()
             }
+        }
+    }
+
+    func startMultiple(configs: [WireGuardConfig]) async {
+        guard status == .stopped || status == .failed else { return }
+        guard configs.count > 1 else {
+            if let first = configs.first {
+                await start(with: first)
+            }
+            return
+        }
+
+        status = .connecting
+        lastError = nil
+        reconnectAttempts = 0
+        multiTunnelMode = true
+        tunnelSlots.removeAll()
+        nextSlotIndex = 0
+
+        logger.log("WireProxyBridge: starting multi-tunnel with \(configs.count) WG configs", category: .vpn, level: .info)
+
+        for (i, config) in configs.enumerated() {
+            let session = WireGuardSession()
+            let tcp = TCPSessionManager()
+            let dns = TunnelDNSResolver()
+
+            let address = config.interfaceAddress.split(separator: "/").first.map(String.init) ?? config.interfaceAddress
+            guard let ip = IPv4Packet.ipFromString(address) else {
+                logger.log("WireProxyBridge: slot \(i) invalid address: \(config.interfaceAddress)", category: .vpn, level: .error)
+                continue
+            }
+
+            tcp.configure(localIP: ip)
+            tcp.sendPacketHandler = { [weak session] packet in
+                session?.sendPacket(packet)
+            }
+
+            let dnsServer = config.interfaceDNS.split(separator: ",").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "1.1.1.1"
+            dns.configure(dnsServer: dnsServer, sourceIP: ip)
+            dns.sendPacketHandler = { [weak session] packet in
+                session?.sendPacket(packet)
+            }
+
+            session.onPacketReceived = { [weak self, i] ipData in
+                self?.handleMultiTunnelPacket(ipData, slotIndex: i)
+            }
+
+            let configured = session.configure(
+                privateKey: config.interfacePrivateKey,
+                peerPublicKey: config.peerPublicKey,
+                preSharedKey: config.peerPreSharedKey,
+                endpoint: config.peerEndpoint,
+                keepalive: config.peerPersistentKeepalive ?? 25
+            )
+
+            guard configured else {
+                logger.log("WireProxyBridge: slot \(i) config failed for \(config.serverName)", category: .vpn, level: .error)
+                continue
+            }
+
+            var slot = WireProxyTunnelSlot(
+                index: i,
+                config: config,
+                wgSession: session,
+                tcpManager: tcp,
+                dnsResolver: dns,
+                localIP: ip
+            )
+
+            await session.connect()
+            try? await Task.sleep(for: .seconds(3))
+
+            if session.isEstablished {
+                slot.isEstablished = true
+                dns.startBackgroundRefresh()
+                logger.log("WireProxyBridge: slot \(i) ESTABLISHED → \(config.peerEndpoint) (\(config.serverName))", category: .vpn, level: .success)
+            } else {
+                logger.log("WireProxyBridge: slot \(i) FAILED for \(config.serverName) — \(session.lastError ?? "timeout")", category: .vpn, level: .error)
+            }
+
+            tunnelSlots.append(slot)
+        }
+
+        let established = tunnelSlots.filter(\.isEstablished).count
+        if established > 0 {
+            status = .established
+            connectedSince = Date()
+            startHealthCheck()
+            logger.log("WireProxyBridge: multi-tunnel ready — \(established)/\(configs.count) tunnels active", category: .vpn, level: .success)
+        } else {
+            status = .failed
+            lastError = "All \(configs.count) tunnel slots failed to establish"
+            logger.log("WireProxyBridge: multi-tunnel FAILED — 0/\(configs.count) established", category: .vpn, level: .error)
+        }
+    }
+
+    func nextTunnelSlot() -> WireProxyTunnelSlot? {
+        let established = tunnelSlots.filter(\.isEstablished)
+        guard !established.isEmpty else { return nil }
+        let slot = established[nextSlotIndex % established.count]
+        nextSlotIndex += 1
+        return slot
+    }
+
+    private func handleMultiTunnelPacket(_ ipData: Data, slotIndex: Int) {
+        guard slotIndex < tunnelSlots.count else { return }
+        guard let ipPacket = IPv4Packet.parse(ipData) else { return }
+
+        let slot = tunnelSlots[slotIndex]
+        if ipPacket.header.isUDP {
+            slot.dnsResolver.handleIncomingPacket(ipData)
+            return
+        }
+        if ipPacket.header.isTCP {
+            stats.bytesDownstream += UInt64(ipData.count)
+            slot.tcpManager.handleIncomingPacket(ipData)
+            return
         }
     }
 
@@ -264,6 +426,23 @@ class WireProxyBridge {
         }
 
         stats.connectionsServed += 1
+
+        if multiTunnelMode, let slot = nextTunnelSlot() {
+            let tunnelConn = WireProxyMultiTunnelConnection(
+                id: id,
+                clientConnection: clientConnection,
+                targetHost: targetHost,
+                targetPort: targetPort,
+                queue: queue,
+                server: server,
+                bridge: self,
+                slot: slot
+            )
+            tunnelConnections[id] = tunnelConn
+            tunnelConn.start()
+            logger.log("WireProxyBridge: routed \(targetHost) → slot \(slot.index) (\(slot.serverName))", category: .vpn, level: .debug)
+            return
+        }
 
         let tunnelConn = WireProxyTunnelConnection(
             id: id,
@@ -330,6 +509,36 @@ class WireProxyBridge {
             tcpManager.handleIncomingPacket(ipData)
             return
         }
+    }
+
+    func createMultiTunnelTCPSession(slot: WireProxyTunnelSlot, destinationIP: UInt32, destinationPort: UInt16) -> TCPSession {
+        stats.tcpSessionsCreated += 1
+        stats.tcpSessionsActive += 1
+        return slot.tcpManager.createSession(destinationIP: destinationIP, destinationPort: destinationPort)
+    }
+
+    func initiateMultiTunnelConnection(_ session: TCPSession, slot: WireProxyTunnelSlot) {
+        slot.tcpManager.initiateConnection(session)
+    }
+
+    func sendMultiTunnelData(_ session: TCPSession, data: Data, slot: WireProxyTunnelSlot) {
+        stats.bytesUpstream += UInt64(data.count)
+        slot.tcpManager.sendData(session, data: data)
+    }
+
+    func closeMultiTunnelSession(_ session: TCPSession, slot: WireProxyTunnelSlot) {
+        slot.tcpManager.closeSession(session)
+        stats.tcpSessionsActive = max(0, stats.tcpSessionsActive - 1)
+    }
+
+    func resetMultiTunnelSession(_ session: TCPSession, slot: WireProxyTunnelSlot) {
+        slot.tcpManager.sendReset(session)
+        stats.tcpSessionsActive = max(0, stats.tcpSessionsActive - 1)
+    }
+
+    func resolveMultiTunnelHostname(_ hostname: String, slot: WireProxyTunnelSlot) async -> UInt32? {
+        stats.dnsQueriesTotal += 1
+        return await slot.dnsResolver.resolve(hostname)
     }
 
     var wgSessionStatus: WGSessionStatus { wgSession.status }

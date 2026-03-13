@@ -517,29 +517,67 @@ class DeviceProxyService {
             logger.log("DeviceProxy: no WG configs available for per-session WireProxy", category: .vpn, level: .warning)
             return
         }
-        let wg = allWG[wgIndex % allWG.count]
-        wgIndex += 1
-        perSessionWGConfig = wg
+
         perSessionWireProxyActive = true
 
         if localProxyEnabled {
             localProxy.start()
         }
 
-        Task {
-            if wireProxyBridge.isActive {
-                wireProxyBridge.stop()
+        if allWG.count >= 2 {
+            let multiConfigs = Array(allWG.prefix(min(allWG.count, 6)))
+            perSessionWGConfig = multiConfigs.first
+
+            Task {
+                if wireProxyBridge.isActive {
+                    wireProxyBridge.stop()
+                }
+                await wireProxyBridge.startMultiple(configs: multiConfigs)
+                if wireProxyBridge.isActive {
+                    localProxy.enableWireProxyMode(true)
+                    logger.log("DeviceProxy: per-session multi-tunnel WireProxy active → \(wireProxyBridge.activeTunnelCount)/\(multiConfigs.count) tunnels", category: .vpn, level: .success)
+                } else {
+                    localProxy.enableWireProxyMode(false)
+                    logger.log("DeviceProxy: per-session multi-tunnel WireProxy failed — falling back to single", category: .vpn, level: .error)
+                    await fallbackToSingleTunnel(allWG: allWG)
+                }
             }
-            await wireProxyBridge.start(with: wg)
-            if wireProxyBridge.isActive {
-                localProxy.enableWireProxyMode(true)
-                logger.log("DeviceProxy: per-session WireProxy active → \(wg.serverName)", category: .vpn, level: .success)
-            } else {
-                localProxy.enableWireProxyMode(false)
-                logger.log("DeviceProxy: per-session WireProxy failed for \(wg.serverName) — retrying", category: .vpn, level: .error)
-                await retryPerSessionWireProxy(failedServer: wg.serverName)
+        } else {
+            let wg = allWG[wgIndex % allWG.count]
+            wgIndex += 1
+            perSessionWGConfig = wg
+
+            Task {
+                if wireProxyBridge.isActive {
+                    wireProxyBridge.stop()
+                }
+                await wireProxyBridge.start(with: wg)
+                if wireProxyBridge.isActive {
+                    localProxy.enableWireProxyMode(true)
+                    logger.log("DeviceProxy: per-session WireProxy active → \(wg.serverName)", category: .vpn, level: .success)
+                } else {
+                    localProxy.enableWireProxyMode(false)
+                    logger.log("DeviceProxy: per-session WireProxy failed for \(wg.serverName) — retrying", category: .vpn, level: .error)
+                    await retryPerSessionWireProxy(failedServer: wg.serverName)
+                }
             }
         }
+    }
+
+    private func fallbackToSingleTunnel(allWG: [WireGuardConfig]) async {
+        for wg in allWG {
+            await wireProxyBridge.start(with: wg)
+            if wireProxyBridge.isActive {
+                perSessionWGConfig = wg
+                localProxy.enableWireProxyMode(true)
+                logger.log("DeviceProxy: single-tunnel fallback succeeded → \(wg.serverName)", category: .vpn, level: .success)
+                return
+            }
+        }
+        perSessionWireProxyActive = false
+        perSessionWGConfig = nil
+        localProxy.enableWireProxyMode(false)
+        logger.log("DeviceProxy: all WG tunnel fallbacks failed", category: .vpn, level: .error)
     }
 
     private func retryPerSessionWireProxy(failedServer: String) async {
@@ -582,6 +620,14 @@ class DeviceProxyService {
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
         activatePerSessionWireProxy()
+    }
+
+    var perSessionTunnelCount: Int {
+        wireProxyBridge.activeTunnelCount
+    }
+
+    var isMultiTunnelActive: Bool {
+        wireProxyBridge.multiTunnelMode && wireProxyBridge.activeTunnelCount > 1
     }
 
     var wireProxyActiveConfigLabel: String? {

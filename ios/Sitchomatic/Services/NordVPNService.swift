@@ -182,7 +182,7 @@ class NordVPNService {
 
     private let maxRetryAttempts = 3
     private let retryBaseDelay: TimeInterval = 2
-    private let expectedWireGuardConfigCount = 20
+    private let expectedWireGuardConfigCount = 24
     private let expectedOpenVPNConfigCount = 10
 
     private func isRetryableError(_ error: Error) -> Bool {

@@ -88,12 +88,26 @@ struct FingerprintTestView: View {
     @State private var batchSize: Int = 6
     @State private var timerTick: Int = 0
     @State private var elapsedTimer: Timer?
+    @State private var currentPage: Int = 0
 
     private let stealth = PPSRStealthService.shared
     private let networkFactory = NetworkSessionFactory.shared
     private let deviceProxy = DeviceProxyService.shared
     private let proxyService = ProxyRotationService.shared
     private let logger = DebugLogger.shared
+    private let sessionsPerPage = 6
+
+    private var totalPages: Int {
+        max(1, (sessions.count + sessionsPerPage - 1) / sessionsPerPage)
+    }
+
+    private var currentPageSessions: [FPTestSession] {
+        guard !sessions.isEmpty else { return [] }
+        let start = currentPage * sessionsPerPage
+        let end = min(start + sessionsPerPage, sessions.count)
+        guard start < sessions.count else { return [] }
+        return Array(sessions[start..<end])
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -196,6 +210,10 @@ struct FingerprintTestView: View {
 
                 Spacer()
 
+                if sessions.count > sessionsPerPage {
+                    fpPaginationControls
+                }
+
                 HStack(spacing: 6) {
                     Text("BATCH")
                         .font(.system(size: 8, weight: .heavy, design: .monospaced))
@@ -216,6 +234,7 @@ struct FingerprintTestView: View {
                         sessions.removeAll()
                         messageHandlers.removeAll()
                         completedCount = 0
+                        currentPage = 0
                     } label: {
                         Image(systemName: "trash")
                             .font(.system(size: 11, weight: .bold))
@@ -232,6 +251,40 @@ struct FingerprintTestView: View {
 
             Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
         }
+    }
+
+    private var fpPaginationControls: some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation(.snappy) {
+                    currentPage = max(0, currentPage - 1)
+                }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(currentPage > 0 ? .purple : .secondary.opacity(0.3))
+            }
+            .disabled(currentPage == 0)
+
+            Text("\(currentPage + 1)/\(totalPages)")
+                .font(.system(size: 9, weight: .black, design: .monospaced))
+                .foregroundStyle(.purple)
+
+            Button {
+                withAnimation(.snappy) {
+                    currentPage = min(totalPages - 1, currentPage + 1)
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(currentPage < totalPages - 1 ? .purple : .secondary.opacity(0.3))
+            }
+            .disabled(currentPage >= totalPages - 1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.purple.opacity(0.1))
+        .clipShape(Capsule())
     }
 
     private var emptyState: some View {
@@ -253,7 +306,7 @@ struct FingerprintTestView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 infoRow(icon: "person.2.fill", label: "Profiles", value: "\(stealth.profileCount)")
-                infoRow(icon: "target", label: "Target Score", value: "≤ 3")
+                infoRow(icon: "target", label: "Target Score", value: "\u{2264} 3")
                 infoRow(icon: "shield.checkered", label: "IP Mode", value: deviceProxy.ipRoutingMode.shortLabel)
                 infoRow(icon: "network", label: "Connection", value: proxyService.connectionMode(for: .joe).label)
             }
@@ -282,7 +335,7 @@ struct FingerprintTestView: View {
 
     private var sessionList: some View {
         List {
-            ForEach(sessions) { session in
+            ForEach(currentPageSessions) { session in
                 FPSessionRow(session: session, timerTick: timerTick)
                     .listRowBackground(Color(.secondarySystemGroupedBackground))
             }
@@ -297,6 +350,7 @@ struct FingerprintTestView: View {
         completedCount = 0
         isRunning = true
         timerTick = 0
+        currentPage = 0
 
         let totalProfiles = stealth.profileCount
 
@@ -321,7 +375,7 @@ struct FingerprintTestView: View {
                     isRunning = false
                     let passed = sessions.filter(\.passed).count
                     let avgScore = sessions.isEmpty ? 0 : sessions.reduce(0) { $0 + $1.suspectScore } / sessions.count
-                    logger.log("FingerprintTest: complete — \(passed)/\(totalProfiles) passed, avg score: \(avgScore)", category: .fingerprint, level: passed == totalProfiles ? .success : .warning)
+                    logger.log("FingerprintTest: complete \u{2014} \(passed)/\(totalProfiles) passed, avg score: \(avgScore)", category: .fingerprint, level: passed == totalProfiles ? .success : .warning)
                 }
             }
         }
@@ -380,7 +434,7 @@ struct FingerprintTestView: View {
         let html = buildTestHTML()
         webView.loadHTMLString(html, baseURL: URL(string: "https://example.com"))
 
-        logger.log("FingerprintTest: P\(session.index) loading BotD test — \(session.profileLabel)", category: .fingerprint, level: .debug)
+        logger.log("FingerprintTest: P\(session.index) loading BotD test \u{2014} \(session.profileLabel)", category: .fingerprint, level: .debug)
     }
 
     private func buildTestHTML() -> String {
@@ -537,7 +591,7 @@ struct FingerprintTestView: View {
                  profile.userAgent.contains("10_15") ? "macOS 13.6" :
                  profile.userAgent.contains("OS 18_4") && profile.platform == "iPad" ? "iPadOS 18.4" : "Unknown"
 
-        return "\(device) • \(os) • \(profile.language)"
+        return "\(device) \u{2022} \(os) \u{2022} \(profile.language)"
     }
 
     private func stopTest() {

@@ -23,6 +23,7 @@ class IPScoreSession: Identifiable {
     var usedSite: String = "thisismyip.com"
     var screenshot: UIImage?
     var detectedIPFromPage: String?
+    var tunnelSlotLabel: String?
 
     nonisolated static let fallbackURLs: [URL] = [
         URL(string: "https://thisismyip.com")!,
@@ -167,13 +168,26 @@ struct IPScoreTestView: View {
     @State private var timerTick: Int = 0
     @State private var delegates: [UUID: IPScoreWebViewDelegate] = [:]
     @State private var showFingerprintTest: Bool = false
+    @State private var currentPage: Int = 0
 
     private let proxyService = ProxyRotationService.shared
     private let nordService = NordVPNService.shared
     private let networkFactory = NetworkSessionFactory.shared
     private let deviceProxy = DeviceProxyService.shared
     private let logger = DebugLogger.shared
-    private let sessionCount = 6
+    private let sessionsPerPage = 6
+
+    private var totalPages: Int {
+        max(1, (sessions.count + sessionsPerPage - 1) / sessionsPerPage)
+    }
+
+    private var currentPageSessions: [IPScoreSession] {
+        guard !sessions.isEmpty else { return [] }
+        let start = currentPage * sessionsPerPage
+        let end = min(start + sessionsPerPage, sessions.count)
+        guard start < sessions.count else { return [] }
+        return Array(sessions[start..<end])
+    }
 
     var body: some View {
         NavigationStack {
@@ -301,6 +315,22 @@ struct IPScoreTestView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
                 .background(.cyan.opacity(0.08))
+            } else if deviceProxy.isMultiTunnelActive {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.mint)
+                    Text("MULTI-TUNNEL")
+                        .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(.mint)
+                    Text("\(deviceProxy.perSessionTunnelCount) IPs")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.mint.opacity(0.7))
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(.mint.opacity(0.08))
             }
 
             Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
@@ -345,12 +375,17 @@ struct IPScoreTestView: View {
 
                 Spacer()
 
+                if sessions.count > sessionsPerPage {
+                    paginationControls
+                }
+
                 if !sessions.isEmpty {
                     Button {
                         cleanupWebViews()
                         sessions.removeAll()
                         delegates.removeAll()
                         isRunning = false
+                        currentPage = 0
                         elapsedTimer?.invalidate()
                     } label: {
                         HStack(spacing: 4) {
@@ -373,6 +408,40 @@ struct IPScoreTestView: View {
         }
     }
 
+    private var paginationControls: some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation(.snappy) {
+                    currentPage = max(0, currentPage - 1)
+                }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(currentPage > 0 ? .indigo : .secondary.opacity(0.3))
+            }
+            .disabled(currentPage == 0)
+
+            Text("\(currentPage + 1)/\(totalPages)")
+                .font(.system(size: 9, weight: .black, design: .monospaced))
+                .foregroundStyle(.indigo)
+
+            Button {
+                withAnimation(.snappy) {
+                    currentPage = min(totalPages - 1, currentPage + 1)
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(currentPage < totalPages - 1 ? .indigo : .secondary.opacity(0.3))
+            }
+            .disabled(currentPage >= totalPages - 1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.indigo.opacity(0.1))
+        .clipShape(Capsule())
+    }
+
     private var emptyState: some View {
         VStack(spacing: 20) {
             Image(systemName: "network.badge.shield.half.filled")
@@ -385,7 +454,7 @@ struct IPScoreTestView: View {
             Text("IP Score Test")
                 .font(.title2.bold())
 
-            Text("Launch 6 concurrent sessions to verify\neach uses a different proxy or VPN address.\nFallback: thisismyip.com → ipscore.io → whatismyipaddress.com")
+            Text("Launch 6 concurrent sessions to verify\neach uses a different proxy or VPN address.\nFallback: thisismyip.com \u{2192} ipscore.io \u{2192} whatismyipaddress.com")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -396,6 +465,9 @@ struct IPScoreTestView: View {
                 networkInfoRow(icon: "network", label: "Proxies", value: "\(proxyService.savedProxies.count) configured")
                 networkInfoRow(icon: "lock.shield.fill", label: "WireGuard", value: "\(proxyService.joeWGConfigs.count) configs")
                 networkInfoRow(icon: "shield.checkered", label: "IP Routing", value: deviceProxy.ipRoutingMode.shortLabel)
+                if deviceProxy.isMultiTunnelActive {
+                    networkInfoRow(icon: "arrow.triangle.branch", label: "Multi-Tunnel", value: "\(deviceProxy.perSessionTunnelCount) active")
+                }
             }
             .padding()
             .background(Color(.secondarySystemGroupedBackground))
@@ -423,7 +495,7 @@ struct IPScoreTestView: View {
 
     private var sessionListView: some View {
         List {
-            ForEach(sessions) { session in
+            ForEach(currentPageSessions) { session in
                 IPScoreSessionRow(session: session, timerTick: timerTick)
                     .listRowBackground(Color(.secondarySystemGroupedBackground))
             }
@@ -434,7 +506,7 @@ struct IPScoreTestView: View {
     private var sessionTileView: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                ForEach(sessions) { session in
+                ForEach(currentPageSessions) { session in
                     IPScoreSessionTile(session: session, timerTick: timerTick)
                 }
             }
@@ -462,6 +534,28 @@ struct IPScoreTestView: View {
                         }
                         LabeledContent("Rotation") { Text(deviceProxy.rotationInterval.label) }
                         LabeledContent("Rotations") { Text("\(deviceProxy.rotationLog.count)") }
+                    }
+                }
+
+                if deviceProxy.isMultiTunnelActive {
+                    Section("Multi-Tunnel WireProxy") {
+                        LabeledContent("Active Tunnels") {
+                            Text("\(deviceProxy.perSessionTunnelCount)")
+                                .foregroundStyle(.mint)
+                        }
+                        ForEach(Array(WireProxyBridge.shared.tunnelSlots.enumerated()), id: \.offset) { i, slot in
+                            HStack {
+                                Circle()
+                                    .fill(slot.isEstablished ? .green : .red)
+                                    .frame(width: 6, height: 6)
+                                Text("Slot \(i)")
+                                    .font(.system(.caption, design: .monospaced, weight: .bold))
+                                Spacer()
+                                Text(slot.serverName)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
 
@@ -509,6 +603,11 @@ struct IPScoreTestView: View {
                                         .font(.system(.caption2, design: .monospaced))
                                         .foregroundStyle(.indigo)
                                 }
+                                if let tunnel = session.tunnelSlotLabel {
+                                    Text(tunnel)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.mint)
+                                }
                             }
                         }
                     }
@@ -533,17 +632,18 @@ struct IPScoreTestView: View {
         delegates.removeAll()
         isRunning = true
         timerTick = 0
+        currentPage = 0
 
         let connectionMode = proxyService.connectionMode(for: .joe)
 
-        for i in 0..<sessionCount {
+        for i in 0..<sessionsPerPage {
             let session = IPScoreSession(index: i + 1)
             assignNetworkToSession(session, index: i, mode: connectionMode)
             sessions.append(session)
             createAndLoadWebView(for: session)
         }
 
-        logger.log("IPScoreTest: launched \(sessionCount) concurrent sessions — mode: \(connectionMode.label), app-wide united IP: \(deviceProxy.isEnabled)", category: .automation, level: .info)
+        logger.log("IPScoreTest: launched \(sessionsPerPage) concurrent sessions - mode: \(connectionMode.label), app-wide united IP: \(deviceProxy.isEnabled), multi-tunnel: \(deviceProxy.isMultiTunnelActive)", category: .automation, level: .info)
 
         elapsedTimer?.invalidate()
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -555,7 +655,7 @@ struct IPScoreTestView: View {
                     isRunning = false
                     let loaded = sessions.filter { $0.status == .loaded }.count
                     let failed = sessions.filter { $0.status == .failed }.count
-                    logger.log("IPScoreTest: all sessions complete — \(loaded) loaded, \(failed) failed", category: .automation, level: loaded == sessionCount ? .success : .warning)
+                    logger.log("IPScoreTest: all sessions complete - \(loaded) loaded, \(failed) failed", category: .automation, level: loaded == sessions.count ? .success : .warning)
                 }
             }
         }
@@ -631,6 +731,12 @@ struct IPScoreTestView: View {
                 session.networkConfig = .wireGuardDNS(wg)
                 if let server = nordService.recommendedServers.first(where: { $0.hostname == wg.fileName }) {
                     session.assignedVPNCountry = server.country
+                }
+                if deviceProxy.isMultiTunnelActive {
+                    let bridge = WireProxyBridge.shared
+                    if let slot = bridge.nextTunnelSlot() {
+                        session.tunnelSlotLabel = "Tunnel \(slot.index): \(slot.serverName)"
+                    }
                 }
             } else {
                 session.networkLabel = "WG (none available)"
@@ -791,6 +897,18 @@ struct IPScoreSessionRow: View {
                         }
                         .lineLimit(1)
                     }
+
+                    if let tunnel = session.tunnelSlotLabel {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.mint.opacity(0.7))
+                            Text(tunnel)
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.mint.opacity(0.7))
+                        }
+                        .lineLimit(1)
+                    }
                 }
 
                 Spacer()
@@ -885,6 +1003,17 @@ struct IPScoreSessionTile: View {
                             .font(.system(size: 7, weight: .medium, design: .monospaced))
                     }
                     .foregroundStyle(.orange.opacity(0.7))
+                    .lineLimit(1)
+                }
+
+                if let tunnel = session.tunnelSlotLabel {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 7, weight: .bold))
+                        Text(tunnel)
+                            .font(.system(size: 7, weight: .medium, design: .monospaced))
+                    }
+                    .foregroundStyle(.mint.opacity(0.7))
                     .lineLimit(1)
                 }
             }
