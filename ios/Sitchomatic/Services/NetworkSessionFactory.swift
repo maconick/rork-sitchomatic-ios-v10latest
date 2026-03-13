@@ -153,9 +153,9 @@ class NetworkSessionFactory {
     }
 
     @discardableResult
-    func configureWKWebView(config wkConfig: WKWebViewConfiguration, networkConfig: ActiveNetworkConfig, target: ProxyRotationService.ProxyTarget = .joe) -> Bool {
+    func configureWKWebView(config wkConfig: WKWebViewConfiguration, networkConfig: ActiveNetworkConfig, target: ProxyRotationService.ProxyTarget = .joe, bypassTunnel: Bool = false) -> Bool {
         let dataStore = wkConfig.websiteDataStore
-        let resolvedConfig = resolveEffectiveConfig(networkConfig)
+        let resolvedConfig = bypassTunnel ? networkConfig : resolveEffectiveConfig(networkConfig)
 
         switch resolvedConfig {
         case .socks5(let proxy):
@@ -165,14 +165,14 @@ class NetworkSessionFactory {
             return true
 
         case .wireGuardDNS(let wg):
-            if wireProxyBridge.isActive, localProxy.isRunning, localProxy.wireProxyMode {
+            if !bypassTunnel, wireProxyBridge.isActive, localProxy.isRunning, localProxy.wireProxyMode {
                 let localConfig = localProxy.localProxyConfig
                 applySOCKS5ToDataStore(dataStore, proxy: localConfig)
                 wkConfig.websiteDataStore = dataStore
                 logger.log("WKWebView WG: \(wg.displayString) — routed via WireProxy local proxy 127.0.0.1:\(localConfig.port)", category: .vpn, level: .info)
                 return true
             } else {
-                logger.log("WKWebView WG: \(wg.displayString) — WireProxy not active, applying SOCKS5 fallback for IP protection", category: .vpn, level: .warning)
+                logger.log("WKWebView WG: \(wg.displayString) — \(bypassTunnel ? "tunnel bypassed for per-session IP" : "WireProxy not active"), applying SOCKS5 fallback for IP protection", category: .vpn, level: .warning)
                 if let fallbackProxy = proxyService.nextWorkingProxy(for: target) {
                     applySOCKS5ToDataStore(dataStore, proxy: fallbackProxy)
                     wkConfig.websiteDataStore = dataStore

@@ -172,7 +172,7 @@ struct IPScoreTestView: View {
     private let networkFactory = NetworkSessionFactory.shared
     private let deviceProxy = DeviceProxyService.shared
     private let logger = DebugLogger.shared
-    private let sessionCount = 8
+    private let sessionCount = 6
 
     var body: some View {
         NavigationStack {
@@ -323,7 +323,7 @@ struct IPScoreTestView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 11, weight: .bold))
-                            Text("LAUNCH 8 SESSIONS")
+                            Text("LAUNCH 6 SESSIONS")
                                 .font(.system(size: 11, weight: .heavy, design: .monospaced))
                         }
                         .foregroundStyle(.black)
@@ -379,7 +379,7 @@ struct IPScoreTestView: View {
             Text("IP Score Test")
                 .font(.title2.bold())
 
-            Text("Launch 8 concurrent sessions to verify\neach uses a different proxy or VPN address.\nFallback: thisismyip.com → ipscore.io → whatismyipaddress.com")
+            Text("Launch 6 concurrent sessions to verify\neach uses a different proxy or VPN address.\nFallback: thisismyip.com → ipscore.io → whatismyipaddress.com")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -562,7 +562,7 @@ struct IPScoreTestView: View {
         if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
             networkFactory.configureWKWebView(config: wkConfig, networkConfig: config, target: .joe)
         } else {
-            networkFactory.configureWKWebView(config: wkConfig, networkConfig: session.networkConfig, target: .joe)
+            networkFactory.configureWKWebView(config: wkConfig, networkConfig: session.networkConfig, target: .joe, bypassTunnel: true)
         }
 
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 414, height: 896), configuration: wkConfig)
