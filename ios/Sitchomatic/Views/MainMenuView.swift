@@ -46,10 +46,13 @@ struct MainMenuView: View {
                         splitTestZone(geo: geo)
                         dualFindZone(geo: geo)
                     }
-                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.13)
+                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.12)
+
+                    testDebugZone(geo: geo)
+                        .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.11)
 
                     ppsrZone(geo: geo)
-                        .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.18)
+                        .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.15)
 
                     HStack(spacing: 0) {
                         settingsAndTestingZone(geo: geo)
@@ -462,6 +465,77 @@ struct MainMenuView: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: activeMode == .dualFind)
     }
 
+    private func testDebugZone(geo: GeometryProxy) -> some View {
+        Button {
+            guard canEnterModes else { return }
+            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
+                activeMode = .testDebug
+            }
+        } label: {
+            ZStack {
+                LinearGradient(
+                    colors: [Color.purple.opacity(0.15), Color.pink.opacity(0.2)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "flask.fill")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(
+                                    LinearGradient(colors: [.purple, .pink], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                )
+                            Image(systemName: "waveform.path.ecg")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.pink.opacity(0.7))
+                        }
+                        .shadow(color: .purple.opacity(0.5), radius: 8)
+
+                        Text("TEST & DEBUG")
+                            .font(.system(size: 14, weight: .black, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.6), radius: 4)
+
+                        Text("Known Account Optimizer")
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.purple.opacity(0.7))
+                    }
+                    .padding(.leading, 20)
+
+                    Spacer()
+
+                    VStack(alignment: .trailing, spacing: 4) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "24.circle.fill")
+                            Image(systemName: "48.circle.fill")
+                            Image(systemName: "96.circle.fill")
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.35))
+
+                        HStack(spacing: 3) {
+                            Text("LAUNCH")
+                                .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                                .foregroundStyle(.purple.opacity(0.6))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 7, weight: .heavy))
+                                .foregroundStyle(.purple.opacity(0.4))
+                        }
+                    }
+                    .padding(.trailing, 20)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(animateIn ? (canEnterModes ? 1 : 0.35) : 0)
+        .offset(y: animateIn ? 0 : 20)
+        .allowsHitTesting(canEnterModes)
+        .sensoryFeedback(.impact(weight: .heavy), trigger: activeMode == .testDebug)
+    }
+
     private func proxyManagerZone(geo: GeometryProxy) -> some View {
         Button {
             guard canEnterModes else { return }
@@ -617,4 +691,5 @@ nonisolated enum ActiveAppMode: String, Sendable {
     case dualFind
     case settingsAndTesting
     case proxyManager
+    case testDebug
 }

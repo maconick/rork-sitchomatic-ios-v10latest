@@ -74,6 +74,8 @@ struct SitchomaticApp: App {
                             SettingsAndTestingView()
                         case .proxyManager:
                             ProxyManagerView()
+                        case .testDebug:
+                            TestDebugContainerView()
                         }
                     }
                     .transition(.asymmetric(
