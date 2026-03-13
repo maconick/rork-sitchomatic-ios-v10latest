@@ -16,26 +16,7 @@ class DefaultSettingsService {
         let proxyService = ProxyRotationService.shared
         let blacklistService = BlacklistService.shared
 
-        let disabledJoeURLs: Set<String> = [
-            "https://static.joefortune.eu/login",
-            "https://static.joefortune.club/login",
-            "https://static.joefortune.eu.com/login",
-            "https://static.joefortune.lv/login",
-            "https://static.joefortune.ooo/login",
-            "https://joefortune24.com/login",
-            "https://static.joefortuneonlinepokies.com/login",
-            "https://static.joefortuneonlinepokies.eu/login",
-            "https://static.joefortuneonlinepokies.net/login",
-            "https://static.joefortunepokies.com/login",
-            "https://static.joefortunepokies.eu/login",
-            "https://static.joefortunepokies.net/login",
-        ]
-
-        for url in urlService.joeURLs {
-            if disabledJoeURLs.contains(url.urlString) {
-                urlService.toggleURL(id: url.id, enabled: false)
-            }
-        }
+        urlService.enableAllURLs()
 
         proxyService.setConnectionMode(.wireguard, for: .joe)
         proxyService.setConnectionMode(.wireguard, for: .ignition)

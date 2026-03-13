@@ -550,9 +550,15 @@ class ConcurrentAutomationEngine {
                 }
             }
 
-            if consecutiveConnectionFailures >= nodeMavenAutoRotateThreshold && NodeMavenService.shared.isEnabled {
-                logger.log("ConcurrentEngine: \(consecutiveConnectionFailures) consecutive connection failures — rotating NodeMaven IP", category: .network, level: .warning)
-                let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "autorotate_\(Int(Date().timeIntervalSince1970))")
+            if consecutiveConnectionFailures >= nodeMavenAutoRotateThreshold {
+                if NodeMavenService.shared.isEnabled {
+                    logger.log("ConcurrentEngine: \(consecutiveConnectionFailures) consecutive connection failures — rotating NodeMaven IP", category: .network, level: .warning)
+                    let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "autorotate_\(Int(Date().timeIntervalSince1970))")
+                } else {
+                    logger.log("ConcurrentEngine: \(consecutiveConnectionFailures) consecutive connection failures — forcing IP rotation", category: .network, level: .warning)
+                    rotateIP(for: proxyTarget)
+                    try? await Task.sleep(for: .milliseconds(2000))
+                }
                 consecutiveConnectionFailures = 0
             }
 

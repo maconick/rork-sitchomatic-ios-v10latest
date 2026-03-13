@@ -51,9 +51,9 @@ class WireProxyBridge {
     private var localIP: UInt32 = 0
     private var tunnelConnections: [UUID: WireProxyTunnelConnection] = [:]
     private var reconnectAttempts: Int = 0
-    private let maxReconnectAttempts: Int = 3
+    private let maxReconnectAttempts: Int = 5
     private var healthCheckTimer: Timer?
-    private let healthCheckInterval: TimeInterval = 20
+    private let healthCheckInterval: TimeInterval = 12
     private var pendingReconnectHosts: [(host: String, port: UInt16)] = []
     private var isReconnecting: Bool = false
 
@@ -123,19 +123,36 @@ class WireProxyBridge {
 
             let dnsOK = await dnsResolver.verifyDNS()
             if !dnsOK {
-                logger.log("WireProxyBridge: DNS verification failed — tunnel up but DNS not resolving, will retry", category: .vpn, level: .warning)
-                try? await Task.sleep(for: .seconds(2))
-                let retryOK = await dnsResolver.verifyDNS()
-                if !retryOK {
-                    logger.log("WireProxyBridge: DNS still failing after retry — tunnel may have limited connectivity", category: .vpn, level: .error)
+                logger.log("WireProxyBridge: DNS verification failed — retrying with backoff", category: .vpn, level: .warning)
+                for dnsRetry in 1...3 {
+                    try? await Task.sleep(for: .seconds(Double(dnsRetry) * 1.5))
+                    let retryOK = await dnsResolver.verifyDNS()
+                    if retryOK {
+                        logger.log("WireProxyBridge: DNS resolved on retry \(dnsRetry)", category: .vpn, level: .success)
+                        break
+                    }
+                    if dnsRetry == 3 {
+                        logger.log("WireProxyBridge: DNS still failing after 3 retries — tunnel may have limited connectivity", category: .vpn, level: .error)
+                    }
                 }
             }
 
             startHealthCheck()
         } else {
-            status = .failed
-            lastError = wgSession.lastError ?? "Handshake timeout"
-            logger.log("WireProxyBridge: tunnel failed - \(lastError ?? "")", category: .vpn, level: .error)
+            logger.log("WireProxyBridge: initial handshake failed — retrying with extended wait", category: .vpn, level: .warning)
+            try? await Task.sleep(for: .seconds(3))
+            if wgSession.isEstablished {
+                status = .established
+                connectedSince = Date()
+                reconnectAttempts = 0
+                dnsResolver.startBackgroundRefresh()
+                logger.log("WireProxyBridge: tunnel ESTABLISHED on extended wait via \(config.peerEndpoint)", category: .vpn, level: .success)
+                startHealthCheck()
+            } else {
+                status = .failed
+                lastError = wgSession.lastError ?? "Handshake timeout"
+                logger.log("WireProxyBridge: tunnel failed - \(lastError ?? "")", category: .vpn, level: .error)
+            }
         }
     }
 
@@ -188,7 +205,8 @@ class WireProxyBridge {
         tcpManager.shutdown()
         wgSession.disconnect()
 
-        try? await Task.sleep(for: .seconds(1))
+        let backoffDelay = min(Double(reconnectAttempts + 1) * 1.5, 8.0)
+        try? await Task.sleep(for: .seconds(backoffDelay))
 
         let address = config.interfaceAddress.split(separator: "/").first.map(String.init) ?? config.interfaceAddress
         guard let ip = IPv4Packet.ipFromString(address) else {
@@ -226,6 +244,10 @@ class WireProxyBridge {
         await wgSession.connect()
         try? await Task.sleep(for: .seconds(3))
 
+        if !wgSession.isEstablished {
+            try? await Task.sleep(for: .seconds(3))
+        }
+
         if wgSession.isEstablished {
             status = .established
             stats = preservedStats
@@ -238,7 +260,7 @@ class WireProxyBridge {
         } else {
             reconnectAttempts += 1
             if reconnectAttempts < maxReconnectAttempts {
-                logger.log("WireProxyBridge: reconnect attempt \(reconnectAttempts)/\(maxReconnectAttempts) failed, retrying...", category: .vpn, level: .warning)
+                logger.log("WireProxyBridge: reconnect attempt \(reconnectAttempts)/\(maxReconnectAttempts) failed, retrying with \(String(format: "%.1f", min(Double(reconnectAttempts + 1) * 1.5, 8.0)))s backoff...", category: .vpn, level: .warning)
                 isReconnecting = false
                 await reconnectPreservingSessions()
                 return
@@ -272,14 +294,17 @@ class WireProxyBridge {
             var anyDown = false
             for (i, slot) in tunnelSlots.enumerated() where slot.isEstablished {
                 if !slot.wgSession.isEstablished {
-                    logger.log("WireProxyBridge: health check — slot \(i) (\(slot.serverName)) DOWN", category: .vpn, level: .error)
+                    logger.log("WireProxyBridge: health check — slot \(i) (\(slot.serverName)) DOWN — attempting slot reconnect", category: .vpn, level: .error)
                     tunnelSlots[i].isEstablished = false
                     anyDown = true
+                    Task {
+                        await self.reconnectSlot(i)
+                    }
                 }
             }
             let activeCount = tunnelSlots.filter(\.isEstablished).count
             if activeCount == 0 {
-                logger.log("WireProxyBridge: all multi-tunnel slots DOWN — initiating reconnect", category: .vpn, level: .error)
+                logger.log("WireProxyBridge: all multi-tunnel slots DOWN — initiating full reconnect", category: .vpn, level: .error)
                 Task { await reconnectPreservingSessions() }
             } else if anyDown {
                 logger.log("WireProxyBridge: \(activeCount)/\(tunnelSlots.count) slots still active", category: .vpn, level: .warning)
@@ -292,6 +317,51 @@ class WireProxyBridge {
             Task {
                 await reconnectPreservingSessions()
             }
+        }
+    }
+
+    private func reconnectSlot(_ index: Int) async {
+        guard index < tunnelSlots.count else { return }
+        let slot = tunnelSlots[index]
+        let config = slot.config
+
+        slot.wgSession.disconnect()
+        slot.tcpManager.shutdown()
+        try? await Task.sleep(for: .seconds(2))
+
+        let address = config.interfaceAddress.split(separator: "/").first.map(String.init) ?? config.interfaceAddress
+        guard let ip = IPv4Packet.ipFromString(address) else { return }
+
+        slot.tcpManager.configure(localIP: ip)
+        let slotSession = slot.wgSession
+        slot.tcpManager.sendPacketHandler = { packet in
+            slotSession.sendPacket(packet)
+        }
+        slot.wgSession.onPacketReceived = { [weak self, index] ipData in
+            self?.handleMultiTunnelPacket(ipData, slotIndex: index)
+        }
+
+        let configured = slot.wgSession.configure(
+            privateKey: config.interfacePrivateKey,
+            peerPublicKey: config.peerPublicKey,
+            preSharedKey: config.peerPreSharedKey,
+            endpoint: config.peerEndpoint,
+            keepalive: config.peerPersistentKeepalive ?? 25
+        )
+        guard configured else {
+            logger.log("WireProxyBridge: slot \(index) reconnect config failed", category: .vpn, level: .error)
+            return
+        }
+
+        await slot.wgSession.connect()
+        try? await Task.sleep(for: .seconds(3))
+
+        if slot.wgSession.isEstablished {
+            tunnelSlots[index].isEstablished = true
+            slot.dnsResolver.startBackgroundRefresh()
+            logger.log("WireProxyBridge: slot \(index) (\(config.serverName)) RECONNECTED", category: .vpn, level: .success)
+        } else {
+            logger.log("WireProxyBridge: slot \(index) (\(config.serverName)) reconnect FAILED", category: .vpn, level: .error)
         }
     }
 

@@ -443,20 +443,30 @@ class DeviceProxyService {
             logger.log("DeviceProxy: no alternative WG configs for retry", category: .vpn, level: .error)
             return
         }
-        let nextWG = candidates[wgIndex % candidates.count]
-        wgIndex += 1
-        activeConfig = .wireGuardDNS(nextWG)
-        activeEndpointLabel = "WG: \(nextWG.fileName)"
-        activeConnectionType = "WireGuard"
 
-        await wireProxyBridge.start(with: nextWG)
-        if wireProxyBridge.isActive {
-            localProxy.enableWireProxyMode(true)
-            logger.log("DeviceProxy: WireProxy retry succeeded with \(nextWG.serverName)", category: .vpn, level: .success)
-        } else {
-            localProxy.enableWireProxyMode(false)
-            logger.log("DeviceProxy: WireProxy retry also failed for \(nextWG.serverName)", category: .vpn, level: .error)
+        let maxRetries = min(candidates.count, 4)
+        for attempt in 0..<maxRetries {
+            let nextWG = candidates[(wgIndex + attempt) % candidates.count]
+            activeConfig = .wireGuardDNS(nextWG)
+            activeEndpointLabel = "WG: \(nextWG.fileName)"
+            activeConnectionType = "WireGuard"
+
+            wireProxyBridge.stop()
+            try? await Task.sleep(for: .seconds(Double(attempt) * 0.5 + 0.5))
+
+            await wireProxyBridge.start(with: nextWG)
+            if wireProxyBridge.isActive {
+                wgIndex += attempt + 1
+                localProxy.enableWireProxyMode(true)
+                logger.log("DeviceProxy: WireProxy retry succeeded with \(nextWG.serverName) on attempt \(attempt + 1)/\(maxRetries)", category: .vpn, level: .success)
+                return
+            }
+            logger.log("DeviceProxy: WireProxy retry attempt \(attempt + 1)/\(maxRetries) failed for \(nextWG.serverName)", category: .vpn, level: .warning)
         }
+
+        wgIndex += maxRetries
+        localProxy.enableWireProxyMode(false)
+        logger.log("DeviceProxy: WireProxy all \(maxRetries) retry attempts exhausted", category: .vpn, level: .error)
     }
 
     var isWireProxyActive: Bool {
@@ -608,26 +618,27 @@ class DeviceProxyService {
             return
         }
 
-        for i in 0..<min(candidates.count, 3) {
+        let maxRetries = min(candidates.count, 5)
+        for i in 0..<maxRetries {
             let nextWG = candidates[(wgIndex + i) % candidates.count]
             perSessionWGConfig = nextWG
 
             wireProxyBridge.stop()
-            try? await Task.sleep(for: .seconds(0.3))
+            try? await Task.sleep(for: .seconds(Double(i) * 0.5 + 0.5))
 
             await wireProxyBridge.start(with: nextWG)
             if wireProxyBridge.isActive {
                 wgIndex += i + 1
                 localProxy.enableWireProxyMode(true)
-                logger.log("DeviceProxy: per-session WireProxy retry succeeded → \(nextWG.serverName)", category: .vpn, level: .success)
+                logger.log("DeviceProxy: per-session WireProxy retry succeeded → \(nextWG.serverName) on attempt \(i + 1)/\(maxRetries)", category: .vpn, level: .success)
                 return
             }
-            logger.log("DeviceProxy: per-session WireProxy retry failed for \(nextWG.serverName) — trying next", category: .vpn, level: .warning)
+            logger.log("DeviceProxy: per-session WireProxy retry \(i + 1)/\(maxRetries) failed for \(nextWG.serverName)", category: .vpn, level: .warning)
         }
 
-        wgIndex += min(candidates.count, 3)
+        wgIndex += maxRetries
         localProxy.enableWireProxyMode(false)
-        logger.log("DeviceProxy: per-session WireProxy all retries exhausted", category: .vpn, level: .error)
+        logger.log("DeviceProxy: per-session WireProxy all \(maxRetries) retries exhausted", category: .vpn, level: .error)
     }
 
     private func stopPerSessionWireProxy() {
