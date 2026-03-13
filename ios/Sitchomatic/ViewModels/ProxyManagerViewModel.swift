@@ -181,32 +181,60 @@ class ProxyManagerViewModel {
     }
 
     private func parseSOCKS5Line(_ line: String) -> ProxySetItem? {
-        let cleaned = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        var cleaned = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return nil }
 
-        let parts: [String]
+        let protocolPrefixes = ["socks5://", "socks4://", "socks://", "http://", "https://"]
+        for prefix in protocolPrefixes {
+            if cleaned.lowercased().hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+                break
+            }
+        }
+
         if cleaned.contains("@") {
-            parts = cleaned.components(separatedBy: "@")
-            guard parts.count == 2 else { return nil }
-            let hostPort = parts[1].components(separatedBy: ":")
+            let atParts = cleaned.components(separatedBy: "@")
+            guard atParts.count == 2 else { return nil }
+            let hostPort = atParts[1].components(separatedBy: ":")
             guard hostPort.count >= 2, let port = Int(hostPort.last ?? "") else { return nil }
             let host = hostPort.dropLast().joined(separator: ":")
+            guard !host.isEmpty, port > 0, port <= 65535 else { return nil }
             return ProxySetItem(label: "\(host):\(port)", host: host, port: port)
         }
 
-        parts = cleaned.components(separatedBy: ":")
+        let parts = cleaned.components(separatedBy: ":")
         guard parts.count >= 2 else { return nil }
 
-        if parts.count == 2, let port = Int(parts[1]) {
+        if parts.count == 2, let port = Int(parts[1]), port > 0, port <= 65535 {
             return ProxySetItem(label: "\(parts[0]):\(port)", host: parts[0], port: port)
         }
 
-        if parts.count == 4, let port = Int(parts[1]) {
-            return ProxySetItem(label: "\(parts[0]):\(port)", host: parts[0], port: port)
+        if parts.count == 4 {
+            if let port = Int(parts[1]), port > 0, port <= 65535 {
+                return ProxySetItem(label: "\(parts[0]):\(port)", host: parts[0], port: port)
+            }
+            if let port = Int(parts[3]), port > 0, port <= 65535 {
+                return ProxySetItem(label: "\(parts[2]):\(port)", host: parts[2], port: port)
+            }
         }
 
-        if let port = Int(parts[1]) {
-            return ProxySetItem(label: "\(parts[0]):\(port)", host: parts[0], port: port)
+        if parts.count == 3 {
+            if let port = Int(parts[1]), port > 0, port <= 65535 {
+                return ProxySetItem(label: "\(parts[0]):\(port)", host: parts[0], port: port)
+            }
+            if let port = Int(parts[2]), port > 0, port <= 65535 {
+                return ProxySetItem(label: "\(parts[0]):\(port)", host: parts[0], port: port)
+            }
+        }
+
+        for i in 1..<parts.count {
+            if let port = Int(parts[i]), port > 0, port <= 65535 {
+                let host = parts[i - 1]
+                let looksLikeHost = host.contains(".") || host.allSatisfy({ $0.isNumber || $0 == "." })
+                if looksLikeHost {
+                    return ProxySetItem(label: "\(host):\(port)", host: host, port: port)
+                }
+            }
         }
 
         return nil
