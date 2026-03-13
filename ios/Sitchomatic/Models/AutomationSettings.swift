@@ -225,7 +225,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var clearCacheBetweenAttempts: Bool = false
     var clearIndexedDBBetweenAttempts: Bool = false
     var freshWebViewPerAttempt: Bool = false
-    var reuseWebViewPoolSize: Int = 10
+    var reuseWebViewPoolSize: Int = 20
     var webViewMemoryLimitMB: Int = 1024
     var webViewJSEnabled: Bool = true
     var webViewImageLoadingEnabled: Bool = true

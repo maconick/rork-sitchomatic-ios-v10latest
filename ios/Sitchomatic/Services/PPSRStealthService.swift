@@ -134,6 +134,96 @@ class PPSRStealthService {
             isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
             connectionDownlink: 5.0, connectionRtt: 100
         ),
+        // 10: iPhone 16 Pro Max — iOS 18.4, A18 Pro (6-core, 8GB), 440x956 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1",
+            viewport: (440, 956), language: "en-US", platform: "iPhone",
+            cores: 6, memory: 8, tzOffset: 300, tzName: "America/New_York",
+            seed: 4192837561, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 25.0, connectionRtt: 40
+        ),
+        // 11: iPhone 16 Plus — iOS 18.3, A18 (6-core, 8GB), 430x932 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1",
+            viewport: (430, 932), language: "en-AU", platform: "iPhone",
+            cores: 6, memory: 8, tzOffset: -600, tzName: "Australia/Perth",
+            seed: 2738491056, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 15.0, connectionRtt: 50
+        ),
+        // 12: iPhone 16 — iOS 18.4, A18 (6-core, 8GB), 393x852 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1",
+            viewport: (393, 852), language: "en-IE", platform: "iPhone",
+            cores: 6, memory: 8, tzOffset: -60, tzName: "Europe/Dublin",
+            seed: 3850192746, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 12.0, connectionRtt: 60
+        ),
+        // 13: iPhone 15 Pro Max — iOS 18.2, A17 Pro (6-core, 8GB), 430x932 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+            viewport: (430, 932), language: "en-SG", platform: "iPhone",
+            cores: 6, memory: 8, tzOffset: -480, tzName: "Asia/Singapore",
+            seed: 1629384750, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 20.0, connectionRtt: 45
+        ),
+        // 14: iPhone 15 Plus — iOS 18.1, A16 Bionic (6-core, 6GB), 430x932 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+            viewport: (430, 932), language: "en-AU", platform: "iPhone",
+            cores: 6, memory: 6, tzOffset: -600, tzName: "Australia/Hobart",
+            seed: 3047182956, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 10.0, connectionRtt: 65
+        ),
+        // 15: iPhone 14 Pro Max — iOS 18.2, A16 Bionic (6-core, 6GB), 430x932 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+            viewport: (430, 932), language: "en-ZA", platform: "iPhone",
+            cores: 6, memory: 6, tzOffset: -120, tzName: "Africa/Johannesburg",
+            seed: 2194837065, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 8.0, connectionRtt: 80
+        ),
+        // 16: iPhone 15 Pro — iOS 18.3, A17 Pro (6-core, 8GB), 393x852 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1",
+            viewport: (393, 852), language: "en-NZ", platform: "iPhone",
+            cores: 6, memory: 8, tzOffset: -660, tzName: "Pacific/Auckland",
+            seed: 4018293756, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 18.0, connectionRtt: 55
+        ),
+        // 17: iPhone 13 Pro Max — iOS 18.1, A15 Bionic (6-core, 6GB), 428x926 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+            viewport: (428, 926), language: "en-GB", platform: "iPhone",
+            cores: 6, memory: 6, tzOffset: 0, tzName: "Europe/London",
+            seed: 1847293065, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 7.5, connectionRtt: 70
+        ),
+        // 18: iPhone 16e — iOS 18.3, A16 Bionic (6-core, 6GB), 390x844 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1",
+            viewport: (390, 844), language: "en-IN", platform: "iPhone",
+            cores: 6, memory: 6, tzOffset: -330, tzName: "Asia/Kolkata",
+            seed: 2958174036, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 6.0, connectionRtt: 90
+        ),
+        // 19: iPhone 13 Pro — iOS 17.7, A15 Bionic (6-core, 6GB), 390x844 @3x
+        SessionProfile(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.7 Mobile/15E148 Safari/604.1",
+            viewport: (390, 844), language: "en-AU", platform: "iPhone",
+            cores: 6, memory: 6, tzOffset: -600, tzName: "Australia/Darwin",
+            seed: 3619204857, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 9.0, connectionRtt: 75
+        ),
     ]
 
     func nextProfile() -> SessionProfile {

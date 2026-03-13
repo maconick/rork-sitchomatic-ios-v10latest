@@ -1697,7 +1697,7 @@ struct AutomationSettingsView: View {
             .tint(.orange)
 
             if !vm.automationSettings.freshWebViewPerAttempt {
-                Stepper("WebView Pool: \(vm.automationSettings.reuseWebViewPoolSize)", value: $vm.automationSettings.reuseWebViewPoolSize, in: 1...10)
+                Stepper("WebView Pool: \(vm.automationSettings.reuseWebViewPoolSize)", value: $vm.automationSettings.reuseWebViewPoolSize, in: 1...20)
             }
             Stepper("Memory Limit: \(vm.automationSettings.webViewMemoryLimitMB)MB", value: $vm.automationSettings.webViewMemoryLimitMB, in: 64...1024, step: 64)
             Toggle("JavaScript Enabled", isOn: $vm.automationSettings.webViewJSEnabled).tint(accentColor)
