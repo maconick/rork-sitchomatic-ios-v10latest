@@ -129,7 +129,7 @@ class NodeMavenService {
     var proxyUsername: String = "" { didSet { persist() } }
     var proxyPassword: String = "" { didSet { persist() } }
     var country: NodeMavenCountry = .au { didSet { persist() } }
-    var proxyType: NodeMavenProxyType = .mobile { didSet { persist() } }
+    var proxyType: NodeMavenProxyType = .mobile { didSet { syncUsernameToProxyType(); persist() } }
     var filter: NodeMavenFilter = .medium { didSet { persist() } }
     var sessionMode: NodeMavenSessionMode = .sticky { didSet { persist() } }
 
@@ -143,6 +143,13 @@ class NodeMavenService {
 
     init() {
         load()
+    }
+
+    private func syncUsernameToProxyType() {
+        let expected = proxyType == .mobile ? Self.mobileUsername : Self.residentialUsername
+        if proxyUsername != expected {
+            proxyUsername = expected
+        }
     }
 
     func buildUsername(sessionId: String? = nil) -> String {
