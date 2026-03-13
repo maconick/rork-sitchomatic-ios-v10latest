@@ -107,9 +107,13 @@ class DeviceProxyService {
         didSet {
             persistSettings()
             if ipRoutingMode == .appWideUnited {
+                stopPerSessionWireProxy()
                 activateUnifiedMode()
             } else {
                 deactivateUnifiedMode()
+                if isWireProxyCompatibleMode {
+                    activatePerSessionWireProxy()
+                }
             }
         }
     }
@@ -131,10 +135,16 @@ class DeviceProxyService {
     }
 
     var canManageWireProxyTunnel: Bool {
-        guard shouldShowWireProxySection, isEnabled else { return false }
-        guard case .wireGuardDNS = activeConfig else { return false }
-        return true
+        guard shouldShowWireProxySection else { return false }
+        if isEnabled {
+            guard case .wireGuardDNS = activeConfig else { return false }
+            return true
+        }
+        return perSessionWireProxyActive
     }
+
+    private(set) var perSessionWireProxyActive: Bool = false
+    private var perSessionWGConfig: WireGuardConfig?
 
     var rotationInterval: RotationInterval = .every5Min {
         didSet {
@@ -196,6 +206,8 @@ class DeviceProxyService {
         healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation
         if ipRoutingMode == .appWideUnited {
             activateUnifiedMode()
+        } else if isWireProxyCompatibleMode {
+            activatePerSessionWireProxy()
         }
     }
 
@@ -258,8 +270,9 @@ class DeviceProxyService {
         activeConnectionType = "None"
         activeSince = nil
         isActive = false
-        localProxy.stop()
         wireProxyBridge.stop()
+        localProxy.enableWireProxyMode(false)
+        localProxy.stop()
         resilience.stopVerificationLoop()
         resilience.resetBackoff()
         resilience.resetThrottling()
@@ -458,6 +471,13 @@ class DeviceProxyService {
     }
 
     func reconnectWireProxy() {
+        if !isEnabled && perSessionWireProxyActive {
+            wireProxyBridge.stop()
+            localProxy.enableWireProxyMode(false)
+            logger.log("DeviceProxy: WireProxy reconnect requested (per-session)", category: .vpn, level: .info)
+            activatePerSessionWireProxy()
+            return
+        }
         guard canManageWireProxyTunnel else { return }
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
@@ -468,6 +488,10 @@ class DeviceProxyService {
     func stopWireProxy() {
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
+        if !isEnabled {
+            perSessionWireProxyActive = false
+            perSessionWGConfig = nil
+        }
         logger.log("DeviceProxy: WireProxy manually stopped", category: .vpn, level: .info)
     }
 
@@ -475,16 +499,107 @@ class DeviceProxyService {
         if !isWireProxyCompatibleMode {
             wireProxyBridge.stop()
             localProxy.enableWireProxyMode(false)
+            stopPerSessionWireProxy()
         }
 
-        guard isEnabled else { return }
-        performRotation(reason: "Connection Mode Changed")
+        if isEnabled {
+            performRotation(reason: "Connection Mode Changed")
+        } else if isWireProxyCompatibleMode && !perSessionWireProxyActive {
+            activatePerSessionWireProxy()
+        }
+    }
+
+    func activatePerSessionWireProxy() {
+        guard !isEnabled, isWireProxyCompatibleMode else { return }
+        let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
+        let allWG = collectUniqueWG(targets: targets)
+        guard !allWG.isEmpty else {
+            logger.log("DeviceProxy: no WG configs available for per-session WireProxy", category: .vpn, level: .warning)
+            return
+        }
+        let wg = allWG[wgIndex % allWG.count]
+        wgIndex += 1
+        perSessionWGConfig = wg
+        perSessionWireProxyActive = true
+
+        if localProxyEnabled {
+            localProxy.start()
+        }
+
+        Task {
+            if wireProxyBridge.isActive {
+                wireProxyBridge.stop()
+            }
+            await wireProxyBridge.start(with: wg)
+            if wireProxyBridge.isActive {
+                localProxy.enableWireProxyMode(true)
+                logger.log("DeviceProxy: per-session WireProxy active → \(wg.serverName)", category: .vpn, level: .success)
+            } else {
+                localProxy.enableWireProxyMode(false)
+                logger.log("DeviceProxy: per-session WireProxy failed for \(wg.serverName) — retrying", category: .vpn, level: .error)
+                await retryPerSessionWireProxy(failedServer: wg.serverName)
+            }
+        }
+    }
+
+    private func retryPerSessionWireProxy(failedServer: String) async {
+        let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
+        let allWG = collectUniqueWG(targets: targets)
+        let candidates = allWG.filter { $0.serverName != failedServer }
+        guard !candidates.isEmpty else {
+            perSessionWireProxyActive = false
+            perSessionWGConfig = nil
+            logger.log("DeviceProxy: no alternative WG configs for per-session retry", category: .vpn, level: .error)
+            return
+        }
+        let nextWG = candidates[wgIndex % candidates.count]
+        wgIndex += 1
+        perSessionWGConfig = nextWG
+
+        await wireProxyBridge.start(with: nextWG)
+        if wireProxyBridge.isActive {
+            localProxy.enableWireProxyMode(true)
+            logger.log("DeviceProxy: per-session WireProxy retry succeeded → \(nextWG.serverName)", category: .vpn, level: .success)
+        } else {
+            localProxy.enableWireProxyMode(false)
+            perSessionWireProxyActive = false
+            perSessionWGConfig = nil
+            logger.log("DeviceProxy: per-session WireProxy retry also failed for \(nextWG.serverName)", category: .vpn, level: .error)
+        }
+    }
+
+    private func stopPerSessionWireProxy() {
+        guard perSessionWireProxyActive else { return }
+        wireProxyBridge.stop()
+        localProxy.enableWireProxyMode(false)
+        perSessionWireProxyActive = false
+        perSessionWGConfig = nil
+        logger.log("DeviceProxy: per-session WireProxy stopped", category: .vpn, level: .info)
+    }
+
+    func rotatePerSessionWireProxy() {
+        guard perSessionWireProxyActive, !isEnabled else { return }
+        wireProxyBridge.stop()
+        localProxy.enableWireProxyMode(false)
+        activatePerSessionWireProxy()
+    }
+
+    var wireProxyActiveConfigLabel: String? {
+        if isEnabled, case .wireGuardDNS(let wg) = activeConfig {
+            return wg.serverName
+        }
+        if perSessionWireProxyActive, let wg = perSessionWGConfig {
+            return wg.serverName
+        }
+        return nil
     }
 
     func handleProfileSwitch() {
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
         localProxy.updateUpstream(nil)
+        perSessionWireProxyActive = false
+        perSessionWGConfig = nil
 
         activeConfig = nil
         activeEndpointLabel = nil
@@ -500,6 +615,8 @@ class DeviceProxyService {
 
         if ipRoutingMode == .appWideUnited {
             performRotation(reason: "Profile Switch")
+        } else if isWireProxyCompatibleMode {
+            activatePerSessionWireProxy()
         }
 
         let profile = NordVPNService.shared.activeKeyProfile
@@ -507,6 +624,10 @@ class DeviceProxyService {
     }
 
     func rotateWireProxyConfig() {
+        if !isEnabled && perSessionWireProxyActive {
+            rotatePerSessionWireProxy()
+            return
+        }
         guard canManageWireProxyTunnel else { return }
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)

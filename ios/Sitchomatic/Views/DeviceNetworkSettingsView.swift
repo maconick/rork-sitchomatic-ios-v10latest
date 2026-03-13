@@ -521,7 +521,7 @@ struct DeviceNetworkSettingsView: View {
                             Text("WireGuard Tunnel")
                                 .font(.subheadline.bold())
                             Spacer()
-                            Text("ACTIVE")
+                            Text(deviceProxy.isEnabled ? "UNITED" : "PER-SESSION")
                                 .font(.system(.caption2, design: .monospaced, weight: .bold))
                                 .foregroundStyle(.purple)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
@@ -529,6 +529,48 @@ struct DeviceNetworkSettingsView: View {
                                 .clipShape(Capsule())
                         }
                     }
+                }
+
+                if !deviceProxy.isEnabled && deviceProxy.perSessionWireProxyActive {
+                    if let serverName = deviceProxy.wireProxyActiveConfigLabel {
+                        HStack(spacing: 8) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.purple.opacity(0.7))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Per-Session Tunnel")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text(serverName)
+                                    .font(.system(.caption, design: .monospaced, weight: .medium))
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Button {
+                                deviceProxy.rotatePerSessionWireProxy()
+                            } label: {
+                                Label("Rotate", systemImage: "arrow.triangle.2.circlepath")
+                                    .font(.system(.caption2, weight: .bold))
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.purple)
+                            .controlSize(.small)
+                        }
+                    }
+                } else if !deviceProxy.isEnabled && deviceProxy.isWireProxyCompatibleMode && !deviceProxy.perSessionWireProxyActive {
+                    Button {
+                        deviceProxy.activatePerSessionWireProxy()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.purple)
+                            Text("Start Per-Session WireProxy")
+                                .font(.subheadline.bold())
+                            Spacer()
+                        }
+                    }
+                    .tint(.purple)
                 }
             }
         } header: {
@@ -546,7 +588,13 @@ struct DeviceNetworkSettingsView: View {
                 }
             }
         } footer: {
-            Text(deviceProxy.isEnabled ? "Routes WebView traffic through an encrypted WireGuard tunnel via localhost SOCKS5 when the app-wide united IP is on a WireGuard config." : "Available when Connection Mode is WireGuard. Turn on App-Wide United IP to activate the localhost SOCKS5 tunnel forwarder.")
+            if deviceProxy.isEnabled {
+                Text("Routes all app traffic through an encrypted WireGuard tunnel via localhost SOCKS5.")
+            } else if deviceProxy.perSessionWireProxyActive {
+                Text("Per-session WireProxy active — all WireGuard sessions share this tunnel. Tap Rotate to switch server.")
+            } else {
+                Text("Routes per-session WireGuard traffic through a shared on-device SOCKS5 tunnel. Enable the toggle to activate.")
+            }
         }
     }
 
