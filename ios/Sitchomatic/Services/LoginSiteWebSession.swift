@@ -225,7 +225,7 @@ class LoginSiteWebSession: NSObject {
         if loaded {
             await injectFingerprint()
             try? await Task.sleep(for: .milliseconds(1500))
-            await waitForDOMReady(timeout: 10)
+            await waitForDOMReady(timeout: TimeoutResolver.resolveAutomationTimeout(10))
             let _ = await validateFingerprint()
         }
 
@@ -233,6 +233,7 @@ class LoginSiteWebSession: NSObject {
     }
 
     private func waitForDOMReady(timeout: TimeInterval) async {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {
             let ready = await executeJS("document.readyState") ?? ""
@@ -947,7 +948,8 @@ class LoginSiteWebSession: NSObject {
         return (false, "OCR element interaction failed: \(result ?? "nil")")
     }
 
-    func verifyClickRegistered(timeout: TimeInterval = 3) async -> (registered: Bool, detail: String) {
+    func verifyClickRegistered(timeout: TimeInterval = 90) async -> (registered: Bool, detail: String) {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let js = """
         (function() {
             var terms = ['log in','login','sign in','signin'];
@@ -1196,7 +1198,8 @@ class LoginSiteWebSession: NSObject {
         _ = await executeJS(js)
     }
 
-    func waitForLoginButtonReady(timeout: TimeInterval = 15) async -> (ready: Bool, timedOut: Bool) {
+    func waitForLoginButtonReady(timeout: TimeInterval = 90) async -> (ready: Bool, timedOut: Bool) {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {
             let check = await checkLoginButtonReadiness()
@@ -1246,7 +1249,8 @@ class LoginSiteWebSession: NSObject {
         let errorBannerText: String?
     }
 
-    func rapidWelcomePoll(timeout: TimeInterval = 20, originalURL: String) async -> RapidPollResult {
+    func rapidWelcomePoll(timeout: TimeInterval = 90, originalURL: String) async -> RapidPollResult {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         let originalHost = URL(string: originalURL)?.host ?? ""
         var welcomeScreenshot: UIImage? = nil
@@ -1414,7 +1418,8 @@ class LoginSiteWebSession: NSObject {
         )
     }
 
-    func waitForNavigation(timeout: TimeInterval = 20) async -> Bool {
+    func waitForNavigation(timeout: TimeInterval = 90) async -> Bool {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         let originalURL = webView?.url?.absoluteString ?? ""
         let originalBody = await executeJS("document.body ? document.body.innerText.substring(0, 200) : ''") ?? ""

@@ -160,9 +160,10 @@ class TrueDetectionService {
         var result = TrueDetectionResult()
         result.attemptNumber = attempt
 
-        let domReady = await waitForDOMComplete(session: session, timeout: 10, sessionId: sessionId)
+        let domReadyTimeout = TimeoutResolver.resolveAutomationTimeout(10)
+        let domReady = await waitForDOMComplete(session: session, timeout: domReadyTimeout, sessionId: sessionId)
         if !domReady {
-            onLog?("TRUE DETECTION: DOM not ready after 10s", .warning)
+            onLog?("TRUE DETECTION: DOM not ready after \(Int(domReadyTimeout))s", .warning)
         }
 
         onLog?("TRUE DETECTION: Hard pause \(config.hardPauseMs)ms before interaction...", .info)
@@ -216,6 +217,7 @@ class TrueDetectionService {
     }
 
     private func waitForDOMComplete(session: LoginSiteWebSession, timeout: TimeInterval, sessionId: String) async -> Bool {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {
             let ready = await session.executeJS("document.readyState")

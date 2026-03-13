@@ -46,7 +46,7 @@ class PPSRAutomationViewModel {
         guard batchTotalCount > 0 else { return 0 }
         return Double(batchCompletedCount) / Double(batchTotalCount)
     }
-    var testTimeout: TimeInterval = 30
+    var testTimeout: TimeInterval = 90
     var cardSortOption: CardSortOption = {
         if let raw = UserDefaults.standard.string(forKey: "ppsr_card_sort_option"),
            let opt = CardSortOption(rawValue: raw) { return opt }
@@ -620,11 +620,12 @@ class PPSRAutomationViewModel {
 
     private func startForceStopTimer() {
         forceStopTask?.cancel()
+        let forceStopTimeout = TimeoutResolver.resolveAutomationTimeout(20)
         forceStopTask = Task {
-            try? await Task.sleep(for: .seconds(20))
+            try? await Task.sleep(for: .seconds(forceStopTimeout))
             guard !Task.isCancelled else { return }
             guard isRunning || isStopping else { return }
-            log("Force-stop: batch did not finish within 20s — force cancelling", level: .error)
+            log("Force-stop: batch did not finish within \(Int(forceStopTimeout))s — force cancelling", level: .error)
             logger.log("Force-stop triggered — cancelling hung PPSR batch task", category: .ppsr, level: .error)
             batchTask?.cancel()
             forceFinalizeBatch()
@@ -1113,7 +1114,7 @@ class PPSRAutomationViewModel {
         stealthEnabled = preset.stealthEnabled
         useEmailRotation = preset.useEmailRotation
         retrySubmitOnFail = preset.retrySubmitOnFail
-        testTimeout = preset.testTimeout
+        testTimeout = TimeoutResolver.resolveAutomationTimeout(preset.testTimeout)
         persistSettings()
         log("Applied preset: \(preset.name)", level: .success)
     }
@@ -1125,7 +1126,7 @@ class PPSRAutomationViewModel {
             stealthEnabled: stealthEnabled,
             useEmailRotation: useEmailRotation,
             retrySubmitOnFail: retrySubmitOnFail,
-            testTimeout: testTimeout
+            testTimeout: TimeoutResolver.resolveAutomationTimeout(testTimeout)
         )
         batchPresets.append(preset)
         presetService.savePresets(batchPresets)

@@ -17,7 +17,11 @@ class TemplatePersistenceService {
         var all = AutomationTemplate.builtInTemplates
         if let data = UserDefaults.standard.data(forKey: templatesKey),
            let custom = try? JSONDecoder().decode([AutomationTemplate].self, from: data) {
-            all.append(contentsOf: custom)
+            all.append(contentsOf: custom.map { template in
+                var normalized = template
+                normalized.settings = normalized.settings.normalizedTimeouts()
+                return normalized
+            })
         }
         return all
     }
@@ -27,6 +31,10 @@ class TemplatePersistenceService {
               let custom = try? JSONDecoder().decode([AutomationTemplate].self, from: data) else {
             return []
         }
-        return custom
+        return custom.map { template in
+            var normalized = template
+            normalized.settings = normalized.settings.normalizedTimeouts()
+            return normalized
+        }
     }
 }

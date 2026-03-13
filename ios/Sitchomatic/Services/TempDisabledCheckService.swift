@@ -57,7 +57,7 @@ class TempDisabledCheckService {
                     let attempt = LoginAttempt(credential: testCred, sessionIndex: 1)
                     let testURL = getURL()
 
-                    let outcome = await engine.runLoginTest(attempt, targetURL: testURL, timeout: 45)
+                    let outcome = await engine.runLoginTest(attempt, targetURL: testURL, timeout: TimeoutResolver.resolveAutomationTimeout(45))
 
                     switch outcome {
                     case .success:

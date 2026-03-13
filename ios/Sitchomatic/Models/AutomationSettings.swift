@@ -23,7 +23,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var trueDetectionIgnoreClassNames: Bool = true
 
     // MARK: - Page Loading
-    var pageLoadTimeout: TimeInterval = 12
+    var pageLoadTimeout: TimeInterval = 90
     var pageLoadRetries: Int = 3
     var retryBackoffMultiplier: Double = 2.0
     var waitForJSRenderMs: Int = 4000
@@ -31,7 +31,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Field Detection
     var fieldVerificationEnabled: Bool = true
-    var fieldVerificationTimeout: TimeInterval = 10
+    var fieldVerificationTimeout: TimeInterval = 90
     var autoCalibrationEnabled: Bool = true
     var visionMLCalibrationFallback: Bool = true
     var calibrationConfidenceThreshold: Double = 0.6
@@ -67,7 +67,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     // MARK: - Submit Behavior
     var submitRetryCount: Int = 3
     var submitRetryDelayMs: Int = 1000
-    var waitForResponseSeconds: Double = 5.0
+    var waitForResponseSeconds: Double = 90.0
     var rapidPollEnabled: Bool = true
     var rapidPollIntervalMs: Int = 200
 
@@ -150,7 +150,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var loginButtonDoubleClickWindowMs: Int = 1500
     var loginButtonScrollIntoView: Bool = true
     var loginButtonWaitForEnabled: Bool = true
-    var loginButtonWaitForEnabledTimeoutMs: Int = 5000
+    var loginButtonWaitForEnabledTimeoutMs: Int = 90_000
     var pageLoadExtraDelayMs: Int = 2000
     var submitButtonWaitDelayMs: Int = 2000
     var loginButtonVisibilityCheck: Bool = true
@@ -202,7 +202,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Two-Factor / MFA Handling
     var mfaDetectionEnabled: Bool = true
-    var mfaWaitTimeoutSeconds: Int = 30
+    var mfaWaitTimeoutSeconds: Int = 90
     var mfaAutoSkip: Bool = false
     var mfaMarkAsTempDisabled: Bool = true
     var mfaKeywords: [String] = ["verification", "verify", "code", "2fa", "two-factor", "authenticator", "one-time", "OTP", "security code"]
@@ -211,7 +211,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var captchaDetectionEnabled: Bool = true
     var captchaAutoSkip: Bool = true
     var captchaMarkAsFailed: Bool = false
-    var captchaWaitTimeoutSeconds: Int = 15
+    var captchaWaitTimeoutSeconds: Int = 90
     var captchaKeywords: [String] = ["captcha", "recaptcha", "hcaptcha", "robot", "verify you are human", "I'm not a robot"]
     var captchaIframeDetection: Bool = true
     var captchaImageDetection: Bool = true
@@ -232,7 +232,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Blank Page Recovery
     var blankPageRecoveryEnabled: Bool = true
-    var blankPageWaitThresholdSeconds: Int = 30
+    var blankPageWaitThresholdSeconds: Int = 90
     var blankPageFallback1_WaitAndRecheck: Bool = true
     var blankPageFallback2_ChangeURL: Bool = true
     var blankPageFallback3_ChangeDNS: Bool = true
@@ -245,7 +245,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var networkErrorAutoRetry: Bool = true
     var sslErrorAutoRetry: Bool = false
     var http403MarkAsBlocked: Bool = true
-    var http429RetryAfterSeconds: Int = 60
+    var http429RetryAfterSeconds: Int = 90
     var http5xxAutoRetry: Bool = true
     var connectionResetAutoRetry: Bool = true
     var dnsFailureAutoRetry: Bool = true
@@ -283,6 +283,22 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Recorded Flow Override
     var urlFlowAssignments: [URLFlowAssignment] = []
+
+    static let minimumTimeoutSeconds: TimeInterval = 90
+    static let minimumTimeoutMilliseconds: Int = 90_000
+
+    func normalizedTimeouts() -> AutomationSettings {
+        var normalized = self
+        normalized.pageLoadTimeout = max(normalized.pageLoadTimeout, Self.minimumTimeoutSeconds)
+        normalized.fieldVerificationTimeout = max(normalized.fieldVerificationTimeout, Self.minimumTimeoutSeconds)
+        normalized.waitForResponseSeconds = max(normalized.waitForResponseSeconds, Self.minimumTimeoutSeconds)
+        normalized.loginButtonWaitForEnabledTimeoutMs = max(normalized.loginButtonWaitForEnabledTimeoutMs, Self.minimumTimeoutMilliseconds)
+        normalized.mfaWaitTimeoutSeconds = max(normalized.mfaWaitTimeoutSeconds, Int(Self.minimumTimeoutSeconds))
+        normalized.captchaWaitTimeoutSeconds = max(normalized.captchaWaitTimeoutSeconds, Int(Self.minimumTimeoutSeconds))
+        normalized.blankPageWaitThresholdSeconds = max(normalized.blankPageWaitThresholdSeconds, Int(Self.minimumTimeoutSeconds))
+        normalized.http429RetryAfterSeconds = max(normalized.http429RetryAfterSeconds, Int(Self.minimumTimeoutSeconds))
+        return normalized
+    }
 
     // MARK: - Enums
 

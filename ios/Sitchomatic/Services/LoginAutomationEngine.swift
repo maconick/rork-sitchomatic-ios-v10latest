@@ -294,8 +294,9 @@ class LoginAutomationEngine {
             if cycle > 1 {
                 let buttonCheck = await session.checkLoginButtonReadiness()
                 if !buttonCheck.isReady {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button not ready (\(buttonCheck.detail)) — waiting up to 15s", level: .warning))
-                    let waitResult = await session.waitForLoginButtonReady(timeout: 15)
+                    let buttonReadyTimeout = TimeoutResolver.resolveAutomationTimeout(15)
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button not ready (\(buttonCheck.detail)) — waiting up to \(Int(buttonReadyTimeout))s", level: .warning))
+                    let waitResult = await session.waitForLoginButtonReady(timeout: buttonReadyTimeout)
                     if waitResult.timedOut {
                         attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button hung — requeuing", level: .warning))
                         attempt.status = .failed
@@ -420,10 +421,11 @@ class LoginAutomationEngine {
             }
 
             let preSubmitURL = await session.getCurrentURL()
-            attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): waiting up to 5s for response...", level: .info))
+            let responseTimeout = TimeoutResolver.resolveAutomationTimeout(automationSettings.waitForResponseSeconds)
+            attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): waiting up to \(Int(responseTimeout))s for response...", level: .info))
 
             logger.startTimer(key: "\(sessionId)_poll_\(cycle)")
-            let pollResult = await session.rapidWelcomePoll(timeout: 5, originalURL: preSubmitURL)
+            let pollResult = await session.rapidWelcomePoll(timeout: responseTimeout, originalURL: preSubmitURL)
             let pollMs = logger.stopTimer(key: "\(sessionId)_poll_\(cycle)")
             logger.log("Rapid poll complete: welcome=\(pollResult.welcomeTextFound) redirect=\(pollResult.redirectedToHomepage) nav=\(pollResult.navigationDetected) banner=\(pollResult.errorBannerDetected)", category: .automation, level: .debug, sessionId: sessionId, durationMs: pollMs)
 

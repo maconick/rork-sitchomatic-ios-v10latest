@@ -11,7 +11,7 @@ class PPSRSettingsManager {
     var stealthEnabled: Bool = true
     var retrySubmitOnFail: Bool = false
     var screenshotCropRect: CGRect = .zero
-    var testTimeout: TimeInterval = 30
+    var testTimeout: TimeInterval = 90
 
     private let persistence = PPSRPersistenceService.shared
     private let emailRotation = PPSREmailRotationService.shared

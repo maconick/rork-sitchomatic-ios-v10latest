@@ -181,7 +181,7 @@ struct AutomationTemplateView: View {
     }
 
     private func applyTemplate(_ template: AutomationTemplate) {
-        vm.automationSettings = template.settings
+        vm.automationSettings = template.settings.normalizedTimeouts()
         vm.persistAutomationSettings()
         withAnimation {
             appliedTemplateName = template.name
@@ -265,7 +265,7 @@ struct CreateTemplateView: View {
                         description: description.isEmpty ? "Custom automation template" : description,
                         icon: selectedIcon,
                         color: selectedColor,
-                        settings: settings
+                        settings: settings.normalizedTimeouts()
                     )
                     onCreate(template)
                 } label: {

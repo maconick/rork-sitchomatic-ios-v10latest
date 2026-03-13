@@ -480,6 +480,7 @@ class DualFindViewModel {
     // MARK: - Response Evaluation
 
     private func evaluateResponseWithTimeout(session: LoginSiteWebSession, timeout: TimeInterval) async -> DualFindTestOutcome {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let result: DualFindTestOutcome = await withTaskGroup(of: DualFindTestOutcome.self) { group in
             group.addTask {
                 return await self.evaluateResponse(session: session)
@@ -785,7 +786,7 @@ class DualFindViewModel {
     private func loadSettings() {
         if let data = UserDefaults.standard.data(forKey: "automation_settings_v1"),
            let loaded = try? JSONDecoder().decode(AutomationSettings.self, from: data) {
-            automationSettings = loaded
+            automationSettings = loaded.normalizedTimeouts()
         }
         maxConcurrency = automationSettings.maxConcurrency
     }
@@ -795,7 +796,7 @@ class DualFindViewModel {
         if let settings = persistence.loadSettings() {
             debugMode = settings.debugMode
             stealthEnabled = settings.stealthEnabled
-            testTimeout = settings.testTimeout
+            testTimeout = max(settings.testTimeout, AutomationSettings.minimumTimeoutSeconds)
             if let mode = AppAppearanceMode(rawValue: settings.appearanceMode) {
                 appearanceMode = mode
             }

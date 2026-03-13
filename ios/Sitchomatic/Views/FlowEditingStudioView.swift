@@ -1510,7 +1510,7 @@ struct FlowSettingsView: View {
     var body: some View {
         Form {
             Section("Page Loading") {
-                Stepper("Timeout: \(Int(settings.pageLoadTimeout))s", value: $settings.pageLoadTimeout, in: 5...120)
+                Stepper("Timeout: \(Int(settings.pageLoadTimeout))s", value: $settings.pageLoadTimeout, in: 90...300, step: 15)
                 Stepper("Retries: \(settings.pageLoadRetries)", value: $settings.pageLoadRetries, in: 0...10)
                 Stepper("JS Render Wait: \(settings.waitForJSRenderMs)ms", value: $settings.waitForJSRenderMs, in: 500...15000, step: 500)
                 Toggle("Full Reset on Final Retry", isOn: $settings.fullSessionResetOnFinalRetry)

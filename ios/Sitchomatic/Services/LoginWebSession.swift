@@ -172,7 +172,7 @@ class LoginWebSession: NSObject {
             logger.log("LoginWebSession: page loaded in \(loadMs ?? 0)ms", category: .webView, level: .success, durationMs: loadMs)
             await injectFingerprint()
             try? await Task.sleep(for: .milliseconds(1500))
-            await waitForDOMReady(timeout: 10)
+            await waitForDOMReady(timeout: TimeoutResolver.resolveAutomationTimeout(10))
             let _ = await validateFingerprint()
         } else {
             logger.log("LoginWebSession: page load FAILED — \(lastNavigationError ?? "unknown")", category: .webView, level: .error, durationMs: loadMs, metadata: [
@@ -185,6 +185,7 @@ class LoginWebSession: NSObject {
     }
 
     private func waitForDOMReady(timeout: TimeInterval) async {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {
             let ready = await executeJS("document.readyState") ?? ""
@@ -196,7 +197,8 @@ class LoginWebSession: NSObject {
         }
     }
 
-    func waitForAppReady(timeout: TimeInterval = 25) async -> (ready: Bool, fieldsFound: Int, detail: String) {
+    func waitForAppReady(timeout: TimeInterval = 90) async -> (ready: Bool, fieldsFound: Int, detail: String) {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         var lastFieldCount = 0
         var lastDetail = "Waiting for app to initialize..."
@@ -650,7 +652,8 @@ class LoginWebSession: NSObject {
         webView?.url?.absoluteString ?? "N/A"
     }
 
-    func waitForNavigation(timeout: TimeInterval = 20) async -> Bool {
+    func waitForNavigation(timeout: TimeInterval = 90) async -> Bool {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let start = Date()
         let originalURL = webView?.url?.absoluteString ?? ""
         let originalBody = await executeJS("document.body ? document.body.innerText.substring(0, 200) : ''") ?? ""

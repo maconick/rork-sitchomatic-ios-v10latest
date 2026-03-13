@@ -74,7 +74,7 @@ class ConcurrentAutomationEngine {
         checks: [PPSRCheck],
         engine: PPSRAutomationEngine,
         maxConcurrency: Int = 5,
-        timeout: TimeInterval = 30,
+        timeout: TimeInterval = 90,
         onProgress: @escaping (Int, Int, CheckOutcome) -> Void
     ) async -> ConcurrentBatchResult<(String, CheckOutcome)> {
         isRunning = true
@@ -83,6 +83,7 @@ class ConcurrentAutomationEngine {
         let batchId = "concurrent_ppsr_\(UUID().uuidString.prefix(8))"
 
         await throttler.updateMaxConcurrency(maxConcurrency)
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         logger.startSession(batchId, category: .ppsr, message: "ConcurrentEngine: starting \(checks.count) PPSR checks, maxConcurrency=\(maxConcurrency)")
 
         var allResults: [(String, CheckOutcome)] = []
@@ -172,7 +173,7 @@ class ConcurrentAutomationEngine {
         urls: [URL],
         engine: LoginAutomationEngine,
         maxConcurrency: Int = 5,
-        timeout: TimeInterval = 45,
+        timeout: TimeInterval = 90,
         proxyTarget: ProxyRotationService.ProxyTarget = .joe,
         onProgress: @escaping (Int, Int, LoginOutcome) -> Void
     ) async -> ConcurrentBatchResult<(String, LoginOutcome)> {
@@ -183,6 +184,7 @@ class ConcurrentAutomationEngine {
 
         await throttler.updateMaxConcurrency(maxConcurrency)
 
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let proxyService = ProxyRotationService.shared
         let networkMode = proxyService.connectionMode(for: proxyTarget)
         let networkSummary = proxyService.networkSummary(for: proxyTarget)

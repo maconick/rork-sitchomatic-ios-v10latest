@@ -195,7 +195,7 @@ class LoginViewModel {
                 appearanceMode = mode
             }
             stealthEnabled = settings.stealthEnabled
-            testTimeout = settings.testTimeout
+            testTimeout = max(settings.testTimeout, AutomationSettings.minimumTimeoutSeconds)
         }
         loadCropRect()
         if !credentials.isEmpty {
@@ -254,6 +254,7 @@ class LoginViewModel {
     private let automationSettingsKey = "automation_settings_v1"
 
     func persistAutomationSettings() {
+        automationSettings = automationSettings.normalizedTimeouts()
         if let data = try? JSONEncoder().encode(automationSettings) {
             UserDefaults.standard.set(data, forKey: automationSettingsKey)
         }
@@ -263,12 +264,13 @@ class LoginViewModel {
     private func loadAutomationSettings() {
         if let data = UserDefaults.standard.data(forKey: automationSettingsKey),
            let loaded = try? JSONDecoder().decode(AutomationSettings.self, from: data) {
-            automationSettings = loaded
+            automationSettings = loaded.normalizedTimeouts()
         }
         syncAutomationSettingsToEngine()
     }
 
     private func syncAutomationSettingsToEngine() {
+        automationSettings = automationSettings.normalizedTimeouts()
         maxConcurrency = automationSettings.maxConcurrency
         engine.automationSettings = automationSettings
         secondaryEngine.automationSettings = automationSettings
@@ -422,7 +424,7 @@ class LoginViewModel {
             if error.domain == NSURLErrorDomain {
                 switch error.code {
                 case NSURLErrorNotConnectedToInternet: detail = "No internet connection"
-                case NSURLErrorTimedOut: detail = "Connection timed out (15s)"
+                case NSURLErrorTimedOut: detail = "Connection timed out (\(Int(AutomationSettings.minimumTimeoutSeconds))s)"
                 case NSURLErrorCannotFindHost: detail = "DNS failed for \(testURL.host ?? "")"
                 case NSURLErrorCannotConnectToHost: detail = "Cannot connect to \(testURL.host ?? "")"
                 case NSURLErrorNetworkConnectionLost: detail = "Network connection lost"
@@ -619,7 +621,7 @@ class LoginViewModel {
             let reason: String
             switch outcome {
             case .timeout:
-                reason = "timeout (45s combined)"
+                reason = "timeout (\(Int(testTimeout))s combined)"
                 requeueCredentialToBottom(credential)
             case .connectionFailure:
                 reason = "connection failure"
@@ -904,11 +906,12 @@ class LoginViewModel {
 
     private func startForceStopTimer() {
         forceStopTask?.cancel()
+        let forceStopTimeout = TimeoutResolver.resolveAutomationTimeout(20)
         forceStopTask = Task {
-            try? await Task.sleep(for: .seconds(20))
+            try? await Task.sleep(for: .seconds(forceStopTimeout))
             guard !Task.isCancelled else { return }
             guard isRunning || isStopping else { return }
-            log("Force-stop: batch did not finish within 20s — force cancelling", level: .error)
+            log("Force-stop: batch did not finish within \(Int(forceStopTimeout))s — force cancelling", level: .error)
             logger.log("Force-stop triggered — cancelling hung batch task", category: .login, level: .error)
             batchTask?.cancel()
             secondaryBatchTask?.cancel()

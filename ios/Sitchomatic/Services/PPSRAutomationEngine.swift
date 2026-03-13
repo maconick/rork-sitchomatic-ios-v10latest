@@ -31,7 +31,8 @@ class PPSRAutomationEngine {
         activeSessions < maxConcurrency
     }
 
-    func runCheck(_ check: PPSRCheck, timeout: TimeInterval = 30) async -> CheckOutcome {
+    func runCheck(_ check: PPSRCheck, timeout: TimeInterval = 90) async -> CheckOutcome {
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         activeSessions += 1
         defer { activeSessions -= 1 }
 
@@ -110,7 +111,7 @@ class PPSRAutomationEngine {
         var loaded = false
         for attempt in 1...3 {
             logger.startTimer(key: "\(sessionId)_pageload_\(attempt)")
-            loaded = await session.loadPage(timeout: 30)
+            loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
             let loadMs = logger.stopTimer(key: "\(sessionId)_pageload_\(attempt)")
             if loaded {
                 logger.log("Page load attempt \(attempt)/3 SUCCESS", category: .webView, level: .success, sessionId: sessionId, durationMs: loadMs)
@@ -173,7 +174,7 @@ class PPSRAutomationEngine {
 
         logger.startTimer(key: "\(sessionId)_appready")
         check.logs.append(PPSRLogEntry(message: "Waiting for PPSR app to fully initialize (detecting loading screens)...", level: .info))
-        let appReady = await session.waitForAppReady(timeout: 25)
+        let appReady = await session.waitForAppReady(timeout: TimeoutResolver.resolveAutomationTimeout(25))
         let readyMs = logger.stopTimer(key: "\(sessionId)_appready")
         logger.log("App readiness: ready=\(appReady.ready) fields=\(appReady.fieldsFound) — \(appReady.detail)", category: .automation, level: appReady.ready ? .success : .warning, sessionId: sessionId, durationMs: readyMs)
         check.logs.append(PPSRLogEntry(message: "App readiness: \(appReady.detail)", level: appReady.ready ? .success : .warning))
@@ -185,9 +186,9 @@ class PPSRAutomationEngine {
             check.logs.append(PPSRLogEntry(message: "Page structure: \(structure.prefix(300))", level: .warning))
 
             check.logs.append(PPSRLogEntry(message: "Healing: reloading page and waiting again...", level: .info))
-            let reloaded = await session.loadPage(timeout: 30)
+            let reloaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
             if reloaded {
-                let retryReady = await session.waitForAppReady(timeout: 20)
+                let retryReady = await session.waitForAppReady(timeout: TimeoutResolver.resolveAutomationTimeout(20))
                 logger.log("Retry app readiness: ready=\(retryReady.ready) fields=\(retryReady.fieldsFound)", category: .automation, level: retryReady.ready ? .success : .warning, sessionId: sessionId)
                 check.logs.append(PPSRLogEntry(message: "Retry readiness: \(retryReady.detail)", level: retryReady.ready ? .success : .warning))
 
@@ -276,7 +277,7 @@ class PPSRAutomationEngine {
             return .connectionFailure
         }
 
-        let navigated = await session.waitForNavigation(timeout: 10)
+        let navigated = await session.waitForNavigation(timeout: TimeoutResolver.resolveAutomationTimeout(10))
         if !navigated {
             check.logs.append(PPSRLogEntry(message: "Page did not navigate after submit — checking content anyway", level: .warning))
         }
@@ -316,7 +317,7 @@ class PPSRAutomationEngine {
             check.logs.append(PPSRLogEntry(message: "Retry Submit: no clear result — retrying...", level: .warning))
             let retrySubmit = await session.clickShowMyResults()
             if retrySubmit.success {
-                let retryNav = await session.waitForNavigation(timeout: 10)
+                let retryNav = await session.waitForNavigation(timeout: TimeoutResolver.resolveAutomationTimeout(10))
                 if !retryNav {
                     check.logs.append(PPSRLogEntry(message: "Retry: page did not navigate", level: .warning))
                 }

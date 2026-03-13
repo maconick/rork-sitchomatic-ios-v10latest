@@ -116,7 +116,7 @@ class LoginPersistenceService {
             debugMode: dict["debugMode"] as? Bool ?? false,
             appearanceMode: dict["appearanceMode"] as? String ?? "Dark",
             stealthEnabled: dict["stealthEnabled"] as? Bool ?? true,
-            testTimeout: dict["testTimeout"] as? TimeInterval ?? 45
+            testTimeout: max(dict["testTimeout"] as? TimeInterval ?? 90, AutomationSettings.minimumTimeoutSeconds)
         )
     }
 

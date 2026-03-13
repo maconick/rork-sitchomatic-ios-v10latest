@@ -369,7 +369,7 @@ struct DebugLoginButtonView: View {
             newSession.stealthEnabled = vm.stealthEnabled
             newSession.setUp(wipeAll: true)
 
-            let loaded = await newSession.loadPage(timeout: 20)
+            let loaded = await newSession.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
             if loaded {
                 session = newSession
                 isPageLoaded = true

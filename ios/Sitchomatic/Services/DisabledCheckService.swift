@@ -88,7 +88,7 @@ class DisabledCheckService {
             session.stealthEnabled = true
             session.setUp(wipeAll: true)
 
-            let loaded = await session.loadPage(timeout: 20)
+            let loaded = await session.loadPage(timeout: TimeoutResolver.resolveAutomationTimeout(20))
             guard loaded else {
                 session.tearDown(wipeAll: true)
                 if attempt < 3 {
@@ -142,7 +142,7 @@ class DisabledCheckService {
 
             var pageContent = ""
             let pollStart = Date()
-            let pollTimeout: TimeInterval = 8
+            let pollTimeout: TimeInterval = TimeoutResolver.resolveAutomationTimeout(8)
             while Date().timeIntervalSince(pollStart) < pollTimeout {
                 try? await Task.sleep(for: .milliseconds(Int.random(in: 400...800)))
                 pageContent = await session.getPageContent()

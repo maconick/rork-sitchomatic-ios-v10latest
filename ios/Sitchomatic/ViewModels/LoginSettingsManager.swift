@@ -61,7 +61,7 @@ class LoginSettingsManager {
                 appearanceMode = mode
             }
             stealthEnabled = settings.stealthEnabled
-            testTimeout = settings.testTimeout
+            testTimeout = max(settings.testTimeout, AutomationSettings.minimumTimeoutSeconds)
         }
         loadCropRect()
         loadAutomationSettings()
@@ -84,6 +84,7 @@ class LoginSettingsManager {
     }
 
     func persistAutomationSettings() {
+        automationSettings = automationSettings.normalizedTimeouts()
         if let data = try? JSONEncoder().encode(automationSettings) {
             UserDefaults.standard.set(data, forKey: automationSettingsKey)
         }
@@ -92,7 +93,7 @@ class LoginSettingsManager {
     func loadAutomationSettings() {
         if let data = UserDefaults.standard.data(forKey: automationSettingsKey),
            let loaded = try? JSONDecoder().decode(AutomationSettings.self, from: data) {
-            automationSettings = loaded
+            automationSettings = loaded.normalizedTimeouts()
         }
     }
 

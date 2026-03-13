@@ -378,7 +378,7 @@ struct AutomationSettingsView: View {
                         let session = LoginSiteWebSession(targetURL: url)
                         session.stealthEnabled = vm.stealthEnabled
                         session.setUp(wipeAll: true)
-                        let loaded = await session.loadPage(timeout: 20)
+                        let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
                         if loaded {
                             if let cal = await session.autoCalibrate() {
                                 calibrationService.saveCalibration(cal, forURL: url.absoluteString)
@@ -1023,12 +1023,10 @@ struct AutomationSettingsView: View {
                     get: { Int(vm.automationSettings.pageLoadTimeout) },
                     set: { vm.automationSettings.pageLoadTimeout = TimeInterval($0) }
                 )) {
-                    Text("12s").tag(12)
-                    Text("15s").tag(15)
-                    Text("20s").tag(20)
-                    Text("30s").tag(30)
-                    Text("45s").tag(45)
-                    Text("60s").tag(60)
+                    Text("90s").tag(90)
+                    Text("120s").tag(120)
+                    Text("150s").tag(150)
+                    Text("180s").tag(180)
                 }
                 .pickerStyle(.menu)
             }
@@ -1070,7 +1068,7 @@ struct AutomationSettingsView: View {
             .tint(accentColor)
 
             if vm.automationSettings.fieldVerificationEnabled {
-                Stepper("Timeout: \(Int(vm.automationSettings.fieldVerificationTimeout))s", value: $vm.automationSettings.fieldVerificationTimeout, in: 3...30)
+                Stepper("Timeout: \(Int(vm.automationSettings.fieldVerificationTimeout))s", value: $vm.automationSettings.fieldVerificationTimeout, in: 90...300, step: 15)
             }
 
             Toggle(isOn: $vm.automationSettings.autoCalibrationEnabled) {
@@ -1298,7 +1296,7 @@ struct AutomationSettingsView: View {
                 .tint(accentColor)
 
                 if vm.automationSettings.loginButtonWaitForEnabled {
-                    Stepper("Enabled Timeout: \(vm.automationSettings.loginButtonWaitForEnabledTimeoutMs)ms", value: $vm.automationSettings.loginButtonWaitForEnabledTimeoutMs, in: 1000...15000, step: 500)
+                    Stepper("Enabled Timeout: \(vm.automationSettings.loginButtonWaitForEnabledTimeoutMs)ms", value: $vm.automationSettings.loginButtonWaitForEnabledTimeoutMs, in: 90_000...300_000, step: 15_000)
                 }
 
                 Toggle("Visibility Check", isOn: $vm.automationSettings.loginButtonVisibilityCheck).tint(accentColor)
@@ -1418,11 +1416,9 @@ struct AutomationSettingsView: View {
                 Text("Wait for Response")
                 Spacer()
                 Picker("", selection: $vm.automationSettings.waitForResponseSeconds) {
-                    Text("3s").tag(3.0)
-                    Text("5s").tag(5.0)
-                    Text("8s").tag(8.0)
-                    Text("10s").tag(10.0)
-                    Text("15s").tag(15.0)
+                    Text("90s").tag(90.0)
+                    Text("120s").tag(120.0)
+                    Text("150s").tag(150.0)
                 }
                 .pickerStyle(.menu)
             }
@@ -1528,7 +1524,7 @@ struct AutomationSettingsView: View {
             .tint(accentColor)
 
             if vm.automationSettings.mfaDetectionEnabled {
-                Stepper("Wait Timeout: \(vm.automationSettings.mfaWaitTimeoutSeconds)s", value: $vm.automationSettings.mfaWaitTimeoutSeconds, in: 5...120, step: 5)
+                Stepper("Wait Timeout: \(vm.automationSettings.mfaWaitTimeoutSeconds)s", value: $vm.automationSettings.mfaWaitTimeoutSeconds, in: 90...300, step: 15)
                 Toggle("Auto-Skip MFA", isOn: $vm.automationSettings.mfaAutoSkip).tint(.orange)
                 Toggle("Mark as Temp Disabled", isOn: $vm.automationSettings.mfaMarkAsTempDisabled).tint(.orange)
 
@@ -1556,7 +1552,7 @@ struct AutomationSettingsView: View {
             if vm.automationSettings.captchaDetectionEnabled {
                 Toggle("Auto-Skip on CAPTCHA", isOn: $vm.automationSettings.captchaAutoSkip).tint(.orange)
                 Toggle("Mark as Failed", isOn: $vm.automationSettings.captchaMarkAsFailed).tint(.red)
-                Stepper("Wait Timeout: \(vm.automationSettings.captchaWaitTimeoutSeconds)s", value: $vm.automationSettings.captchaWaitTimeoutSeconds, in: 5...60, step: 5)
+                Stepper("Wait Timeout: \(vm.automationSettings.captchaWaitTimeoutSeconds)s", value: $vm.automationSettings.captchaWaitTimeoutSeconds, in: 90...300, step: 15)
                 Toggle("Iframe Detection", isOn: $vm.automationSettings.captchaIframeDetection).tint(.purple)
                 Toggle("Image Detection", isOn: $vm.automationSettings.captchaImageDetection).tint(.purple)
 
@@ -1610,7 +1606,7 @@ struct AutomationSettingsView: View {
                 }
             }
             .tint(.red)
-            Stepper("HTTP 429 Retry: \(vm.automationSettings.http429RetryAfterSeconds)s", value: $vm.automationSettings.http429RetryAfterSeconds, in: 10...300, step: 10)
+            Stepper("HTTP 429 Retry: \(vm.automationSettings.http429RetryAfterSeconds)s", value: $vm.automationSettings.http429RetryAfterSeconds, in: 90...300, step: 15)
             Toggle("HTTP 5xx Auto-Retry", isOn: $vm.automationSettings.http5xxAutoRetry).tint(accentColor)
             Toggle("Connection Reset Retry", isOn: $vm.automationSettings.connectionResetAutoRetry).tint(accentColor)
             Toggle("DNS Failure Retry", isOn: $vm.automationSettings.dnsFailureAutoRetry).tint(accentColor)

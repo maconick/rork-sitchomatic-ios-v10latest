@@ -234,7 +234,7 @@ class AppDataExportService {
 
         if let data = UserDefaults.standard.data(forKey: "automation_settings_v1"),
            let loaded = try? JSONDecoder().decode(AutomationSettings.self, from: data) {
-            config.automationSettings = loaded
+            config.automationSettings = loaded.normalizedTimeouts()
         }
 
         let loginCredentials = LoginPersistenceService.shared.loadCredentials()
@@ -543,7 +543,7 @@ class AppDataExportService {
         blacklistService.autoBlacklistNoAcc = config.settings.autoBlacklistNoAcc
 
         if let automation = config.automationSettings {
-            if let data = try? JSONEncoder().encode(automation) {
+            if let data = try? JSONEncoder().encode(automation.normalizedTimeouts()) {
                 UserDefaults.standard.set(data, forKey: "automation_settings_v1")
                 result.settingsImported = true
             }

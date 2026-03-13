@@ -159,7 +159,7 @@ class DebugLoginButtonService {
 
                 if contentChanged || urlChanged {
                     logger.log("DebugLoginButton: page changed, reloading before next attempt", category: .automation, level: .debug)
-                    let reloaded = await session.loadPage(timeout: 15)
+                    let reloaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
                     if !reloaded { break }
                     try? await Task.sleep(for: .milliseconds(1000))
                 }

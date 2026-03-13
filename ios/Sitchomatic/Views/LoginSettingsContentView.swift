@@ -190,10 +190,9 @@ struct LoginSettingsContentView: View {
                     get: { Int(vm.testTimeout) },
                     set: { vm.testTimeout = TimeInterval($0) }
                 )) {
-                    Text("30s").tag(30)
-                    Text("45s").tag(45)
-                    Text("60s").tag(60)
                     Text("90s").tag(90)
+                    Text("120s").tag(120)
+                    Text("150s").tag(150)
                 }
                 .pickerStyle(.menu)
             }

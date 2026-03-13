@@ -93,7 +93,7 @@ class ConcurrentSpeedOptimizer {
                         let url = testURLs[index % testURLs.count]
                         group.addTask {
                             let taskStart = Date()
-                            let outcome = await engine.runLoginTest(attempt, targetURL: url, timeout: 30)
+                            let outcome = await engine.runLoginTest(attempt, targetURL: url, timeout: TimeoutResolver.resolveAutomationTimeout(30))
                             let latency = Int(Date().timeIntervalSince(taskStart) * 1000)
                             let success = outcome == .success || outcome == .noAcc || outcome == .permDisabled || outcome == .tempDisabled
                             return (success, latency)

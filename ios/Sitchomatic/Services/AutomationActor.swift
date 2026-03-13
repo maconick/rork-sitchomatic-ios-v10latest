@@ -49,10 +49,11 @@ class AutomationActor {
         attempts: [LoginAttempt],
         urls: [URL],
         stealthEnabled: Bool,
-        timeout: TimeInterval = 45,
+        timeout: TimeInterval = 90,
         onProgress: @escaping (Int, Int, LoginOutcome) -> Void
     ) async -> [LoginOutcome] {
         let batchId = "batch_\(UUID().uuidString.prefix(8))"
+        let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         logger.startSession(batchId, category: .automation, message: "AutomationActor: batch login — \(attempts.count) attempts across \(urls.count) URLs, maxConcurrency=\(maxConcurrency)")
         totalTasksQueued += attempts.count
 

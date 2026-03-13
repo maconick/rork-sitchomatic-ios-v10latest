@@ -315,7 +315,7 @@ class BlankPageRecoveryService {
         onLog?("Rotated fingerprint profile (seed: \(newProfile.seed))", .info)
         logger.log("BlankPageRecovery: rotated fingerprint to seed \(newProfile.seed)", category: .stealth, level: .info, sessionId: sessionId)
 
-        let loaded = await session.loadPage(timeout: 12)
+        let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
         try? await Task.sleep(for: .seconds(2))
@@ -396,7 +396,7 @@ class BlankPageRecoveryService {
         onLog?("Rotated DNS to: \(newProvider.name)", .info)
         logger.log("BlankPageRecovery(PPSR): rotated DNS to \(newProvider.name)", category: .dns, level: .info, sessionId: sessionId)
 
-        let loaded = await session.loadPage(timeout: 30)
+        let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
         try? await Task.sleep(for: .seconds(2))
@@ -421,7 +421,7 @@ class BlankPageRecoveryService {
         onLog?("Rotated fingerprint profile (seed: \(newProfile.seed))", .info)
         logger.log("BlankPageRecovery(PPSR): rotated fingerprint to seed \(newProfile.seed)", category: .stealth, level: .info, sessionId: sessionId)
 
-        let loaded = await session.loadPage(timeout: 30)
+        let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
         try? await Task.sleep(for: .seconds(2))
@@ -451,7 +451,7 @@ class BlankPageRecoveryService {
 
         onLog?("Session rebuilt with network: \(newConfig.label)", .info)
 
-        let loaded = await session.loadPage(timeout: 30)
+        let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
         try? await Task.sleep(for: .seconds(3))
