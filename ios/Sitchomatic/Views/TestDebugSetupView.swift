@@ -2,8 +2,6 @@ import SwiftUI
 
 struct TestDebugSetupView: View {
     @Bindable var vm: TestDebugViewModel
-    @State private var emailInputs: [String] = [""]
-    @State private var passwordInputs: [String] = [""]
     @State private var showOverridesSheet: Bool = false
 
     var body: some View {
@@ -23,9 +21,7 @@ struct TestDebugSetupView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Test & Debug")
         .navigationBarTitleDisplayMode(.large)
-        .onAppear {
-            syncInputsFromVM()
-        }
+
     }
 
     private var headerSection: some View {
@@ -56,10 +52,8 @@ struct TestDebugSetupView: View {
                 Label("Credentials", systemImage: "person.badge.key.fill")
                     .font(.headline)
                 Spacer()
-                if emailInputs.count < 3 {
+                if vm.credentials.count < 3 {
                     Button {
-                        emailInputs.append("")
-                        passwordInputs.append("")
                         vm.addCredentialSlot()
                     } label: {
                         Label("Add", systemImage: "plus.circle.fill")
@@ -68,23 +62,21 @@ struct TestDebugSetupView: View {
                 }
             }
 
-            ForEach(0..<emailInputs.count, id: \.self) { index in
-                credentialCard(index: index)
+            ForEach(Array(vm.credentials.enumerated()), id: \.offset) { index, cred in
+                credentialCard(index: index, cred: cred)
             }
         }
     }
 
-    private func credentialCard(index: Int) -> some View {
+    private func credentialCard(index: Int, cred: TestDebugCredentialEntry) -> some View {
         VStack(spacing: 10) {
             HStack {
                 Text("Account \(index + 1)")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if emailInputs.count > 1 {
+                if vm.credentials.count > 1 {
                     Button {
-                        emailInputs.remove(at: index)
-                        passwordInputs.remove(at: index)
                         vm.removeCredentialSlot(at: index)
                     } label: {
                         Image(systemName: "minus.circle.fill")
@@ -95,11 +87,10 @@ struct TestDebugSetupView: View {
             }
 
             TextField("Email", text: Binding(
-                get: { index < emailInputs.count ? emailInputs[index] : "" },
+                get: { index < vm.credentials.count ? vm.credentials[index].email : "" },
                 set: { newVal in
-                    guard index < emailInputs.count else { return }
-                    emailInputs[index] = newVal
-                    syncToVM(index: index)
+                    guard index < vm.credentials.count else { return }
+                    vm.updateCredential(at: index, email: newVal, password: vm.credentials[index].password)
                 }
             ))
             .textContentType(.emailAddress)
@@ -111,11 +102,10 @@ struct TestDebugSetupView: View {
             .clipShape(.rect(cornerRadius: 10))
 
             SecureField("Password", text: Binding(
-                get: { index < passwordInputs.count ? passwordInputs[index] : "" },
+                get: { index < vm.credentials.count ? vm.credentials[index].password : "" },
                 set: { newVal in
-                    guard index < passwordInputs.count else { return }
-                    passwordInputs[index] = newVal
-                    syncToVM(index: index)
+                    guard index < vm.credentials.count else { return }
+                    vm.updateCredential(at: index, email: vm.credentials[index].email, password: newVal)
                 }
             ))
             .textContentType(.password)
@@ -336,13 +326,5 @@ struct TestDebugSetupView: View {
         .padding(.top, 8)
     }
 
-    private func syncInputsFromVM() {
-        emailInputs = vm.credentials.map(\.email)
-        passwordInputs = vm.credentials.map(\.password)
-    }
 
-    private func syncToVM(index: Int) {
-        guard index < emailInputs.count, index < passwordInputs.count else { return }
-        vm.updateCredential(at: index, email: emailInputs[index], password: passwordInputs[index])
-    }
 }

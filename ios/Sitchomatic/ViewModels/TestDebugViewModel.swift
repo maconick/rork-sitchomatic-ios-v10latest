@@ -85,16 +85,16 @@ class TestDebugViewModel {
     }
 
     var estimatedTimeRemaining: String? {
-        guard completedCount > 0, completedCount < sessions.count else { return nil }
-        let completedDurations = sessions.compactMap { s -> TimeInterval? in
-            guard s.status.isTerminal, let d = s.duration else { return nil }
-            return d
+        guard waveStartTimes.count >= 2, completedCount < sessions.count else { return nil }
+        var waveDurations: [TimeInterval] = []
+        for i in 1..<waveStartTimes.count {
+            waveDurations.append(waveStartTimes[i].timeIntervalSince(waveStartTimes[i - 1]))
         }
-        guard !completedDurations.isEmpty else { return nil }
-        let avgDuration = completedDurations.reduce(0, +) / Double(completedDurations.count)
+        guard !waveDurations.isEmpty else { return nil }
+        let avgWaveDuration = waveDurations.reduce(0, +) / Double(waveDurations.count)
         let remaining = sessions.count - completedCount
         let wavesLeft = Int(ceil(Double(remaining) / Double(waveSize)))
-        let etaSeconds = avgDuration * Double(wavesLeft)
+        let etaSeconds = avgWaveDuration * Double(wavesLeft)
         if etaSeconds < 60 {
             return "~\(Int(etaSeconds))s remaining"
         } else {
@@ -161,6 +161,8 @@ class TestDebugViewModel {
         isPaused = false
         isStopping = false
         phase = .running
+
+        urlRotation.isIgnitionMode = (selectedSite == .ignition)
 
         logger.log("TestDebug: Starting \(totalCount) sessions in \(totalWaves) waves of \(waveSize)", category: .login, level: .info)
 
@@ -311,12 +313,12 @@ class TestDebugViewModel {
         waveStartTimes = []
 
         for waveIndex in 0..<totalWaves {
-            guard !isStopping else { break }
+            guard !isStopping, !Task.isCancelled else { break }
 
-            while isPaused && !isStopping {
+            while isPaused && !isStopping && !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            guard !isStopping else { break }
+            guard !isStopping, !Task.isCancelled else { break }
 
             currentWave = waveIndex + 1
             waveStartTimes.append(Date())
@@ -326,14 +328,16 @@ class TestDebugViewModel {
 
             logger.log("TestDebug: Wave \(currentWave)/\(totalWaves) — \(waveSessions.count) sessions", category: .login, level: .info)
 
+            let testURL = urlRotation.nextURL() ?? targetSite.url
+
             await withTaskGroup(of: Void.self) { group in
                 for session in waveSessions {
                     let credIndex = (session.index - 1) % creds.count
                     let cred = creds[credIndex]
 
                     group.addTask { [weak self] in
-                        guard let self else { return }
-                        await self.runSession(session, credential: cred, targetSite: targetSite, proxyTarget: proxyTarget)
+                        guard let self, !Task.isCancelled else { return }
+                        await self.runSession(session, credential: cred, targetSite: targetSite, proxyTarget: proxyTarget, resolvedURL: testURL)
                     }
                 }
 
@@ -354,34 +358,41 @@ class TestDebugViewModel {
 
     private func runRetryWaves(_ retrySessions: [TestDebugSession]) async {
         let creds = validCredentials
+        guard !creds.isEmpty else {
+            isRunning = false
+            phase = .results
+            return
+        }
         let targetSite = selectedSite.targetSite
         let proxyTarget: ProxyRotationService.ProxyTarget = selectedSite == .ignition ? .ignition : .joe
 
         let retryWaveCount = Int(ceil(Double(retrySessions.count) / Double(waveSize)))
 
         for waveIndex in 0..<retryWaveCount {
-            guard !isStopping else { break }
+            guard !isStopping, !Task.isCancelled else { break }
 
-            while isPaused && !isStopping {
+            while isPaused && !isStopping && !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            guard !isStopping else { break }
+            guard !isStopping, !Task.isCancelled else { break }
 
             currentWave = waveIndex + 1
             let startIdx = waveIndex * waveSize
             let endIdx = min(startIdx + waveSize, retrySessions.count)
             let waveSessions = Array(retrySessions[startIdx..<endIdx])
 
+            let testURL = urlRotation.nextURL() ?? targetSite.url
+
             logger.log("TestDebug: Retry Wave \(currentWave)/\(retryWaveCount) — \(waveSessions.count) sessions", category: .login, level: .info)
 
             await withTaskGroup(of: Void.self) { group in
                 for session in waveSessions {
-                    let credIndex = (session.index - 1) % max(creds.count, 1)
+                    let credIndex = (session.index - 1) % creds.count
                     let cred = creds[credIndex]
 
                     group.addTask { [weak self] in
-                        guard let self else { return }
-                        await self.runSession(session, credential: cred, targetSite: targetSite, proxyTarget: proxyTarget)
+                        guard let self, !Task.isCancelled else { return }
+                        await self.runSession(session, credential: cred, targetSite: targetSite, proxyTarget: proxyTarget, resolvedURL: testURL)
                     }
                 }
 
@@ -397,14 +408,13 @@ class TestDebugViewModel {
         logger.log("TestDebug: Retry complete — \(successCount)/\(sessions.count) succeeded", category: .login, level: .success)
     }
 
-    private func runSession(_ session: TestDebugSession, credential: TestDebugCredentialEntry, targetSite: LoginTargetSite, proxyTarget: ProxyRotationService.ProxyTarget) async {
+    private func runSession(_ session: TestDebugSession, credential: TestDebugCredentialEntry, targetSite: LoginTargetSite, proxyTarget: ProxyRotationService.ProxyTarget, resolvedURL: URL? = nil) async {
         session.status = .running
         session.startedAt = Date()
 
         let snapshot = session.settingsSnapshot
 
-        urlRotation.isIgnitionMode = (selectedSite == .ignition)
-        let testURL = urlRotation.nextURL() ?? targetSite.url
+        let testURL = resolvedURL ?? targetSite.url
 
         let netConfigLabel = snapshot.connectionMode.rawValue
         session.logs.append(PPSRLogEntry(message: "Config: \(session.differentiator)", level: .info))

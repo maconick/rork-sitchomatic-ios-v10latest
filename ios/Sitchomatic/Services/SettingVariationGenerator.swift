@@ -216,7 +216,8 @@ class SettingVariationGenerator {
             )
 
             let finalSnapshot = applyOverrides(snapshot, overrides: overrides)
-            sessions.append(TestDebugSession(index: i + 1, differentiator: parts.joined(separator: " + "), settingsSnapshot: finalSnapshot))
+            let finalParts = buildDifferentiatorParts(finalSnapshot, overrides: overrides, baseParts: parts)
+            sessions.append(TestDebugSession(index: i + 1, differentiator: finalParts.joined(separator: " + "), settingsSnapshot: finalSnapshot))
         }
 
         return sessions
@@ -257,7 +258,8 @@ class SettingVariationGenerator {
             )
 
             let finalSnapshot = applyOverrides(snapshot, overrides: overrides)
-            sessions.append(TestDebugSession(index: i + 1, differentiator: parts.joined(separator: " + "), settingsSnapshot: finalSnapshot))
+            let finalParts = buildDifferentiatorParts(finalSnapshot, overrides: overrides, baseParts: parts)
+            sessions.append(TestDebugSession(index: i + 1, differentiator: finalParts.joined(separator: " + "), settingsSnapshot: finalSnapshot))
         }
 
         return sessions
@@ -307,7 +309,8 @@ class SettingVariationGenerator {
             )
 
             let finalSnapshot = applyOverrides(snapshot, overrides: overrides)
-            sessions.append(TestDebugSession(index: i + 1, differentiator: parts.joined(separator: " + "), settingsSnapshot: finalSnapshot))
+            let finalParts = buildDifferentiatorParts(finalSnapshot, overrides: overrides, baseParts: parts)
+            sessions.append(TestDebugSession(index: i + 1, differentiator: finalParts.joined(separator: " + "), settingsSnapshot: finalSnapshot))
         }
 
         return sessions
@@ -502,5 +505,22 @@ class SettingVariationGenerator {
         }
 
         return sessions
+    }
+
+    private func buildDifferentiatorParts(_ snapshot: TestDebugSettingsSnapshot, overrides: TestDebugVariationOverrides, baseParts: [String]) -> [String] {
+        guard overrides.hasPins else { return baseParts }
+        var parts = baseParts
+        if let pinNet = overrides.pinConnectionMode {
+            parts = parts.filter { !$0.contains("WG #") && !$0.contains("NodeMaven") && !$0.contains("DNS") && !$0.contains("SOCKS5") }
+            parts.insert("[PIN: \(pinNet.rawValue)]", at: 0)
+        }
+        if let pinPat = overrides.pinPattern {
+            parts = parts.filter { !patterns.contains($0) }
+            parts.append("[PIN: \(pinPat)]")
+        }
+        if overrides.pinTrueDetection != nil {
+            parts.append("[PIN: TD=\(snapshot.trueDetectionEnabled ? "ON" : "OFF")]")
+        }
+        return parts
     }
 }

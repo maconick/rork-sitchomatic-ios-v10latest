@@ -112,7 +112,7 @@ struct TestDebugResultsView: View {
         VStack(spacing: 12) {
             summaryBar
 
-            if vm.retryableSessionCount > 0 {
+            if vm.retryableSessionCount > 0 && !vm.isRunning {
                 retryButton
             }
 

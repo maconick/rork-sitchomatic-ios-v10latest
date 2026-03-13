@@ -82,7 +82,7 @@ nonisolated enum TestDebugSessionStatus: String, Sendable {
     var icon: String {
         switch self {
         case .queued: "circle.dashed"
-        case .running: "progress.indicator"
+        case .running: "circle.dotted"
         case .success: "checkmark.circle.fill"
         case .failed: "xmark.circle.fill"
         case .unsure: "questionmark.circle.fill"
