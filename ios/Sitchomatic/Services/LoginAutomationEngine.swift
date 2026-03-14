@@ -844,17 +844,23 @@ class LoginAutomationEngine {
         }
 
         let weakIncorrectTerms: [(String, Int)] = [
-            ("try again", 15), ("please try again", 20),
+            ("please try again", 20),
             ("invalid email", 20), ("invalid password", 20),
             ("check your credentials", 25), ("unable to log in", 25),
             ("login error", 20), ("sign in error", 20),
-            ("error", 5),
         ]
         for (term, weight) in weakIncorrectTerms {
             if contentLower.contains(term) {
                 incorrectScore += weight
                 incorrectSignals.append("+\(weight) '\(term)'")
             }
+        }
+
+        let loginContextTerms = ["password", "credential", "login", "sign in", "email", "username"]
+        let hasLoginContext = loginContextTerms.contains { contentLower.contains($0) }
+        if contentLower.contains("try again") && hasLoginContext {
+            incorrectScore += 15
+            incorrectSignals.append("+15 'try again' with login context")
         }
 
         if urlLower.contains("/login") || urlLower.contains("/signin") {
@@ -967,7 +973,8 @@ class LoginAutomationEngine {
             )
         }
 
-        if incorrectScore >= incorrectThreshold && incorrectScore > successScore {
+        let strongIncorrectThreshold = 30
+        if incorrectScore >= strongIncorrectThreshold && incorrectScore > successScore {
             let topSignals = incorrectSignals.prefix(3).joined(separator: ", ")
             return EvaluationResult(
                 outcome: .noAcc,
@@ -977,14 +984,23 @@ class LoginAutomationEngine {
             )
         }
 
-        // DEFAULT: No TRUE DETECTION markers, no redirect, no clear error = NO ACC
+        if incorrectScore >= incorrectThreshold && incorrectScore > successScore && contentChanged {
+            let topSignals = incorrectSignals.prefix(3).joined(separator: ", ")
+            return EvaluationResult(
+                outcome: .noAcc,
+                score: incorrectScore,
+                reason: "No account / weak signals but content changed [\(topSignals)]",
+                signals: incorrectSignals
+            )
+        }
+
         let maxScore = max(successScore, max(incorrectScore, disabledScore))
         let allSignals = successSignals + incorrectSignals + disabledSignals
         let snippet = String(pageContent.prefix(150)).replacingOccurrences(of: "\n", with: " ")
         return EvaluationResult(
-            outcome: .noAcc,
+            outcome: .unsure,
             score: maxScore,
-            reason: "No account (ambiguous fail) — no TRUE DETECTION markers, no redirect (success:\(successScore) incorrect:\(incorrectScore) disabled:\(disabledScore)) content: \"\(snippet)\"",
+            reason: "Ambiguous — requeuing (success:\(successScore) incorrect:\(incorrectScore) disabled:\(disabledScore)) content: \"\(snippet)\"",
             signals: allSignals
         )
     }

@@ -25,18 +25,20 @@ class RequeuePriorityService {
 
     private let logger = DebugLogger.shared
     private var requeueCounts: [String: Int] = [:]
+    private var detectionCounts: [String: Int] = [:]
     private let maxRequeueCount: Int = 3
+    private let maxDetectionBeforeDeprioritize: Int = 2
 
     func prioritize(credentialId: String, username: String, outcome: LoginOutcome) -> RequeueEntry? {
         let count = (requeueCounts[credentialId] ?? 0) + 1
         requeueCounts[credentialId] = count
 
         if count > maxRequeueCount {
-            logger.log("RequeuePriority: \\(username) exceeded max requeue count (\\(maxRequeueCount)) — dropping", category: .automation, level: .warning)
+            logger.log("RequeuePriority: \(username) exceeded max requeue count (\(maxRequeueCount)) — dropping", category: .automation, level: .warning)
             return nil
         }
 
-        let priority: RequeuePriority
+        var priority: RequeuePriority
         let reason: String
         let suggestProxy: Bool
 
@@ -50,12 +52,26 @@ class RequeuePriorityService {
             reason = "connection failure"
             suggestProxy = true
         case .redBannerError:
-            priority = .medium
-            reason = "red banner error"
+            let detCount = (detectionCounts[credentialId] ?? 0) + 1
+            detectionCounts[credentialId] = detCount
+            if detCount >= maxDetectionBeforeDeprioritize {
+                priority = .low
+                reason = "red banner error (\(detCount)x detected — deprioritized, site actively detecting)"
+            } else {
+                priority = .medium
+                reason = "red banner error — proxy+URL rotation+30s cooldown needed"
+            }
             suggestProxy = true
         case .smsDetected:
-            priority = .high
-            reason = "SMS notification (Ignition) — burn session, different IP/webview needed"
+            let detCount = (detectionCounts[credentialId] ?? 0) + 1
+            detectionCounts[credentialId] = detCount
+            if detCount >= maxDetectionBeforeDeprioritize {
+                priority = .low
+                reason = "SMS notification (\(detCount)x detected — deprioritized, Ignition 2FA triggered)"
+            } else {
+                priority = .high
+                reason = "SMS notification (Ignition) — burn session+proxy+URL+60s cooldown needed"
+            }
             suggestProxy = true
         case .unsure:
             priority = .low
@@ -65,7 +81,7 @@ class RequeuePriorityService {
             return nil
         }
 
-        logger.log("RequeuePriority: \\(username) → \\(priority) (\\(reason)) requeue #\\(count)", category: .automation, level: .info)
+        logger.log("RequeuePriority: \(username) → \(priority) (\(reason)) requeue #\(count)", category: .automation, level: .info)
         return RequeueEntry(
             credentialId: credentialId,
             username: username,
@@ -74,6 +90,22 @@ class RequeuePriorityService {
             suggestDifferentProxy: suggestProxy,
             requeueCount: count
         )
+    }
+
+    var cooldownSeconds: TimeInterval {
+        0
+    }
+
+    func cooldownForOutcome(_ outcome: LoginOutcome) -> TimeInterval {
+        switch outcome {
+        case .redBannerError: return 30
+        case .smsDetected: return 60
+        default: return 0
+        }
+    }
+
+    func detectionCount(for credentialId: String) -> Int {
+        detectionCounts[credentialId] ?? 0
     }
 
     func sortByPriority(_ entries: [RequeueEntry]) -> [RequeueEntry] {
@@ -87,6 +119,7 @@ class RequeuePriorityService {
 
     func resetCounts() {
         requeueCounts.removeAll()
+        detectionCounts.removeAll()
     }
 
     func requeueCount(for credentialId: String) -> Int {
