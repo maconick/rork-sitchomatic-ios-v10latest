@@ -40,6 +40,7 @@ class LoginAutomationEngine {
     private let urlQualityScoring = URLQualityScoringService.shared
     private let confidenceEngine = ConfidenceResultEngine.shared
     private let aiProxyStrategy = AIProxyStrategyService.shared
+    private let aiChallengeSolver = AIChallengePageSolverService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
@@ -253,23 +254,78 @@ class LoginAutomationEngine {
         }
         replayLogger.log(sessionId: sessionId, action: "page_loaded", detail: "loaded after retries")
 
+        let challengeStart = Date()
+        let challengeHost = session.targetURL.host ?? session.targetURL.absoluteString
         let challengeResult = await challengeClassifier.classify(session: session)
         if challengeResult.type != .none {
-            attempt.logs.append(PPSRLogEntry(message: "CHALLENGE DETECTED: \(challengeResult.type.rawValue) (confidence: \(String(format: "%.0f%%", challengeResult.confidence * 100))) — action: \(challengeResult.suggestedAction.rawValue)", level: .warning))
-            logger.log("Challenge page detected for \(attempt.credential.username): \(challengeResult.type.rawValue)", category: .evaluation, level: .warning, sessionId: sessionId)
+            let aiRec = challengeResult.aiBypassRecommendation
+            let strategyLabel = aiRec?.primaryStrategy ?? challengeResult.suggestedAction.rawValue
+            attempt.logs.append(PPSRLogEntry(message: "CHALLENGE DETECTED: \(challengeResult.type.rawValue) (confidence: \(String(format: "%.0f%%", challengeResult.confidence * 100))) — AI strategy: \(strategyLabel)", level: .warning))
+            if let aiRec {
+                attempt.logs.append(PPSRLogEntry(message: "AI bypass: \(aiRec.primaryStrategy) (confidence: \(String(format: "%.0f%%", aiRec.confidence * 100))) — \(aiRec.reasoning)", level: .info))
+            }
+            logger.log("Challenge page detected for \(attempt.credential.username): \(challengeResult.type.rawValue) — AI strategy: \(strategyLabel)", category: .evaluation, level: .warning, sessionId: sessionId)
 
-            switch challengeResult.suggestedAction {
-            case .abort:
+            let resolvedStrategy = aiRec?.primaryStrategy ?? challengeResult.suggestedAction.rawValue
+            var challengeBypassed = false
+
+            switch resolvedStrategy {
+            case "abort":
+                let latencyMs = Int(Date().timeIntervalSince(challengeStart) * 1000)
+                aiChallengeSolver.recordEncounter(host: challengeHost, challengeType: challengeResult.type, signals: challengeResult.signals, bypassUsed: "abort", success: false, latencyMs: latencyMs)
                 failAttempt(attempt, message: "Challenge page: \(challengeResult.type.rawValue) — aborting")
                 return .connectionFailure
-            case .waitAndRetry:
-                attempt.logs.append(PPSRLogEntry(message: "Waiting 5s before retrying due to \(challengeResult.type.rawValue)", level: .info))
-                try? await Task.sleep(for: .seconds(5))
-            case .rotateProxy, .switchNetwork, .rotateURL:
-                attempt.logs.append(PPSRLogEntry(message: "Challenge suggests network change — proceeding with caution", level: .warning))
-            case .proceed:
-                break
+            case "waitAndRetry":
+                let waitMs = aiRec?.waitTimeMs ?? 5000
+                attempt.logs.append(PPSRLogEntry(message: "AI: waiting \(waitMs)ms before retrying due to \(challengeResult.type.rawValue)", level: .info))
+                try? await Task.sleep(for: .milliseconds(waitMs))
+                challengeBypassed = true
+            case "rotateProxy", "switchNetwork":
+                attempt.logs.append(PPSRLogEntry(message: "AI: network rotation recommended — proceeding with caution", level: .warning))
+                challengeBypassed = true
+            case "rotateFingerprint":
+                let stealth = PPSRStealthService.shared
+                let newProfile = stealth.nextProfile()
+                session.webView?.customUserAgent = newProfile.userAgent
+                let newJS = stealth.createStealthUserScript(profile: newProfile)
+                session.webView?.configuration.userContentController.removeAllUserScripts()
+                session.webView?.configuration.userContentController.addUserScript(newJS)
+                attempt.logs.append(PPSRLogEntry(message: "AI: rotated fingerprint (seed: \(newProfile.seed))", level: .info))
+                challengeBypassed = true
+            case "rotateURL":
+                attempt.logs.append(PPSRLogEntry(message: "AI: URL rotation recommended — proceeding with caution", level: .warning))
+                challengeBypassed = true
+            case "fullSessionReset":
+                attempt.logs.append(PPSRLogEntry(message: "AI: full session reset recommended", level: .warning))
+                session.tearDown(wipeAll: true)
+                session.stealthEnabled = stealthEnabled
+                session.setUp(wipeAll: true)
+                let reloaded = await session.loadPage(timeout: automationSettings.pageLoadTimeout)
+                challengeBypassed = reloaded
+                if !reloaded {
+                    attempt.logs.append(PPSRLogEntry(message: "AI: session reset failed to reload page", level: .error))
+                }
+            default:
+                switch challengeResult.suggestedAction {
+                case .abort:
+                    let latencyMs = Int(Date().timeIntervalSince(challengeStart) * 1000)
+                    aiChallengeSolver.recordEncounter(host: challengeHost, challengeType: challengeResult.type, signals: challengeResult.signals, bypassUsed: "abort", success: false, latencyMs: latencyMs)
+                    failAttempt(attempt, message: "Challenge page: \(challengeResult.type.rawValue) — aborting")
+                    return .connectionFailure
+                case .waitAndRetry:
+                    attempt.logs.append(PPSRLogEntry(message: "Waiting 5s before retrying due to \(challengeResult.type.rawValue)", level: .info))
+                    try? await Task.sleep(for: .seconds(5))
+                    challengeBypassed = true
+                case .rotateProxy, .switchNetwork, .rotateURL:
+                    attempt.logs.append(PPSRLogEntry(message: "Challenge suggests network change — proceeding with caution", level: .warning))
+                    challengeBypassed = true
+                case .proceed:
+                    challengeBypassed = true
+                }
             }
+
+            let latencyMs = Int(Date().timeIntervalSince(challengeStart) * 1000)
+            aiChallengeSolver.recordEncounter(host: challengeHost, challengeType: challengeResult.type, signals: challengeResult.signals, bypassUsed: resolvedStrategy, success: challengeBypassed, latencyMs: latencyMs)
         }
 
         let pageHost = session.targetURL.host ?? ""

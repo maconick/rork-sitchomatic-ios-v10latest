@@ -8,6 +8,7 @@ class ChallengePageClassifier {
     static let shared = ChallengePageClassifier()
 
     private let logger = DebugLogger.shared
+    private let aiSolver = AIChallengePageSolverService.shared
 
     nonisolated enum ChallengeType: String, Sendable {
         case none
@@ -26,6 +27,7 @@ class ChallengePageClassifier {
         let confidence: Double
         let signals: [String]
         let suggestedAction: SuggestedAction
+        let aiBypassRecommendation: AIBypassRecommendation?
     }
 
     nonisolated enum SuggestedAction: String, Sendable {
@@ -65,11 +67,25 @@ class ChallengePageClassifier {
 
         let action = suggestedAction(for: finalType)
 
+        var aiRecommendation: AIBypassRecommendation? = nil
         if finalType != .none {
             logger.log("ChallengeClassifier: detected \(finalType.rawValue) (confidence: \(String(format: "%.0f%%", confidence * 100))) — \(signals.prefix(3).joined(separator: ", "))", category: .evaluation, level: .warning)
+
+            let host = extractHost(from: currentURL)
+            if !aiSolver.isHostInCooldown(host) {
+                aiRecommendation = await aiSolver.recommendBypass(
+                    host: host,
+                    challengeType: finalType,
+                    signals: signals,
+                    confidence: confidence,
+                    pageContent: pageContent
+                )
+            } else {
+                logger.log("ChallengeClassifier: host \(host) in AI cooldown (\(Int(aiSolver.cooldownRemaining(host)))s remaining)", category: .evaluation, level: .info)
+            }
         }
 
-        return ClassificationResult(type: finalType, confidence: confidence, signals: signals, suggestedAction: action)
+        return ClassificationResult(type: finalType, confidence: confidence, signals: signals, suggestedAction: action, aiBypassRecommendation: aiRecommendation)
     }
 
     private func classifyFromDOM(contentLower: String, url: String, signals: inout [String], scores: inout [ChallengeType: Double]) {
@@ -245,6 +261,10 @@ class ChallengePageClassifier {
             scores[.jsFailed, default: 0] += 0.4
             signals.append("JS_NOSCRIPT_ONLY")
         }
+    }
+
+    private func extractHost(from url: String) -> String {
+        URL(string: url)?.host ?? url
     }
 
     private func suggestedAction(for type: ChallengeType) -> SuggestedAction {
