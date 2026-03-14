@@ -134,7 +134,11 @@ class WebViewPool {
     }
 
     func release(_ webView: WKWebView, wipeData: Bool = true) {
-        inUseCount = max(0, inUseCount - 1)
+        guard inUseCount > 0 else {
+            logger.log("WebViewPool: release called but inUseCount already 0 — possible double-release", category: .webView, level: .warning)
+            return
+        }
+        inUseCount -= 1
 
         webView.stopLoading()
 
@@ -154,7 +158,13 @@ class WebViewPool {
     }
 
     func handleMemoryPressure() {
-        logger.log("WebViewPool: memory pressure noted (\(inUseCount) active)", category: .webView, level: .warning)
+        let drained = preWarmedViews.count
+        drainPreWarmed()
+        if drained > 0 {
+            logger.log("WebViewPool: memory pressure — drained \(drained) pre-warmed views (\(inUseCount) active)", category: .webView, level: .warning)
+        } else {
+            logger.log("WebViewPool: memory pressure noted (\(inUseCount) active, 0 pre-warmed)", category: .webView, level: .warning)
+        }
     }
 
     func reportProcessTermination() {

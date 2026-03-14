@@ -33,13 +33,16 @@ class ScreenshotCacheService {
             aggressiveMemoryEvict()
         }
 
+        let fileURL = fileURL(for: key)
+        let jpegData = compressed.jpegData(compressionQuality: 0.4)
+        let diskMax = maxDiskCacheCount
+        let sizeMax = maxDiskCacheSizeBytes
         Task.detached(priority: .utility) {
-            let fileURL = self.fileURL(for: key)
-            if let data = compressed.jpegData(compressionQuality: 0.4) {
+            if let data = jpegData {
                 try? data.write(to: fileURL, options: .atomic)
             }
-            await MainActor.run {
-                self.evictDiskCacheIfNeeded()
+            await MainActor.run { [weak self] in
+                self?.evictDiskCacheIfNeeded()
             }
         }
     }

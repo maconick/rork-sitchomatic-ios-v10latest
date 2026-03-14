@@ -348,8 +348,9 @@ class DebugLogger {
 
     private func scheduleAutoPersist() {
         guard autoPersistTask == nil || autoPersistTask?.isCancelled == true else { return }
-        Task {
-            persistLatestLog()
+        autoPersistTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.persistLatestLog()
         }
     }
 
@@ -786,12 +787,14 @@ class DebugLogger {
     }
 
     private func startAutoPersist() {
-        autoPersistTask = Task { [weak self] in
+        let persistTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled else { break }
                 self?.persistLatestLog()
             }
         }
+        _ = persistTask
     }
 
     func persistLatestLog() {
@@ -813,11 +816,19 @@ class DebugLogger {
         let keepCount = min(1000, maxEntries / 5)
         if entries.count > keepCount {
             let evicted = Array(entries.suffix(from: keepCount))
+            var evictedErrors = 0
+            var evictedWarnings = 0
+            var evictedCriticals = 0
+            for entry in evicted {
+                if entry.level >= .error { evictedErrors += 1 }
+                if entry.level == .warning { evictedWarnings += 1 }
+                if entry.level >= .critical { evictedCriticals += 1 }
+            }
             scheduleDiskFlush(entries: evicted)
             entries.removeLast(entries.count - keepCount)
-            cachedErrorCount = entries.filter { $0.level >= .error }.count
-            cachedWarningCount = entries.filter { $0.level == .warning }.count
-            cachedCriticalCount = entries.filter { $0.level >= .critical }.count
+            cachedErrorCount = max(0, cachedErrorCount - evictedErrors)
+            cachedWarningCount = max(0, cachedWarningCount - evictedWarnings)
+            cachedCriticalCount = max(0, cachedCriticalCount - evictedCriticals)
             log("Memory pressure: evicted \(beforeCount - keepCount) log entries to disk", category: .system, level: .warning)
         }
     }

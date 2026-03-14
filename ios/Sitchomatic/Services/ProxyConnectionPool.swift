@@ -200,8 +200,11 @@ class ProxyConnectionPool {
         totalPoolHits = 0
         totalPoolMisses = 0
         totalEvictions = 0
+        cleanupTimer?.invalidate()
+        cleanupTimer = nil
         keepaliveTimer?.invalidate()
         keepaliveTimer = nil
+        cleanupTimerStarted = false
         logger.log("ConnectionPool: drained all connections", category: .proxy, level: .info)
     }
 
@@ -296,30 +299,30 @@ class ProxyConnectionPool {
         guard !idleIds.isEmpty else { return }
 
         for id in idleIds {
-            guard let conn = upstreamConnections[id], conn.state == .ready else {
-                evictConnection(id: id, reason: "keepalive: not ready")
+            guard let conn = upstreamConnections[id] else {
+                evictConnection(id: id, reason: "keepalive: connection missing")
                 continue
             }
 
-            conn.send(content: Data(), completion: .contentProcessed { [weak self] error in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if error != nil {
-                        guard var existingInfo = self.pooledConnections[id] else { return }
-                        existingInfo.keepaliveFailures += 1
-                        if existingInfo.keepaliveFailures >= self.maxKeepaliveFailures {
-                            self.evictConnection(id: id, reason: "keepalive: \(existingInfo.keepaliveFailures) consecutive failures")
-                        } else {
-                            self.pooledConnections[id] = existingInfo
-                        }
-                    } else {
-                        guard var existingInfo = self.pooledConnections[id] else { return }
-                        existingInfo.lastKeepaliveAt = Date()
-                        existingInfo.keepaliveFailures = 0
-                        self.pooledConnections[id] = existingInfo
-                    }
+            switch conn.state {
+            case .ready:
+                var info = pooledConnections[id]
+                info?.lastKeepaliveAt = Date()
+                info?.keepaliveFailures = 0
+                if let info { pooledConnections[id] = info }
+            case .failed, .cancelled:
+                evictConnection(id: id, reason: "keepalive: connection \(conn.state)")
+            case .waiting, .preparing:
+                guard var existingInfo = pooledConnections[id] else { continue }
+                existingInfo.keepaliveFailures += 1
+                if existingInfo.keepaliveFailures >= maxKeepaliveFailures {
+                    evictConnection(id: id, reason: "keepalive: stuck in \(conn.state) for \(existingInfo.keepaliveFailures) checks")
+                } else {
+                    pooledConnections[id] = existingInfo
                 }
-            })
+            default:
+                break
+            }
         }
     }
 

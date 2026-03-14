@@ -1346,12 +1346,12 @@ class LoginViewModel {
         guard logFlushTask == nil else { return }
         logFlushTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
             self?.flushLogs()
         }
     }
 
     private func flushLogs() {
-        logFlushTask?.cancel()
         logFlushTask = nil
         guard !pendingLogs.isEmpty else { return }
         let batch = pendingLogs

@@ -485,20 +485,23 @@ class NetworkResilienceService {
     // MARK: - Connection Multiplexing Awareness
 
     private var hostSessionMap: [String: URLSession] = [:]
+    private var hostSessionAccessOrder: [String] = []
     private let maxSharedSessions: Int = 10
 
     func sharedSession(for host: String, proxyConfig: ProxyConfig? = nil) -> URLSession {
         let key = proxyConfig != nil ? "\(host)_\(proxyConfig!.host):\(proxyConfig!.port)" : host
 
         if let existing = hostSessionMap[key] {
+            hostSessionAccessOrder.removeAll { $0 == key }
+            hostSessionAccessOrder.append(key)
             return existing
         }
 
         if hostSessionMap.count >= maxSharedSessions {
-            let oldest = hostSessionMap.keys.first
-            if let oldest {
-                hostSessionMap[oldest]?.invalidateAndCancel()
-                hostSessionMap.removeValue(forKey: oldest)
+            if let lruKey = hostSessionAccessOrder.first {
+                hostSessionMap[lruKey]?.invalidateAndCancel()
+                hostSessionMap.removeValue(forKey: lruKey)
+                hostSessionAccessOrder.removeFirst()
             }
         }
 
@@ -521,6 +524,7 @@ class NetworkResilienceService {
 
         let session = URLSession(configuration: config)
         hostSessionMap[key] = session
+        hostSessionAccessOrder.append(key)
         logger.log("Resilience: created shared TLS session for \(key) (pool: \(hostSessionMap.count)/\(maxSharedSessions))", category: .network, level: .debug)
         return session
     }
@@ -530,6 +534,7 @@ class NetworkResilienceService {
             session.invalidateAndCancel()
         }
         hostSessionMap.removeAll()
+        hostSessionAccessOrder.removeAll()
         logger.log("Resilience: all shared TLS sessions invalidated", category: .network, level: .info)
     }
 

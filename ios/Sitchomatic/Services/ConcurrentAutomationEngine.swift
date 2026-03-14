@@ -7,22 +7,30 @@ actor AutomationThrottler {
     private var backoffMs: Int = 0
     private var consecutiveFailures: Int = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var isCancelled: Bool = false
 
     init(maxConcurrency: Int = 5) {
         self.maxConcurrency = maxConcurrency
     }
 
-    func acquire() async {
+    func acquire() async -> Bool {
+        guard !isCancelled else { return false }
         if activeCount < maxConcurrency {
             activeCount += 1
         } else {
             await withCheckedContinuation { continuation in
-                waiters.append(continuation)
+                if isCancelled {
+                    continuation.resume()
+                } else {
+                    waiters.append(continuation)
+                }
             }
+            guard !isCancelled else { return false }
         }
         if backoffMs > 0 {
             try? await Task.sleep(for: .milliseconds(backoffMs))
         }
+        return !isCancelled
     }
 
     func release(succeeded: Bool) {
@@ -34,7 +42,11 @@ actor AutomationThrottler {
             consecutiveFailures += 1
             backoffMs = min(10000, 500 * (1 << min(consecutiveFailures, 5)))
         }
-        if !waiters.isEmpty && activeCount < maxConcurrency {
+        resumeNextWaiterIfPossible()
+    }
+
+    private func resumeNextWaiterIfPossible() {
+        while !waiters.isEmpty && activeCount < maxConcurrency {
             activeCount += 1
             let next = waiters.removeFirst()
             next.resume()
@@ -45,11 +57,7 @@ actor AutomationThrottler {
         let old = maxConcurrency
         maxConcurrency = max(1, min(10, newMax))
         if maxConcurrency > old {
-            while !waiters.isEmpty && activeCount < maxConcurrency {
-                activeCount += 1
-                let next = waiters.removeFirst()
-                next.resume()
-            }
+            resumeNextWaiterIfPossible()
         }
     }
 
@@ -58,6 +66,19 @@ actor AutomationThrottler {
     }
 
     func reset() {
+        activeCount = 0
+        backoffMs = 0
+        consecutiveFailures = 0
+        isCancelled = false
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
+
+    func cancelAll() {
+        isCancelled = true
         activeCount = 0
         backoffMs = 0
         consecutiveFailures = 0
@@ -521,9 +542,9 @@ class ConcurrentAutomationEngine {
 
                         group.addTask {
                             guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0, originalIndex) }
-                            await self.throttler.acquire()
-                            guard !Task.isCancelled else {
-                                await self.throttler.release(succeeded: false)
+                            let acquired = await self.throttler.acquire()
+                            guard acquired, !Task.isCancelled else {
+                                if acquired { await self.throttler.release(succeeded: false) }
                                 return (username, LoginOutcome.timeout, 0, originalIndex)
                             }
                             let taskStart = Date()
@@ -689,9 +710,9 @@ class ConcurrentAutomationEngine {
 
                     group.addTask {
                         guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0) }
-                        await self.throttler.acquire()
-                        guard !Task.isCancelled else {
-                            await self.throttler.release(succeeded: false)
+                        let acquired = await self.throttler.acquire()
+                        guard acquired, !Task.isCancelled else {
+                            if acquired { await self.throttler.release(succeeded: false) }
                             return (username, LoginOutcome.timeout, 0)
                         }
                         let taskStart = Date()

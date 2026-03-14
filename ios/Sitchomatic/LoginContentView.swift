@@ -71,9 +71,6 @@ struct LoginContentView: View {
                 }
             }
         }
-        .onChange(of: vm.credentials.count) { _, _ in
-            vm.persistCredentials()
-        }
         .onChange(of: loginSettingsHash) { _, _ in
             vm.persistSettings()
         }
