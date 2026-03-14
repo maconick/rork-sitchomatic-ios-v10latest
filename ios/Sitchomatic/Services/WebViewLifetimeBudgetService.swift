@@ -11,7 +11,7 @@ class WebViewLifetimeBudgetService {
 
     func recordNavigation(sessionId: String) -> Bool {
         navigationCounts[sessionId, default: 0] += 1
-        let count = navigationCounts[sessionId]!
+        let count = navigationCounts[sessionId] ?? 0
         if count >= maxNavigationsBeforeRecycle {
             logger.log("LifetimeBudget: session \(sessionId) hit \(count) navigations — recycle recommended", category: .webView, level: .warning)
             return true

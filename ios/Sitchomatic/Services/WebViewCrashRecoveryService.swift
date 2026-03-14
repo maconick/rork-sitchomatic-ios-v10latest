@@ -20,7 +20,7 @@ class WebViewCrashRecoveryService {
     func recordRecovery(sessionId: String) {
         sessionRecoveryCounts[sessionId, default: 0] += 1
         totalRecoveries += 1
-        logger.log("CrashRecovery: session \(sessionId) recovery #\(sessionRecoveryCounts[sessionId]!) (total: \(totalRecoveries))", category: .webView, level: .warning)
+        logger.log("CrashRecovery: session \(sessionId) recovery #\(sessionRecoveryCounts[sessionId] ?? 0) (total: \(totalRecoveries))", category: .webView, level: .warning)
     }
 
     func recordUnrecoverable(sessionId: String) {

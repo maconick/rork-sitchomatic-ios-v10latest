@@ -648,6 +648,7 @@ class PPSRAutomationViewModel {
         batchTask = nil
         resetStuckTestingCards()
         syncActiveTestCount()
+        trimChecksIfNeeded()
         backgroundService.endExtendedBackgroundExecution()
         log("Force-stop complete — all state reset", level: .warning)
         persistCards()
@@ -732,6 +733,7 @@ class PPSRAutomationViewModel {
             return
         }
 
+        batchTask?.cancel()
         isPaused = false
         isStopping = false
         batchStartTime = Date()
@@ -939,6 +941,7 @@ class PPSRAutomationViewModel {
 
         resetStuckTestingCards()
         syncActiveTestCount()
+        trimChecksIfNeeded()
         backgroundService.endExtendedBackgroundExecution()
 
         let batchDuration = batchStartTime.map { Date().timeIntervalSince($0) } ?? 0
@@ -1106,8 +1109,19 @@ class PPSRAutomationViewModel {
         let batch = pendingLogs
         pendingLogs.removeAll()
         globalLogs.insert(contentsOf: batch.reversed(), at: 0)
-        if globalLogs.count > 2000 {
-            globalLogs.removeLast(globalLogs.count - 2000)
+        if globalLogs.count > 1500 {
+            globalLogs.removeLast(globalLogs.count - 1500)
+        }
+    }
+
+    private let maxCheckHistory: Int = 500
+
+    func trimChecksIfNeeded() {
+        let terminal = checks.filter { $0.status.isTerminal }
+        if terminal.count > maxCheckHistory {
+            let excess = terminal.count - maxCheckHistory
+            let oldestTerminalIds = Set(terminal.suffix(excess).map(\.id))
+            checks.removeAll { oldestTerminalIds.contains($0.id) }
         }
     }
 

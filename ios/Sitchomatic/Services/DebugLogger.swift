@@ -421,7 +421,7 @@ class DebugLogger {
         if retryTracker[key] == nil {
             retryTracker[key] = RetryState(maxAttempts: maxAttempts)
         }
-        return retryTracker[key]!
+        return retryTracker[key] ?? RetryState(maxAttempts: maxAttempts)
     }
 
     func recordRetryAttempt(for key: String, error: String?) {
@@ -810,6 +810,24 @@ class DebugLogger {
     }
 
     var persistedLogURL: URL { persistentLogURL }
+
+    func trimEntries(to count: Int) {
+        guard entries.count > count else { return }
+        let evicted = Array(entries.suffix(from: count))
+        var evictedErrors = 0
+        var evictedWarnings = 0
+        var evictedCriticals = 0
+        for entry in evicted {
+            if entry.level >= .error { evictedErrors += 1 }
+            if entry.level == .warning { evictedWarnings += 1 }
+            if entry.level >= .critical { evictedCriticals += 1 }
+        }
+        totalEntriesEvicted += evicted.count
+        entries.removeLast(entries.count - count)
+        cachedErrorCount = max(0, cachedErrorCount - evictedErrors)
+        cachedWarningCount = max(0, cachedWarningCount - evictedWarnings)
+        cachedCriticalCount = max(0, cachedCriticalCount - evictedCriticals)
+    }
 
     func handleMemoryPressure() {
         let beforeCount = entries.count

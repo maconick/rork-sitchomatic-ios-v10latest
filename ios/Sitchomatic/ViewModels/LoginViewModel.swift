@@ -767,6 +767,8 @@ class LoginViewModel {
     }
 
     private func testSingleSiteBatch(_ credsToTest: [LoginCredential]) {
+        batchTask?.cancel()
+        secondaryBatchTask?.cancel()
         isRunning = true
         batchTotalCount = credsToTest.count
         batchCompletedCount = 0
@@ -845,6 +847,8 @@ class LoginViewModel {
     }
 
     private func testDoubleSite(_ credsToTest: [LoginCredential]) {
+        batchTask?.cancel()
+        secondaryBatchTask?.cancel()
         isRunning = true
         batchTotalCount = credsToTest.count
         batchCompletedCount = 0
@@ -1008,6 +1012,7 @@ class LoginViewModel {
 
         resetStuckTestingCredentials()
         syncActiveTestCount()
+        trimAttemptsIfNeeded()
         backgroundService.endExtendedBackgroundExecution()
 
         if stoppedEarly {
@@ -1114,10 +1119,17 @@ class LoginViewModel {
         isStopping = false
         pauseCountdown = 0
         activeTestCount = 0
+        batchTotalCount = 0
+        batchCompletedCount = 0
+        batchSuccessCount = 0
+        batchFailCount = 0
+        batchStartTime = nil
+        batchSiteLabel = ""
         batchTask = nil
         secondaryBatchTask = nil
         resetStuckTestingCredentials()
         syncActiveTestCount()
+        trimAttemptsIfNeeded()
         backgroundService.endExtendedBackgroundExecution()
         log("Force-stop complete — all state reset", level: .warning)
         persistCredentials()
@@ -1297,7 +1309,7 @@ class LoginViewModel {
     func runTempDisabledPasswordCheck() {
         tempDisabledService.runPasswordCheck(
             credentials: credentials,
-            getURL: { [weak self] in self?.getNextTestURL() ?? URL(string: "https://example.com")! },
+            getURL: { [weak self] in self?.getNextTestURL() ?? URL(string: "https://example.com") ?? URL(fileURLWithPath: "/") },
             persistCredentials: { [weak self] in self?.persistCredentials() },
             onLog: { [weak self] message, level in self?.log(message, level: level) }
         )
@@ -1454,8 +1466,19 @@ class LoginViewModel {
         let batch = pendingLogs
         pendingLogs.removeAll()
         globalLogs.insert(contentsOf: batch.reversed(), at: 0)
-        if globalLogs.count > 2000 {
-            globalLogs.removeLast(globalLogs.count - 2000)
+        if globalLogs.count > 1500 {
+            globalLogs.removeLast(globalLogs.count - 1500)
+        }
+    }
+
+    private let maxAttemptHistory: Int = 500
+
+    func trimAttemptsIfNeeded() {
+        let terminal = attempts.filter { $0.status.isTerminal }
+        if terminal.count > maxAttemptHistory {
+            let excess = terminal.count - maxAttemptHistory
+            let oldestTerminalIds = Set(terminal.suffix(excess).map(\.id))
+            attempts.removeAll { oldestTerminalIds.contains($0.id) }
         }
     }
 }

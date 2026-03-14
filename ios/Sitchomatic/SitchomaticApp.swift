@@ -118,14 +118,21 @@ struct SitchomaticApp: App {
                 if !nordInitialized {
                     nordInitialized = true
 
+                    CrashProtectionService.shared.register()
+                    if let previousCrash = CrashProtectionService.shared.checkForPreviousCrash() {
+                        DebugLogger.shared.log("Previous crash detected: \(previousCrash.prefix(200))", category: .system, level: .critical)
+                    }
+
                     let monitor = MemoryPressureMonitor.shared
                     monitor.register()
                     monitor.onMemoryWarning {
                         DebugLogger.shared.handleMemoryPressure()
                         WebViewPool.shared.handleMemoryPressure()
-                        ScreenshotCacheService.shared.setMaxCacheCounts(memory: 20, disk: 300)
+                        ScreenshotCacheService.shared.setMaxCacheCounts(memory: 10, disk: 200)
                         LoginViewModel.shared.handleMemoryPressure()
+                        LoginViewModel.shared.trimAttemptsIfNeeded()
                         PPSRAutomationViewModel.shared.handleMemoryPressure()
+                        PPSRAutomationViewModel.shared.trimChecksIfNeeded()
                     }
 
                     let vault = PersistentFileStorageService.shared
