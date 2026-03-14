@@ -653,6 +653,9 @@ struct SavedCredentialsView: View {
     }
 
     private func parseXLSXasCSV(url: URL) -> String? {
+        if let csvText = XLSXParserService.parseToCSV(url: url) {
+            return csvText
+        }
         guard let data = try? Data(contentsOf: url) else { return nil }
         guard let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else { return nil }
         if content.contains(",") || content.contains("\t") {
