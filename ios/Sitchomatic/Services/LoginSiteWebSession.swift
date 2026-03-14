@@ -50,8 +50,9 @@ class LoginSiteWebSession: NSObject {
     var networkConfig: ActiveNetworkConfig = .direct
     private var isProtectedRouteBlocked: Bool = false
     var proxyTarget: ProxyRotationService.ProxyTarget = .joe
-    private var stealthProfile: PPSRStealthService.SessionProfile?
+    private(set) var stealthProfile: PPSRStealthService.SessionProfile?
     private(set) var lastFingerprintScore: FingerprintValidationService.FingerprintScore?
+    private(set) var activeProfileIndex: Int?
     var onFingerprintLog: ((String, PPSRLogEntry.Level) -> Void)?
     private let logger = DebugLogger.shared
     private(set) var navigationCount: Int = 0
@@ -104,8 +105,10 @@ class LoginSiteWebSession: NSObject {
 
         if stealthEnabled {
             let stealth = PPSRStealthService.shared
-            let profile = stealth.nextProfile()
+            let host = targetURL.host ?? ""
+            let (profile, profileIdx) = stealth.nextProfileForHost(host)
             self.stealthProfile = profile
+            self.activeProfileIndex = profileIdx
 
             let userScript = stealth.createStealthUserScript(profile: profile)
             config.userContentController.addUserScript(userScript)

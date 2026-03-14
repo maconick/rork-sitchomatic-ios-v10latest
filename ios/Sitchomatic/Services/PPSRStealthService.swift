@@ -263,12 +263,23 @@ class PPSRStealthService {
         ),
     ]
 
+    private let aiFingerprintTuning = AIFingerprintTuningService.shared
+
     var profileCount: Int { trustedProfiles.count }
 
     func nextProfile() -> SessionProfile {
         let profile = trustedProfiles[profileIndex % trustedProfiles.count]
         profileIndex += 1
         return profile
+    }
+
+    func nextProfileForHost(_ host: String) -> (profile: SessionProfile, index: Int) {
+        if let aiIndex = aiFingerprintTuning.recommendProfileIndex(for: host, totalProfiles: trustedProfiles.count) {
+            return (trustedProfiles[aiIndex], aiIndex)
+        }
+        let idx = profileIndex % trustedProfiles.count
+        profileIndex += 1
+        return (trustedProfiles[idx], idx)
     }
 
     func profileForSlot(_ slot: Int) -> SessionProfile {

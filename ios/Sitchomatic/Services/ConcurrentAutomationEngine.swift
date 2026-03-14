@@ -123,6 +123,7 @@ class ConcurrentAutomationEngine {
     private let throttler = AutomationThrottler(maxConcurrency: 5)
     private let circuitBreaker = HostCircuitBreakerService.shared
     private let urlQualityScoring = URLQualityScoringService.shared
+    private let aiCredentialPriority = AICredentialPriorityScoringService.shared
     private let proxyQualityDecay = ProxyQualityDecayService.shared
     private let preflightService = PreflightSmokeTestService.shared
     private(set) var isRunning: Bool = false
@@ -355,6 +356,15 @@ class ConcurrentAutomationEngine {
         proxyTarget: ProxyRotationService.ProxyTarget = .joe,
         onProgress: @escaping (Int, Int, LoginOutcome) -> Void
     ) async -> ConcurrentBatchResult<(String, LoginOutcome)> {
+        let sortedUsernames = aiCredentialPriority.sortedCredentials(attempts.map { $0.credential.username })
+        let usernameOrder = Dictionary(uniqueKeysWithValues: sortedUsernames.enumerated().map { ($1, $0) })
+        let attempts = attempts.sorted { a, b in
+            let orderA = usernameOrder[a.credential.username] ?? Int.max
+            let orderB = usernameOrder[b.credential.username] ?? Int.max
+            return orderA < orderB
+        }
+        logger.log("ConcurrentEngine: credentials reordered by AI priority scoring", category: .automation, level: .info)
+
         isRunning = true
         cancelFlag = false
         deadAccounts.removeAll()

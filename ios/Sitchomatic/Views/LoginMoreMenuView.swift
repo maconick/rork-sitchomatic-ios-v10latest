@@ -5,6 +5,7 @@ struct LoginMoreMenuView: View {
 
     var body: some View {
         List {
+            aiInsightsSection
             automationToolsSection
             urlsAndEndpointSection
             advancedSettingsSection
@@ -15,6 +16,42 @@ struct LoginMoreMenuView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("More")
+    }
+
+    private var aiInsightsSection: some View {
+        Section {
+            NavigationLink {
+                AIInsightsDashboardView()
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.teal.opacity(0.12))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: "brain.head.profile.fill")
+                            .font(.body)
+                            .foregroundStyle(.teal)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI Insights").font(.subheadline.bold())
+                        Text("Dashboard, health, detection patterns & AI analysis")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    let mode = AIAntiDetectionAdaptiveService.shared.currentAdaptiveMode()
+                    Text(mode.uppercased())
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(mode == "defensive" ? .red : mode == "cautious" ? .orange : .green)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background((mode == "defensive" ? Color.red : mode == "cautious" ? Color.orange : Color.green).opacity(0.12))
+                        .clipShape(Capsule())
+                }
+            }
+        } header: {
+            Label("Intelligence", systemImage: "sparkles")
+        } footer: {
+            Text("AI-powered system health, detection patterns, credential insights, and optimization recommendations.")
+        }
     }
 
     private var automationToolsSection: some View {

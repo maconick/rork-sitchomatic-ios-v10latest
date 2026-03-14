@@ -41,6 +41,11 @@ class LoginAutomationEngine {
     private let confidenceEngine = ConfidenceResultEngine.shared
     private let aiProxyStrategy = AIProxyStrategyService.shared
     private let aiChallengeSolver = AIChallengePageSolverService.shared
+    private let aiURLOptimizer = AILoginURLOptimizerService.shared
+    private let aiFingerprintTuning = AIFingerprintTuningService.shared
+    private let aiSessionHealth = AISessionHealthMonitorService.shared
+    private let aiCredentialPriority = AICredentialPriorityScoringService.shared
+    private let aiAntiDetection = AIAntiDetectionAdaptiveService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
@@ -64,6 +69,19 @@ class LoginAutomationEngine {
         attempt.startedAt = Date()
 
         let host = targetURL.host ?? targetURL.absoluteString
+
+        let healthPrediction = aiSessionHealth.predictHealth(for: host, activeSessions: activeSessions)
+        if healthPrediction.risk == .critical && healthPrediction.shouldAbort {
+            logger.log("AISessionHealth: ABORT — \(host) risk=critical prob=\(String(format: "%.0f%%", healthPrediction.failureProbability * 100)) — \(healthPrediction.recommendation)", category: .automation, level: .error)
+            attempt.status = .failed
+            attempt.errorMessage = "AI health monitor: \(healthPrediction.recommendation)"
+            attempt.completedAt = Date()
+            return .connectionFailure
+        }
+        if healthPrediction.risk == .high || healthPrediction.risk == .moderate {
+            attempt.logs.append(PPSRLogEntry(message: "AI Health: \(healthPrediction.risk.rawValue) risk (\(Int(healthPrediction.failureProbability * 100))%) — \(healthPrediction.recommendation)", level: healthPrediction.risk == .high ? .warning : .info))
+        }
+
         if !circuitBreaker.shouldAllow(host: host) {
             let remaining = Int(circuitBreaker.cooldownRemaining(host: host))
             logger.log("CircuitBreaker: BLOCKED \(host) — cooldown \(remaining)s remaining", category: .network, level: .warning)
@@ -179,6 +197,83 @@ class LoginAutomationEngine {
             let responseTime = Date().timeIntervalSince(started)
             logger.log("Response time: \(Int(responseTime * 1000))ms on \(targetURL.host ?? "")", category: .timing, level: .debug, sessionId: sessionId, durationMs: Int(responseTime * 1000))
             onResponseTime?(targetURL.absoluteString, responseTime)
+        }
+
+        let aiLatencyMs = attempt.startedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
+        let aiIsSuccess = outcome == .success || outcome == .noAcc || outcome == .permDisabled || outcome == .tempDisabled
+        let aiIsBlocked = outcome == .connectionFailure
+        let aiIsChallenge = outcome == .redBannerError || outcome == .smsDetected
+        aiURLOptimizer.recordOutcome(
+            urlString: targetURL.absoluteString,
+            outcome: "\(outcome)",
+            latencyMs: aiLatencyMs,
+            blocked: aiIsBlocked,
+            challengeDetected: aiIsChallenge,
+            blankPage: false,
+            loginSuccess: outcome == .success
+        )
+
+        if let profileIdx = session.activeProfileIndex, let stealthProfile = session.stealthProfile {
+            let fpScore = session.lastFingerprintScore
+            let detected = fpScore != nil && !fpScore!.passed
+            aiFingerprintTuning.recordOutcome(
+                profileIndex: profileIdx,
+                profileSeed: stealthProfile.seed,
+                host: host,
+                detected: detected,
+                validationScore: fpScore?.totalScore ?? 0,
+                signals: fpScore?.signals ?? [],
+                loginSuccess: outcome == .success,
+                challengeTriggered: aiIsChallenge
+            )
+        }
+
+        let hostProfile = aiSessionHealth.profileFor(host: host)
+        let healthSnapshot = SessionHealthSnapshot(
+            sessionId: sessionId,
+            host: host,
+            urlString: targetURL.absoluteString,
+            pageLoadTimeMs: aiLatencyMs,
+            outcome: "\(outcome)",
+            wasTimeout: outcome == .timeout,
+            wasBlankPage: false,
+            wasCrash: session.processTerminated,
+            wasChallenge: aiIsChallenge,
+            wasConnectionFailure: outcome == .connectionFailure,
+            fingerprintDetected: session.lastFingerprintScore.map { !$0.passed } ?? false,
+            circuitBreakerOpen: circuitBreaker.status(for: host) == .open,
+            consecutiveFailuresOnHost: hostProfile?.consecutiveFailures ?? 0,
+            activeSessions: activeSessions,
+            timestamp: Date()
+        )
+        aiSessionHealth.recordSnapshot(healthSnapshot)
+
+        aiCredentialPriority.recordOutcome(
+            username: attempt.credential.username,
+            outcome: "\(outcome)",
+            host: host,
+            latencyMs: aiLatencyMs,
+            wasChallenge: aiIsChallenge
+        )
+
+        let fpDetected = session.lastFingerprintScore.map { !$0.passed } ?? false
+        let fpSignals = session.lastFingerprintScore?.signals ?? []
+        let fpScoreVal = session.lastFingerprintScore?.totalScore ?? 0
+        if fpDetected || aiIsChallenge || aiIsBlocked {
+            let eventType: String
+            if fpDetected { eventType = "detection" }
+            else if aiIsChallenge { eventType = "challenge" }
+            else { eventType = "block" }
+            aiAntiDetection.recordDetectionEvent(
+                host: host,
+                urlString: targetURL.absoluteString,
+                eventType: eventType,
+                signals: fpSignals,
+                fingerprintScore: fpScoreVal,
+                outcome: "\(outcome)",
+                profileIndex: session.activeProfileIndex,
+                proxyType: netConfig.label
+            )
         }
 
         replayLogger.log(sessionId: sessionId, action: "complete", detail: "outcome=\(outcome)", level: outcome == .success ? "success" : "error")

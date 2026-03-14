@@ -16,6 +16,7 @@ class LoginURLRotationService {
     private var ignitionIndex: Int = 0
 
     private let persistKey = "login_url_rotation_state_v1"
+    private let aiURLOptimizer = AILoginURLOptimizerService.shared
 
     struct RotatingURL: Identifiable {
         let id: UUID = UUID()
@@ -126,6 +127,13 @@ class LoginURLRotationService {
     func nextURL() -> URL? {
         let urls = enabledURLs
         guard !urls.isEmpty else { return nil }
+
+        let urlStrings = urls.compactMap { $0.urlString }
+        let hasAIData = urls.contains { aiURLOptimizer.profileFor(urlString: $0.urlString) != nil }
+
+        if hasAIData, let aiSelected = aiURLOptimizer.selectBestURL(from: urlStrings) {
+            return URL(string: aiSelected)
+        }
 
         let hasPerformanceData = urls.contains { $0.totalAttempts >= 2 }
 
@@ -392,6 +400,19 @@ class LoginURLRotationService {
 
     var topPerformingURLs: [RotatingURL] {
         enabledURLs.filter { $0.totalAttempts >= 2 }.sorted { $0.performanceScore > $1.performanceScore }
+    }
+
+    var aiRankedURLs: [(url: String, score: Double, attempts: Int, successRate: Int, avgLatency: Int, blocked: Int)] {
+        let urlStrings = enabledURLs.map { $0.urlString }
+        return aiURLOptimizer.rankedURLs(from: urlStrings)
+    }
+
+    func aiProfileFor(urlString: String) -> URLPerformanceProfile? {
+        aiURLOptimizer.profileFor(urlString: urlString)
+    }
+
+    func resetAIURLData() {
+        aiURLOptimizer.resetAll()
     }
 
     private func persistState() {
