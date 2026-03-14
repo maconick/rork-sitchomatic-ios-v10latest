@@ -779,6 +779,11 @@ struct IPScoreTestView: View {
                 session.networkLabel = "NodeMaven (not configured)"
                 session.networkConfig = .direct
             }
+
+        case .hybrid:
+            let hybridConfig = HybridNetworkingService.shared.nextHybridConfig(for: .joe)
+            session.networkLabel = "Hybrid \(hybridConfig.label)"
+            session.networkConfig = hybridConfig
         }
     }
 

@@ -549,6 +549,7 @@ struct AutomationSettingsView: View {
         case .wireguard: .purple
         case .dns: .cyan
         case .nodeMaven: .teal
+        case .hybrid: .mint
         }
     }
 

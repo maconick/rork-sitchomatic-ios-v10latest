@@ -230,9 +230,22 @@ class DeviceProxyService {
     }
 
     func notifyBatchStart() {
-        guard isEnabled else { return }
-        guard rotateOnBatchStart || rotationInterval == .everyBatch else { return }
-        performRotation(reason: "Batch Start")
+        if isEnabled {
+            if rotateOnBatchStart || rotationInterval == .everyBatch {
+                performRotation(reason: "Batch Start")
+            }
+            return
+        }
+
+        if rotateOnBatchStart && isWireProxyCompatibleMode && perSessionWireProxyActive {
+            rotatePerSessionWireProxy()
+            logger.log("DeviceProxy: per-session WireGuard rotated on batch start", category: .vpn, level: .info)
+        }
+
+        if proxyService.unifiedConnectionMode == .hybrid {
+            HybridNetworkingService.shared.resetBatch()
+            logger.log("DeviceProxy: hybrid mode reset for new batch", category: .network, level: .info)
+        }
     }
 
     func notifyFingerprintDetected() {
@@ -791,6 +804,9 @@ class DeviceProxyService {
             if let result = nextFromSOCKS5(allProxies) { return result }
             if let result = nextFromWG(allWG) { return result }
             if let result = nextFromOVPN(allOVPN) { return result }
+
+        case .hybrid:
+            return HybridNetworkingService.shared.nextHybridConfig(for: .joe)
         }
 
         return .direct
@@ -816,9 +832,33 @@ class DeviceProxyService {
 
     private func nextFromWG(_ configs: [WireGuardConfig]) -> ActiveNetworkConfig? {
         guard !configs.isEmpty else { return nil }
+        if let aiPick = aiRankedWGConfig(from: configs) {
+            logger.log("DeviceProxy: AI-ranked WG \(aiPick.displayString)", category: .vpn, level: .debug)
+            return .wireGuardDNS(aiPick)
+        }
         let config = configs[wgIndex % configs.count]
         wgIndex += 1
         return .wireGuardDNS(config)
+    }
+
+    private func aiRankedWGConfig(from configs: [WireGuardConfig]) -> WireGuardConfig? {
+        guard configs.count > 1 else { return nil }
+        let strategy = aiProxyStrategy
+        let host = "unified"
+        var scored: [(WireGuardConfig, Double)] = []
+        for wg in configs {
+            let key = "wg_\(wg.uniqueKey)"
+            let profiles = strategy.proxyPerformanceSummary(for: host)
+            if let match = profiles.first(where: { $0.proxyId == key }) {
+                scored.append((wg, match.score))
+            } else {
+                scored.append((wg, 0.5))
+            }
+        }
+        scored.sort { $0.1 > $1.1 }
+        let topCount = max(1, min(3, scored.count))
+        let candidates = Array(scored.prefix(topCount))
+        return candidates.randomElement()?.0
     }
 
     private func nextFromOVPN(_ configs: [OpenVPNConfig]) -> ActiveNetworkConfig? {

@@ -930,6 +930,7 @@ struct DeviceNetworkSettingsView: View {
         case .wireguard: wireGuardSection
         case .dns: dnsSection
         case .nodeMaven: nodeMavenSection
+        case .hybrid: hybridInfoSection
         }
     }
 
@@ -1258,6 +1259,113 @@ struct DeviceNetworkSettingsView: View {
         case .wireguard: .purple
         case .dns: .cyan
         case .nodeMaven: .teal
+        case .hybrid: .mint
+        }
+    }
+
+    // MARK: - Hybrid Info
+
+    private var hybridInfoSection: some View {
+        Section {
+            let hybrid = HybridNetworkingService.shared
+
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color.mint.opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: "rectangle.3.group.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.mint)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hybrid Networking").font(.subheadline.bold())
+                    Text("1 session per networking method")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if hybrid.isActive {
+                    Text("ACTIVE")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.mint)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.mint.opacity(0.12)).clipShape(Capsule())
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("How it works")
+                    .font(.caption.bold())
+                    .foregroundStyle(.mint)
+                Text("Each concurrent session uses a different networking method: WireProxy, NodeMaven, OpenVPN, SOCKS5. HTTPS/DoH is used as a 5th fallback if needed. AI ranks methods by health scores.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+
+            ForEach(HybridNetworkingService.HybridMethod.allCases, id: \.rawValue) { method in
+                let available = isMethodAvailable(method)
+                HStack(spacing: 8) {
+                    Image(systemName: method.icon)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(available ? .mint : .secondary)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(method.rawValue)
+                            .font(.system(.caption, design: .monospaced, weight: .bold))
+                            .foregroundStyle(available ? .primary : .secondary)
+                        if let stat = hybrid.methodStats[method] {
+                            Text("\(stat.attempts) attempts, \(Int(stat.successRate * 100))% SR, ~\(stat.avgLatencyMs)ms")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    Spacer()
+                    Circle()
+                        .fill(available ? Color.green : Color.red.opacity(0.5))
+                        .frame(width: 6, height: 6)
+                }
+            }
+
+            if !hybrid.hybridSummary.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.purple)
+                    Text("AI Health: \(hybrid.hybridSummary)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            HStack {
+                Image(systemName: "rectangle.3.group.fill")
+                Text("Hybrid Mode")
+                Spacer()
+                Text("1-PER-METHOD")
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(.mint)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.mint.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        } footer: {
+            Text("Hybrid mode distributes sessions across all available networking methods. AI monitors health and adjusts method priority.")
+        }
+    }
+
+    private func isMethodAvailable(_ method: HybridNetworkingService.HybridMethod) -> Bool {
+        switch method {
+        case .wireProxy:
+            return !proxyService.joeWGConfigs.filter({ $0.isEnabled }).isEmpty
+        case .nodeMaven:
+            return NodeMavenService.shared.isEnabled
+        case .openVPN:
+            return !proxyService.joeVPNConfigs.filter({ $0.isEnabled }).isEmpty
+        case .socks5:
+            return !proxyService.savedProxies.filter({ $0.isWorking || $0.lastTested == nil }).isEmpty
+        case .httpsDOH:
+            return true
         }
     }
 

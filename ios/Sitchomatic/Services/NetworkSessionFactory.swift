@@ -142,6 +142,9 @@ class NetworkSessionFactory {
                 return .socks5(proxy)
             }
             return .direct
+
+        case .hybrid:
+            return HybridNetworkingService.shared.nextHybridConfig(for: target)
         }
     }
 

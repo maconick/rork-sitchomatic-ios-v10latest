@@ -733,10 +733,22 @@ class LoginViewModel {
     }
 
     func testAllUntested() {
-        let credsToTest = untestedCredentials
-        guard !credsToTest.isEmpty else {
-            log("No untested credentials in queue", level: .warning)
-            return
+        let groupService = CredentialGroupService.shared
+        let credsToTest: [LoginCredential]
+        if let groupIds = groupService.credentialIdsForActiveGroup() {
+            let idSet = Set(groupIds)
+            credsToTest = credentials.filter { idSet.contains($0.id) && $0.status == .untested }
+            if credsToTest.isEmpty {
+                log("No untested credentials in active group", level: .warning)
+                return
+            }
+            log("Testing group: \(credsToTest.count) untested from group", level: .info)
+        } else {
+            credsToTest = untestedCredentials
+            guard !credsToTest.isEmpty else {
+                log("No untested credentials in queue", level: .warning)
+                return
+            }
         }
 
         isPaused = false

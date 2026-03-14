@@ -823,6 +823,9 @@ class ConcurrentAutomationEngine {
             logger.log("ConcurrentEngine: rotated to next SOCKS5 IP for \(target.rawValue)", category: .network, level: .warning)
         case .dns, .nodeMaven:
             logger.log("ConcurrentEngine: no IP pool to rotate for mode \(mode.label) on \(target.rawValue)", category: .network, level: .warning)
+        case .hybrid:
+            HybridNetworkingService.shared.resetBatch()
+            logger.log("ConcurrentEngine: hybrid mode — reset and re-assigned for \(target.rawValue)", category: .network, level: .warning)
         }
     }
 

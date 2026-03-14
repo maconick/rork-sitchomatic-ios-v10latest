@@ -198,6 +198,7 @@ class SessionRecoveryService {
             return NetworkState(networkMode: "WireGuard", proxyHost: nil, proxyPort: nil, tunnelActive: false, wireProxyActive: wpActive)
         case .openvpn: return NetworkState(networkMode: "OpenVPN", proxyHost: nil, proxyPort: nil, tunnelActive: false, wireProxyActive: false)
         case .nodeMaven: return NetworkState(networkMode: "NodeMaven", proxyHost: nil, proxyPort: nil, tunnelActive: false, wireProxyActive: false)
+        case .hybrid: return NetworkState(networkMode: "Hybrid", proxyHost: nil, proxyPort: nil, tunnelActive: false, wireProxyActive: false)
         }
     }
 

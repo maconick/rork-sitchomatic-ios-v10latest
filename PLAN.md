@@ -1,52 +1,36 @@
-# Reply 1 — Rename Dual→Double, Fix Double Mode, Add Floating PIP Status
+# Reply 1 — Rename Dual→Double, Fix Double Mode, Add Floating PIP Status (COMPLETED)
 
-## Part A — Rename "Dual" to "Double" everywhere
-
-Rename all references of "Dual Mode", "DUAL", `.dual` to "Double Mode", "DOUBLE", `.double` across the entire app:
-
-- **ProductMode enum**: `.dual` → `.double`, raw value "Double Mode"
-- **LoginViewModel.SiteMode**: `.dual` → `.double`, raw value "Double"
-- **TriModeSwitcher**: label "DUAL" → "DOUBLE"
-- **LoginSettingsManager**: all `dualSiteMode` → `doubleSiteMode`
-- **LoginViewModel**: `dualSiteMode` → `doubleSiteMode`, all dual references in logs
-- **SplitTestView, DualWebStackView, ModeSelectorView**: `.dual` → `.double`
-- **LoginSettingsContentView**: toggle label and binding references
-- **MainMenuView**: "DUAL FIND" label stays as-is (that's a different feature — it's a search tool, not the mode)
-- **ActiveAppMode.dualFind** stays unchanged (separate feature)
-- Log messages updated from "DUAL" → "DOUBLE"
+- [x] Part A: Renamed "Dual" to "Double" across all files
+- [x] Part B: Fixed Double Mode to run equal Joe+Ignition sessions (50/50 split)
+- [x] Part C: Built floating PIP status pill overlay with live progress
 
 ---
 
-## Part B — Fix Double Mode to run equal sessions of both Joe AND Ignition
+# Reply 2 — Hybrid Networking Mode + AI Rotation (COMPLETED)
 
-Current bug: Double Mode appears to only run Ignition sessions and crashes. The fix:
+## Hybrid Networking Mode
+- [x] Added `hybrid` case to `ConnectionMode` enum
+- [x] Created `HybridNetworkingService.swift` — assigns 1 session per networking method (WireProxy, NodeMaven, OpenVPN, SOCKS5, HTTPS/DoH fallback)
+- [x] AI ranks methods by health scores (success rate, latency, recency)
+- [x] Handled `hybrid` case across all switch statements in: NetworkLayerService, NetworkSessionFactory, ConcurrentAutomationEngine, DeviceProxyService, SessionRecoveryService, NetworkTruthService, DeviceNetworkSettingsView, AutomationSettingsView, SuperTestView, IPScoreTestView, TestDebugSession
+- [x] Added Hybrid info section to DeviceNetworkSettingsView showing per-method availability and AI health scores
 
-- **Split credentials 50/50** between Joe and Ignition engines — first half goes to Joe, second half to Ignition
-- Both engines run **truly simultaneously** in parallel task groups with equal concurrency slots (e.g. concurrency 4 = 2 Joe + 2 Ignition)
-- Fix the `useIgnition` logic that currently biases toward one engine
-- Properly configure **both engines** before batch start (the secondary engine currently only gets configured for Ignition — ensure both are fully set up with correct proxy targets and URLs)
-- Add crash protection: guard against nil URL arrays, task cancellation edge cases, and ensure `activeTestCount` is decremented in all code paths
-- Fix the race condition where `batchCompletedCount` can exceed `batchTotalCount` when both engines finish simultaneously
+## AI Networking Rotation
+- [x] Wired AI into WireGuard server selection via `aiRankedWGConfig()` in DeviceProxyService
+- [x] AI scores WG configs based on proxy performance summaries and picks from top-3 candidates
+- [x] AI already drives SOCKS5 selection via `AIProxyStrategyService.bestProxy()`
+
+## Fix Rotate on Every Batch
+- [x] Fixed `notifyBatchStart()` to also rotate WireGuard servers in per-session mode when `rotateOnBatchStart` is enabled
+- [x] Hybrid mode resets and re-distributes on each batch start
+- [x] Per-session WireProxy rotation now triggers on batch start
 
 ---
 
-## Part C — Floating PIP Status Pill (Navigate freely during tests)
+# Reply 3 — Credential Group Management (COMPLETED)
 
-Instead of being locked to the test screen while a batch runs, a **floating status pill** appears in the corner:
-
-- **Design**: A small capsule overlay pinned to the **top-right** of the screen (below the safe area), showing:
-  - A colored dot (green = running, orange = paused, red = stopping)
-  - Live counter like **"3/50"** (completed/total)
-  - Site icon (spade for Joe, flame for Ignition, branch for Double)
-  - Tap to expand into a mini card showing: success count, fail count, elapsed time, ETA
-  - Tap the expanded card to jump back to the session monitor screen
-- **Visibility**: The pill appears on ALL screens in the app whenever a test is running — it's added as a global overlay in the app's root `ZStack`
-- **Navigation**: Remove the current alert that blocks you from leaving during a test — the MainMenuButton now navigates freely; tests continue in the background
-- **Haptics**: Light tap feedback when expanding/collapsing the pill
-- **Animation**: Spring animation for expand/collapse, the counter updates with a subtle scale pulse
-
-### Files involved:
-- New: `FloatingTestStatusView.swift` — the PIP pill component
-- Modified: `SitchomaticApp.swift` — add the floating overlay globally
-- Modified: `MainMenuButton.swift` — remove the blocking alert, allow free navigation
-- Modified: `LoginViewModel.swift` — expose live batch stats for the pill to observe
+- [x] Split saved credentials into groups of 20, 50, 100, 200, 300, 500
+- [x] Persistent color-coded group tags (11 colors: red, orange, yellow, green, mint, teal, cyan, blue, indigo, purple, pink)
+- [x] UI to view, rename, recolor, merge, delete groups
+- [x] Run tests against specific groups (active group filter in testAllUntested)
+- [x] Groups tab added to LoginContentView

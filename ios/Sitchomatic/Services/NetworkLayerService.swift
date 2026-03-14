@@ -63,6 +63,9 @@ class NetworkLayerService {
             if let config = resolveSOCKS5(for: target) { return config }
             addFallbackLog("All network modes failed for \(target.rawValue), using Direct")
             return .direct
+
+        case .hybrid:
+            return HybridNetworkingService.shared.nextHybridConfig(for: target)
         }
     }
 

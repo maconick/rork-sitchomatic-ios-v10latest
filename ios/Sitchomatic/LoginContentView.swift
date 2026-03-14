@@ -52,6 +52,13 @@ struct LoginContentView: View {
                 .withMainMenuButton()
             }
 
+            Tab("Groups", systemImage: "folder.fill") {
+                NavigationStack {
+                    CredentialGroupsView(vm: vm)
+                }
+                .withMainMenuButton()
+            }
+
             Tab("More", systemImage: "ellipsis.circle") {
                 NavigationStack {
                     LoginMoreMenuView(vm: vm)

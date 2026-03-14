@@ -264,6 +264,13 @@ class NetworkTruthService {
                 tunnelActive = false
                 dnsMode = "System"
                 connectionModeLabel = "NodeMaven"
+            case .hybrid:
+                routeType = "Hybrid (1 per method)"
+                proxyHost = nil
+                proxyPort = nil
+                tunnelActive = false
+                dnsMode = "Mixed"
+                connectionModeLabel = "Hybrid"
             }
         }
 

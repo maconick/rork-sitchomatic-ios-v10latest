@@ -214,6 +214,9 @@ nonisolated struct TestDebugSettingsSnapshot: Sendable {
 
         case .openvpn:
             return .direct
+
+        case .hybrid:
+            return HybridNetworkingService.shared.nextHybridConfig(for: proxyTarget)
         }
     }
 }
