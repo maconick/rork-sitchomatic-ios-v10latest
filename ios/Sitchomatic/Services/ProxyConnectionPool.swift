@@ -42,6 +42,15 @@ class ProxyConnectionPool {
 
     func prewarmConnections(count: Int, upstream: ProxyConfig?, targetHost: String = "warmup", targetPort: UInt16 = 443) {
         guard count > 0 else { return }
+
+        if let upstream {
+            let qualityScore = ProxyQualityDecayService.shared.scoreFor(proxyId: upstream.id.uuidString)
+            if qualityScore < 0.2 {
+                logger.log("ConnectionPool: prewarm SKIPPED — proxy \(upstream.displayString) is demoted (score: \(String(format: "%.2f", qualityScore)))", category: .proxy, level: .warning)
+                return
+            }
+        }
+
         let toWarm = min(count, maxPoolSize - pooledConnections.count)
         guard toWarm > 0 else {
             logger.log("ConnectionPool: prewarm skipped — pool at capacity", category: .proxy, level: .debug)
@@ -232,6 +241,22 @@ class ProxyConnectionPool {
         let allSorted = pooledConnections.sorted { $0.value.lastUsedAt < $1.value.lastUsedAt }
         if let oldest = allSorted.first {
             evictConnection(id: oldest.key, reason: "pool full — evicting oldest active")
+        }
+    }
+
+    func evictDemotedConnections(qualityThreshold: Double = 0.2) {
+        let qualityDecay = ProxyQualityDecayService.shared
+        var evicted = 0
+        for (id, info) in pooledConnections where info.isIdle {
+            let proxyId = "\(info.targetHost):\(info.targetPort)"
+            let score = qualityDecay.scoreFor(proxyId: proxyId)
+            if score < qualityThreshold {
+                evictConnection(id: id, reason: "demoted proxy (score: \(String(format: "%.2f", score)))")
+                evicted += 1
+            }
+        }
+        if evicted > 0 {
+            logger.log("ConnectionPool: evicted \(evicted) demoted proxy connections", category: .proxy, level: .info)
         }
     }
 

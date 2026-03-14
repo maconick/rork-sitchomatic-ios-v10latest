@@ -6,23 +6,27 @@ actor AutomationThrottler {
     private var maxConcurrency: Int
     private var backoffMs: Int = 0
     private var consecutiveFailures: Int = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     init(maxConcurrency: Int = 5) {
         self.maxConcurrency = maxConcurrency
     }
 
     func acquire() async {
-        while activeCount >= maxConcurrency {
-            try? await Task.sleep(for: .milliseconds(100))
+        if activeCount < maxConcurrency {
+            activeCount += 1
+        } else {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
         }
-        activeCount += 1
         if backoffMs > 0 {
             try? await Task.sleep(for: .milliseconds(backoffMs))
         }
     }
 
     func release(succeeded: Bool) {
-        activeCount -= 1
+        activeCount = max(0, activeCount - 1)
         if succeeded {
             consecutiveFailures = 0
             backoffMs = max(0, backoffMs - 200)
@@ -30,10 +34,23 @@ actor AutomationThrottler {
             consecutiveFailures += 1
             backoffMs = min(10000, 500 * (1 << min(consecutiveFailures, 5)))
         }
+        if !waiters.isEmpty && activeCount < maxConcurrency {
+            activeCount += 1
+            let next = waiters.removeFirst()
+            next.resume()
+        }
     }
 
     func updateMaxConcurrency(_ newMax: Int) {
+        let old = maxConcurrency
         maxConcurrency = max(1, min(10, newMax))
+        if maxConcurrency > old {
+            while !waiters.isEmpty && activeCount < maxConcurrency {
+                activeCount += 1
+                let next = waiters.removeFirst()
+                next.resume()
+            }
+        }
     }
 
     func currentStats() -> (active: Int, maxConcurrency: Int, backoffMs: Int, consecutiveFailures: Int) {
@@ -44,6 +61,11 @@ actor AutomationThrottler {
         activeCount = 0
         backoffMs = 0
         consecutiveFailures = 0
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
     }
 }
 
@@ -320,22 +342,30 @@ class ConcurrentAutomationEngine {
             logger.log("ConcurrentEngine: proxy pre-check FAILED for login batch — proceeding with caution", category: .network, level: .warning)
         }
 
-        if let firstURL = urls.first {
-            let smokeResult = await preflightService.runPreflightTest(
-                targetURL: firstURL,
-                networkConfig: netConfig,
-                proxyTarget: proxyTarget,
-                stealthEnabled: engine.stealthEnabled,
-                timeout: 15
-            )
-            if !smokeResult.passed {
-                logger.log("ConcurrentEngine: PREFLIGHT SMOKE TEST FAILED — \(smokeResult.detail)", category: .automation, level: .critical)
-                if !smokeResult.proxyWorking {
-                    logger.log("ConcurrentEngine: network route broken — consider rotating proxy/URL before batch", category: .network, level: .critical)
+        let wireProxyOK = await performWireProxyHealthGate(for: proxyTarget)
+        if !wireProxyOK {
+            logger.log("ConcurrentEngine: WireProxy health gate FAILED — batch proceeding with caution", category: .network, level: .critical)
+        }
+
+        let preflightResult = await preflightService.runPreflightForAllURLs(
+            urls: urls,
+            networkConfig: netConfig,
+            proxyTarget: proxyTarget,
+            stealthEnabled: engine.stealthEnabled,
+            timeout: 12
+        )
+        let healthyURLs: [URL]
+        if preflightResult.healthyURLs.isEmpty {
+            logger.log("ConcurrentEngine: ALL URLs failed preflight — using original list with caution", category: .automation, level: .critical)
+            healthyURLs = urls
+        } else {
+            if !preflightResult.failedURLs.isEmpty {
+                for failed in preflightResult.failedURLs {
+                    logger.log("ConcurrentEngine: preflight SKIP \(failed.url.host ?? "") — \(failed.reason)", category: .automation, level: .warning)
                 }
-            } else {
-                logger.log("ConcurrentEngine: preflight passed in \(smokeResult.latencyMs)ms", category: .automation, level: .success)
             }
+            logger.log("ConcurrentEngine: preflight passed \(preflightResult.healthyURLs.count)/\(urls.count) URLs in \(preflightResult.totalMs)ms", category: .automation, level: .success)
+            healthyURLs = preflightResult.healthyURLs
         }
 
         var allResults: [(String, LoginOutcome)] = []
@@ -354,21 +384,21 @@ class ConcurrentAutomationEngine {
 
             var effectiveURLs: [Int: URL] = [:]
             for index in batchIndices {
-                let url = urls[index % urls.count]
+                let url = healthyURLs[index % healthyURLs.count]
                 let urlHost = url.host ?? ""
                 if urlCooldown.isAutoDisabled(url.absoluteString) {
                     logger.log("ConcurrentEngine: URL \(urlHost) is AUTO-DISABLED — skipping", category: .network, level: .warning)
-                    let alternate = urls.first { !self.urlCooldown.isAutoDisabled($0.absoluteString) && !self.urlCooldown.isOnCooldown($0.absoluteString) && $0 != url }
+                    let alternate = healthyURLs.first { !self.urlCooldown.isAutoDisabled($0.absoluteString) && !self.urlCooldown.isOnCooldown($0.absoluteString) && $0 != url }
                     effectiveURLs[index] = alternate ?? url
                 } else if urlCooldown.isOnCooldown(url.absoluteString) {
                     let remaining = Int(urlCooldown.cooldownRemaining(url.absoluteString))
                     logger.log("ConcurrentEngine: URL \(urlHost) on cooldown (\(remaining)s left) — rotating", category: .network, level: .warning)
-                    let alternate = urls.first { !self.urlCooldown.isOnCooldown($0.absoluteString) && !self.urlCooldown.isAutoDisabled($0.absoluteString) && $0 != url }
+                    let alternate = healthyURLs.first { !self.urlCooldown.isOnCooldown($0.absoluteString) && !self.urlCooldown.isAutoDisabled($0.absoluteString) && $0 != url }
                     effectiveURLs[index] = alternate ?? url
                 } else if !circuitBreaker.shouldAllow(host: urlHost) {
                     let remaining = Int(circuitBreaker.cooldownRemaining(host: urlHost))
                     logger.log("ConcurrentEngine: URL \(urlHost) circuit OPEN (\(remaining)s left) — rotating", category: .network, level: .warning)
-                    let alternate = urls.first { self.circuitBreaker.shouldAllow(host: $0.host ?? "") && !self.urlCooldown.isOnCooldown($0.absoluteString) && $0 != url }
+                    let alternate = healthyURLs.first { self.circuitBreaker.shouldAllow(host: $0.host ?? "") && !self.urlCooldown.isOnCooldown($0.absoluteString) && $0 != url }
                     effectiveURLs[index] = alternate ?? url
                 } else {
                     effectiveURLs[index] = url
@@ -379,7 +409,7 @@ class ConcurrentAutomationEngine {
                 for index in batchIndices {
                     if self.cancelFlag { break }
                     let attempt = attempts[index]
-                    let effectiveURL = effectiveURLs[index] ?? urls[index % urls.count]
+                    let effectiveURL = effectiveURLs[index] ?? healthyURLs[index % healthyURLs.count]
                     let username = attempt.credential.username
 
                     if self.deadAccounts.contains(username) {
@@ -443,19 +473,18 @@ class ConcurrentAutomationEngine {
             if allRetryable && hasRetryable && !cancelFlag {
                 logger.log("ConcurrentEngine: ALL \(batchResults.count) sessions in batch need retry — rotating IP and retrying batch", category: .network, level: .critical)
 
-                rotateIP(for: proxyTarget)
-                try? await Task.sleep(for: .milliseconds(2000))
+                await rotateIPAndWaitForReady(for: proxyTarget)
 
                 var retryEffectiveURLs: [Int: URL] = [:]
                 for (_, _, _, originalIndex) in retryableSessions {
-                    retryEffectiveURLs[originalIndex] = urls[originalIndex % urls.count]
+                    retryEffectiveURLs[originalIndex] = healthyURLs[originalIndex % healthyURLs.count]
                 }
 
                 let retryResults: [(String, LoginOutcome, Int, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int, Int).self) { group in
                     for (_, _, _, originalIndex) in retryableSessions {
                         if self.cancelFlag { break }
                         let attempt = attempts[originalIndex]
-                        let retryURL = retryEffectiveURLs[originalIndex] ?? urls[originalIndex % urls.count]
+                        let retryURL = retryEffectiveURLs[originalIndex] ?? healthyURLs[originalIndex % healthyURLs.count]
                         let username = attempt.credential.username
 
                         group.addTask {
@@ -531,8 +560,7 @@ class ConcurrentAutomationEngine {
                     let _ = NodeMavenService.shared.generateProxyConfig(sessionId: "autorotate_\(Int(Date().timeIntervalSince1970))")
                 } else {
                     logger.log("ConcurrentEngine: \(consecutiveConnectionFailures) consecutive connection failures — forcing IP rotation", category: .network, level: .warning)
-                    rotateIP(for: proxyTarget)
-                    try? await Task.sleep(for: .milliseconds(2000))
+                    await rotateIPAndWaitForReady(for: proxyTarget)
                 }
                 consecutiveConnectionFailures = 0
             }
@@ -563,14 +591,13 @@ class ConcurrentAutomationEngine {
         if !carryOverIndices.isEmpty && !cancelFlag {
             logger.log("ConcurrentEngine: processing \(carryOverIndices.count) carried-over sessions from previous batches", category: .automation, level: .info)
 
-            rotateIP(for: proxyTarget)
-            try? await Task.sleep(for: .milliseconds(2000))
+            await rotateIPAndWaitForReady(for: proxyTarget)
 
             let carryOverResults: [(String, LoginOutcome, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int).self) { group in
                 for index in carryOverIndices {
                     if self.cancelFlag { break }
                     let attempt = attempts[index]
-                    let retryURL = urls[index % urls.count]
+                    let retryURL = healthyURLs[index % healthyURLs.count]
                     let username = attempt.credential.username
                     if self.deadAccounts.contains(username) { continue }
 
@@ -663,6 +690,49 @@ class ConcurrentAutomationEngine {
         }
     }
 
+    private func rotateIPAndWaitForReady(for target: ProxyRotationService.ProxyTarget) async {
+        rotateIP(for: target)
+
+        let maxProbeAttempts = 10
+        let probeIntervalMs = 500
+        let fallbackWaitMs = 3000
+
+        for attempt in 1...maxProbeAttempts {
+            let probeOK = await quickIPProbe()
+            if probeOK {
+                logger.log("ConcurrentEngine: post-rotation probe succeeded on attempt \(attempt) (\(attempt * probeIntervalMs)ms)", category: .network, level: .success)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(probeIntervalMs))
+        }
+
+        logger.log("ConcurrentEngine: post-rotation probe failed after \(maxProbeAttempts) attempts — falling back to \(fallbackWaitMs)ms wait", category: .network, level: .warning)
+        try? await Task.sleep(for: .milliseconds(fallbackWaitMs))
+    }
+
+    private nonisolated func quickIPProbe() async -> Bool {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 4
+        config.timeoutIntervalForResource = 5
+
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        guard let url = URL(string: "https://api.ipify.org?format=json") else { return false }
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 3
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+                return true
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
     private func isConclusiveOutcome(_ outcome: LoginOutcome) -> Bool {
         switch outcome {
         case .success, .tempDisabled, .permDisabled, .noAcc:
@@ -670,6 +740,51 @@ class ConcurrentAutomationEngine {
         case .connectionFailure, .timeout, .unsure, .redBannerError, .smsDetected:
             return false
         }
+    }
+
+    private func performWireProxyHealthGate(for target: ProxyRotationService.ProxyTarget) async -> Bool {
+        let proxyService = ProxyRotationService.shared
+        let mode = proxyService.connectionMode(for: target)
+        guard mode == .wireguard else { return true }
+
+        let wireProxyBridge = WireProxyBridge.shared
+        let localProxy = LocalProxyServer.shared
+
+        guard wireProxyBridge.isActive || localProxy.wireProxyMode else {
+            logger.log("ConcurrentEngine: WireGuard mode but WireProxy not active — skipping health gate", category: .network, level: .info)
+            return true
+        }
+
+        if wireProxyBridge.isActive {
+            let probeOK = await quickIPProbe()
+            if probeOK {
+                logger.log("ConcurrentEngine: WireProxy health gate PASSED", category: .network, level: .success)
+                return true
+            }
+
+            logger.log("ConcurrentEngine: WireProxy health gate FAILED — attempting tunnel restart", category: .network, level: .warning)
+
+            let configs = proxyService.wgConfigs(for: target).filter { $0.isEnabled }
+            if let firstConfig = configs.first {
+                wireProxyBridge.stop()
+                try? await Task.sleep(for: .seconds(1))
+                await wireProxyBridge.start(with: firstConfig)
+                try? await Task.sleep(for: .seconds(2))
+
+                if wireProxyBridge.isActive {
+                    let retryProbe = await quickIPProbe()
+                    if retryProbe {
+                        logger.log("ConcurrentEngine: WireProxy health gate PASSED after restart", category: .network, level: .success)
+                        return true
+                    }
+                }
+            }
+
+            logger.log("ConcurrentEngine: WireProxy health gate FAILED after restart attempt — proceeding with caution", category: .network, level: .critical)
+            return false
+        }
+
+        return true
     }
 
     private func performProxyPreCheck(batchId: String) async -> Bool {

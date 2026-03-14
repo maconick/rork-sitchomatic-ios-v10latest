@@ -108,6 +108,58 @@ class PreflightSmokeTestService {
         )
     }
 
+    nonisolated struct MultiURLPreflightResult: Sendable {
+        let healthyURLs: [URL]
+        let failedURLs: [(url: URL, reason: String)]
+        let totalMs: Int
+    }
+
+    func runPreflightForAllURLs(
+        urls: [URL],
+        networkConfig: ActiveNetworkConfig,
+        proxyTarget: ProxyRotationService.ProxyTarget,
+        stealthEnabled: Bool = false,
+        timeout: TimeInterval = 12
+    ) async -> MultiURLPreflightResult {
+        let startTime = Date()
+        guard !urls.isEmpty else {
+            return MultiURLPreflightResult(healthyURLs: [], failedURLs: [], totalMs: 0)
+        }
+
+        logger.log("Preflight: testing \(urls.count) URLs in parallel", category: .automation, level: .info)
+
+        let results: [(URL, Bool, String)] = await withTaskGroup(of: (URL, Bool, String).self) { group in
+            for url in urls {
+                group.addTask {
+                    let probeResult = await self.metricsService.probeURL(url.absoluteString, timeout: 8)
+                    if probeResult.success {
+                        return (url, true, "OK (\(probeResult.totalMs)ms)")
+                    } else {
+                        return (url, false, probeResult.bottleneck)
+                    }
+                }
+            }
+            var collected: [(URL, Bool, String)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        let healthy = results.filter { $0.1 }.map { $0.0 }
+        let failed = results.filter { !$0.1 }.map { (url: $0.0, reason: $0.2) }
+        let totalMs = Int(Date().timeIntervalSince(startTime) * 1000)
+
+        for (url, ok, detail) in results {
+            let host = url.host ?? url.absoluteString
+            logger.log("Preflight: \(host) — \(ok ? "HEALTHY" : "FAILED: \(detail)")", category: .automation, level: ok ? .success : .warning)
+        }
+
+        logger.log("Preflight: \(healthy.count)/\(urls.count) URLs healthy in \(totalMs)ms", category: .automation, level: healthy.count == urls.count ? .success : .warning)
+
+        return MultiURLPreflightResult(healthyURLs: healthy, failedURLs: failed, totalMs: totalMs)
+    }
+
     func runQuickNetworkProbe(proxyConfig: ProxyConfig? = nil) async -> (ok: Bool, latencyMs: Int, detail: String) {
         let testURL = "https://api.ipify.org?format=json"
         let metrics = await metricsService.probeURL(testURL, proxyConfig: proxyConfig, timeout: 8)
