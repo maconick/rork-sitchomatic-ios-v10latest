@@ -115,6 +115,14 @@ class ConcurrentAutomationEngine {
     private let autoPauseWindowSize: Int = 10
     private let autoPauseDurationSeconds: Int = 30
     private var recentOutcomeWindow: [Bool] = []
+    private var credentialRetryTracker: [String: Int] = [:]
+    private let maxCredentialRetries: Int = 3
+    private var consecutiveAllFailBatches: Int = 0
+    private let maxAllFailBackoffMs: Int = 30000
+    private var batchDeadline: Date?
+    private var rateLimitSignalCount: Int = 0
+    private var autoPauseTriggerCount: Int = 0
+    private let autoPauseEscalationFactor: Double = 0.6
     var onBatchStats: ((BatchLiveStats) -> Void)?
 
     func cancel() {
@@ -144,21 +152,34 @@ class ConcurrentAutomationEngine {
     }
 
     private func checkAutoPause(processed: Int, total: Int, successCount: Int, failureCount: Int, latencies: [Int], startTime: Date) async -> Bool {
-        let failureRate = recentOutcomeWindow.count >= autoPauseWindowSize
-            ? Double(recentOutcomeWindow.suffix(autoPauseWindowSize).filter { !$0 }.count) / Double(autoPauseWindowSize)
+        let windowToCheck = max(5, autoPauseWindowSize - (autoPauseTriggerCount * 2))
+        let thresholdToUse = max(0.5, autoPauseFailureThreshold - (Double(autoPauseTriggerCount) * autoPauseEscalationFactor * 0.1))
+
+        let failureRate = recentOutcomeWindow.count >= windowToCheck
+            ? Double(recentOutcomeWindow.suffix(windowToCheck).filter { !$0 }.count) / Double(windowToCheck)
             : 0
-        if failureRate >= autoPauseFailureThreshold && recentOutcomeWindow.count >= autoPauseWindowSize {
+        if failureRate >= thresholdToUse && recentOutcomeWindow.count >= windowToCheck {
+            autoPauseTriggerCount += 1
+            let escalatedDuration = min(120, autoPauseDurationSeconds + (autoPauseTriggerCount * 10))
             autoPaused = true
-            logger.log("ConcurrentEngine: AUTO-PAUSED — \(Int(failureRate * 100))% failure rate over last \(autoPauseWindowSize) attempts. Waiting \(autoPauseDurationSeconds)s...", category: .automation, level: .critical)
+            logger.log("ConcurrentEngine: AUTO-PAUSED (#\(autoPauseTriggerCount)) — \(Int(failureRate * 100))% failure rate over last \(windowToCheck) attempts. Waiting \(escalatedDuration)s (threshold=\(Int(thresholdToUse * 100))%)", category: .automation, level: .critical)
             let stats = computeLiveStats(processed: processed, total: total, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
             onBatchStats?(stats)
-            try? await Task.sleep(for: .seconds(autoPauseDurationSeconds))
-            recentOutcomeWindow.removeAll()
+            try? await Task.sleep(for: .seconds(escalatedDuration))
+            recentOutcomeWindow = Array(recentOutcomeWindow.suffix(3))
             autoPaused = false
-            logger.log("ConcurrentEngine: resuming after auto-pause", category: .automation, level: .info)
+            logger.log("ConcurrentEngine: resuming after auto-pause #\(autoPauseTriggerCount)", category: .automation, level: .info)
             return true
         }
+        if recentOutcomeWindow.suffix(windowToCheck).filter({ $0 }).count > windowToCheck / 2 {
+            autoPauseTriggerCount = max(0, autoPauseTriggerCount - 1)
+        }
         return false
+    }
+
+    private func isBatchDeadlineExceeded() -> Bool {
+        guard let deadline = batchDeadline else { return false }
+        return Date() >= deadline
     }
 
     func runConcurrentPPSRBatch(
@@ -251,7 +272,7 @@ class ConcurrentAutomationEngine {
                 onProgress(processed, checks.count, outcome)
             }
 
-            if processed % 5 == 0 || processed == checks.count {
+            if processed % 2 == 0 || processed == checks.count {
                 let stats = computeLiveStats(processed: processed, total: checks.count, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
                 onBatchStats?(stats)
             }
@@ -317,8 +338,13 @@ class ConcurrentAutomationEngine {
         cancelFlag = false
         deadAccounts.removeAll()
         recentOutcomeWindow.removeAll()
+        autoPauseTriggerCount = 0
+        rateLimitSignalCount = 0
         let startTime = Date()
         let batchId = "concurrent_login_\(UUID().uuidString.prefix(8))"
+        let maxBatchDurationSeconds: TimeInterval = max(300, Double(attempts.count) * timeout * 0.6)
+        batchDeadline = Date().addingTimeInterval(maxBatchDurationSeconds)
+        logger.log("ConcurrentEngine: batch deadline set to \(Int(maxBatchDurationSeconds))s from now", category: .automation, level: .info)
 
         await throttler.updateMaxConcurrency(maxConcurrency)
 
@@ -374,10 +400,16 @@ class ConcurrentAutomationEngine {
         var latencies: [Int] = []
         var processed = 0
         var carryOverIndices: [Int] = []
+        credentialRetryTracker.removeAll()
+        consecutiveAllFailBatches = 0
 
         let batchSize = maxConcurrency
         for batchStart in stride(from: 0, to: attempts.count, by: batchSize) {
             if cancelFlag { break }
+            if isBatchDeadlineExceeded() {
+                logger.log("ConcurrentEngine: BATCH DEADLINE EXCEEDED after \(Int(Date().timeIntervalSince(startTime)))s — stopping batch", category: .automation, level: .critical)
+                break
+            }
 
             let batchEnd = min(batchStart + batchSize, attempts.count)
             let batchIndices = Array(batchStart..<batchEnd)
@@ -540,9 +572,25 @@ class ConcurrentAutomationEngine {
                     onProgress(processed, attempts.count, outcome)
                 }
             } else if hasRetryable && !cancelFlag {
-                let retryableIndices = retryableSessions.map { $0.3 }
-                logger.log("ConcurrentEngine: \(retryableSessions.count) sessions inconclusive (connection/timeout/unsure) — carrying over to next batch (indices: \(retryableIndices))", category: .network, level: .warning)
-                carryOverIndices.append(contentsOf: retryableIndices)
+                var eligibleForCarryOver: [Int] = []
+                for (username, _, _, originalIndex) in retryableSessions {
+                    let currentRetries = credentialRetryTracker[username] ?? 0
+                    if currentRetries >= maxCredentialRetries {
+                        logger.log("ConcurrentEngine: credential '\(username)' exhausted \(maxCredentialRetries) retries — marking as final failure", category: .automation, level: .warning)
+                        allResults.append((username, .unsure))
+                        failureCount += 1
+                        processed += 1
+                        recentOutcomeWindow.append(false)
+                        onProgress(processed, attempts.count, .unsure)
+                    } else {
+                        credentialRetryTracker[username] = currentRetries + 1
+                        eligibleForCarryOver.append(originalIndex)
+                    }
+                }
+                if !eligibleForCarryOver.isEmpty {
+                    logger.log("ConcurrentEngine: \(eligibleForCarryOver.count) sessions inconclusive — carrying over (\(retryableSessions.count - eligibleForCarryOver.count) exhausted retries)", category: .network, level: .warning)
+                    carryOverIndices.append(contentsOf: eligibleForCarryOver)
+                }
             } else if !hasRetryable {
                 for (_, outcome, _, _) in batchResults where !isConclusiveOutcome(outcome) {
                     let matchingURL = effectiveURLs[batchIndices.first ?? 0]?.absoluteString ?? ""
@@ -552,6 +600,16 @@ class ConcurrentAutomationEngine {
                         urlCooldown.recordSuccess(for: matchingURL)
                     }
                 }
+            }
+
+            let batchAllFailed = !batchResults.isEmpty && batchResults.allSatisfy({ !isConclusiveOutcome($0.1) })
+            if batchAllFailed {
+                consecutiveAllFailBatches += 1
+                let backoffMs = min(maxAllFailBackoffMs, 2000 * (1 << min(consecutiveAllFailBatches - 1, 4)))
+                logger.log("ConcurrentEngine: consecutive all-fail batch #\(consecutiveAllFailBatches) — exponential backoff \(backoffMs)ms before next batch", category: .network, level: .critical)
+                try? await Task.sleep(for: .milliseconds(backoffMs))
+            } else if batchResults.contains(where: { isConclusiveOutcome($0.1) }) {
+                consecutiveAllFailBatches = 0
             }
 
             if consecutiveConnectionFailures >= nodeMavenAutoRotateThreshold {
@@ -565,7 +623,7 @@ class ConcurrentAutomationEngine {
                 consecutiveConnectionFailures = 0
             }
 
-            if processed % 5 == 0 || processed == attempts.count {
+            if processed % 2 == 0 || processed == attempts.count {
                 let stats = computeLiveStats(processed: processed, total: attempts.count, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
                 onBatchStats?(stats)
             }
@@ -573,28 +631,56 @@ class ConcurrentAutomationEngine {
             let didPause = await checkAutoPause(processed: processed, total: attempts.count, successCount: successCount, failureCount: failureCount, latencies: latencies, startTime: startTime)
             if didPause && cancelFlag { break }
 
+            let hasRateLimitSignals = batchResults.contains(where: { $0.1 == .redBannerError || $0.1 == .smsDetected })
+            if hasRateLimitSignals {
+                rateLimitSignalCount += batchResults.filter({ $0.1 == .redBannerError || $0.1 == .smsDetected }).count
+            }
+
             if batchEnd < attempts.count && !cancelFlag {
                 let batchSuccessRate = batchResults.isEmpty ? 0.5 : Double(batchResults.filter { $0.1 == .success }.count) / Double(batchResults.count)
+                let rateLimitMultiplier = rateLimitSignalCount > 3 ? 2.5 : (rateLimitSignalCount > 0 ? 1.5 : 1.0)
                 let cooldown: Int
                 if batchSuccessRate > 0.8 {
-                    cooldown = Int.random(in: 250...600)
+                    cooldown = Int(Double(Int.random(in: 250...600)) * rateLimitMultiplier)
                 } else if batchSuccessRate < 0.3 {
-                    cooldown = Int.random(in: 1500...3000)
-                    logger.log("ConcurrentEngine: low login success rate (\(Int(batchSuccessRate * 100))%) — extended cooldown \(cooldown)ms", category: .automation, level: .warning)
+                    cooldown = Int(Double(Int.random(in: 1500...3000)) * rateLimitMultiplier)
+                    logger.log("ConcurrentEngine: low login success rate (\(Int(batchSuccessRate * 100))%) — extended cooldown \(cooldown)ms (rateLimitSignals=\(rateLimitSignalCount))", category: .automation, level: .warning)
                 } else {
-                    cooldown = Int.random(in: 500...1200)
+                    cooldown = Int(Double(Int.random(in: 500...1200)) * rateLimitMultiplier)
                 }
                 try? await Task.sleep(for: .milliseconds(cooldown))
             }
         }
 
-        if !carryOverIndices.isEmpty && !cancelFlag {
-            logger.log("ConcurrentEngine: processing \(carryOverIndices.count) carried-over sessions from previous batches", category: .automation, level: .info)
+        let dedupedCarryOver = Array(Set(carryOverIndices))
+        let prioritizedCarryOver = dedupedCarryOver.sorted { a, b in
+            let retriesA = credentialRetryTracker[attempts[a].credential.username] ?? 0
+            let retriesB = credentialRetryTracker[attempts[b].credential.username] ?? 0
+            return retriesA < retriesB
+        }
+        if !prioritizedCarryOver.isEmpty && !cancelFlag {
+            let eligibleCarryOver = prioritizedCarryOver.filter { index in
+                let username = attempts[index].credential.username
+                let retries = credentialRetryTracker[username] ?? 0
+                if retries >= maxCredentialRetries {
+                    logger.log("ConcurrentEngine: carry-over credential '\(username)' exhausted retries — skipping", category: .automation, level: .warning)
+                    allResults.append((username, .unsure))
+                    failureCount += 1
+                    processed += 1
+                    recentOutcomeWindow.append(false)
+                    onProgress(processed, attempts.count, .unsure)
+                    return false
+                }
+                return !deadAccounts.contains(username)
+            }
+
+            if !eligibleCarryOver.isEmpty {
+            logger.log("ConcurrentEngine: processing \(eligibleCarryOver.count) prioritized carry-over sessions (\(prioritizedCarryOver.count - eligibleCarryOver.count) exhausted/dead)", category: .automation, level: .info)
 
             await rotateIPAndWaitForReady(for: proxyTarget)
 
             let carryOverResults: [(String, LoginOutcome, Int)] = await withTaskGroup(of: (String, LoginOutcome, Int).self) { group in
-                for index in carryOverIndices {
+                for index in eligibleCarryOver {
                     if self.cancelFlag { break }
                     let attempt = attempts[index]
                     let retryURL = healthyURLs[index % healthyURLs.count]
@@ -633,6 +719,7 @@ class ConcurrentAutomationEngine {
                 processed += 1
                 recentOutcomeWindow.append(outcome == .success)
                 onProgress(processed, attempts.count, outcome)
+            }
             }
         }
 

@@ -5,6 +5,32 @@ class AdaptiveRetryService {
     static let shared = AdaptiveRetryService()
 
     private let logger = DebugLogger.shared
+    private var siteOutcomeHistory: [String: SiteOutcomeTracker] = [:]
+    private let historyWindowSize: Int = 30
+
+    private struct SiteOutcomeTracker {
+        var outcomes: [(category: FailureCategory, timestamp: Date)] = []
+        var totalAttempts: Int = 0
+
+        func dominantCategory(windowSize: Int) -> FailureCategory? {
+            let recent = outcomes.suffix(windowSize)
+            guard recent.count >= 5 else { return nil }
+            var counts: [FailureCategory: Int] = [:]
+            for entry in recent {
+                counts[entry.category, default: 0] += 1
+            }
+            guard let (topCategory, topCount) = counts.max(by: { $0.value < $1.value }) else { return nil }
+            let dominanceRatio = Double(topCount) / Double(recent.count)
+            return dominanceRatio >= 0.5 ? topCategory : nil
+        }
+
+        func recentFailureRate(windowSize: Int) -> Double {
+            let recent = outcomes.suffix(windowSize)
+            guard !recent.isEmpty else { return 0 }
+            let failures = recent.filter { $0.category != .unknown }.count
+            return Double(failures) / Double(recent.count)
+        }
+    }
 
     nonisolated enum FailureCategory: String, Sendable {
         case timeout
@@ -26,6 +52,53 @@ class AdaptiveRetryService {
         let shouldRotateProxy: Bool
         let shouldRecycleWebView: Bool
         let shouldSwitchPattern: Bool
+    }
+
+    func recordSiteOutcome(host: String, category: FailureCategory) {
+        var tracker = siteOutcomeHistory[host] ?? SiteOutcomeTracker()
+        tracker.outcomes.append((category, Date()))
+        tracker.totalAttempts += 1
+        if tracker.outcomes.count > historyWindowSize * 2 {
+            tracker.outcomes = Array(tracker.outcomes.suffix(historyWindowSize))
+        }
+        siteOutcomeHistory[host] = tracker
+    }
+
+    func adaptedPolicyFor(_ category: FailureCategory, host: String? = nil) -> RetryPolicy {
+        let basePolicy = policyFor(category)
+        guard let host, let tracker = siteOutcomeHistory[host] else { return basePolicy }
+
+        let dominant = tracker.dominantCategory(windowSize: historyWindowSize)
+        let failureRate = tracker.recentFailureRate(windowSize: historyWindowSize)
+
+        var adjustedMaxRetries = basePolicy.maxRetries
+        var adjustedBaseDelay = basePolicy.baseDelayMs
+        var adjustedRotateProxy = basePolicy.shouldRotateProxy
+        var adjustedRotateURL = basePolicy.shouldRotateURL
+
+        if dominant == .rateLimited || dominant == .captcha {
+            adjustedMaxRetries = max(1, basePolicy.maxRetries - 1)
+            adjustedBaseDelay = Int(Double(basePolicy.baseDelayMs) * 2.0)
+            adjustedRotateProxy = true
+            adjustedRotateURL = true
+            logger.log("AdaptiveRetry: site \(host) has dominant \(dominant?.rawValue ?? "") pattern — increased delay to \(adjustedBaseDelay)ms, forcing rotation", category: .automation, level: .info)
+        } else if dominant == .connectionFailure && failureRate > 0.7 {
+            adjustedRotateProxy = true
+            adjustedBaseDelay = Int(Double(basePolicy.baseDelayMs) * 1.5)
+            logger.log("AdaptiveRetry: site \(host) has high connection failure rate (\(Int(failureRate * 100))%) — forcing proxy rotation", category: .automation, level: .info)
+        } else if failureRate < 0.2 && tracker.totalAttempts > 10 {
+            adjustedBaseDelay = max(200, basePolicy.baseDelayMs / 2)
+        }
+
+        return RetryPolicy(
+            maxRetries: adjustedMaxRetries,
+            baseDelayMs: adjustedBaseDelay,
+            backoffMultiplier: basePolicy.backoffMultiplier,
+            shouldRotateURL: adjustedRotateURL,
+            shouldRotateProxy: adjustedRotateProxy,
+            shouldRecycleWebView: basePolicy.shouldRecycleWebView,
+            shouldSwitchPattern: basePolicy.shouldSwitchPattern
+        )
     }
 
     func policyFor(_ category: FailureCategory) -> RetryPolicy {
@@ -164,10 +237,15 @@ class AdaptiveRetryService {
         return currentAttempt < policy.maxRetries
     }
 
-    func logRetryDecision(category: FailureCategory, attempt: Int, sessionId: String) {
-        let policy = policyFor(category)
+    func logRetryDecision(category: FailureCategory, attempt: Int, sessionId: String, host: String? = nil) {
+        let policy = host != nil ? adaptedPolicyFor(category, host: host) : policyFor(category)
         let willRetry = attempt < policy.maxRetries
         let delay = willRetry ? delayForRetry(policy: policy, attempt: attempt) : 0
         logger.log("AdaptiveRetry: \(category.rawValue) attempt \(attempt)/\(policy.maxRetries) — \(willRetry ? "retrying in \(delay)ms" : "NO MORE RETRIES") rotateURL=\(policy.shouldRotateURL) rotateProxy=\(policy.shouldRotateProxy) recycleWV=\(policy.shouldRecycleWebView) switchPattern=\(policy.shouldSwitchPattern)", category: .automation, level: willRetry ? .info : .warning, sessionId: sessionId)
+    }
+
+    func resetSiteHistory() {
+        siteOutcomeHistory.removeAll()
+        logger.log("AdaptiveRetry: site outcome history cleared", category: .automation, level: .info)
     }
 }

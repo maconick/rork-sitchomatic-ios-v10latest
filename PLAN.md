@@ -1,30 +1,41 @@
-# Stage 1 of 5 — Connection Reliability & Startup
+# Networking & Automation Improvements — 5 Stages
 
+## Stage 1 — Connection Reliability & Startup ✅
 
-**Stage 1 — Connection Reliability & Startup**
+- [x] Replace throttler busy-wait with async semaphore
+- [x] Adaptive post-rotation wait (probe-based)
+- [x] Preflight tests all target URLs in parallel
+- [x] WireProxy health gate before batch
+- [x] Quality-aware connection prewarm
 
-After this stage is built and verified, I'll stop and wait for your "yes" before starting Stage 2.
+## Stage 2 — Smarter Retry & Recovery ✅
 
----
+- [x] Per-credential retry tracking in carry-over (max 3 retries per credential, exhausted → final .unsure)
+- [x] AdaptiveRetryService learns from site behavior (tracks dominant failure patterns per host, adjusts delays/rotation)
+- [x] Dynamic circuit breaker cooldowns (rate-limit 429 = 90s, timeout = 20s, 5xx = 45s, escalation on consecutive trips)
+- [x] Batch-level exponential backoff on repeated all-fail batches (2s → 4s → 8s → 16s → 30s cap)
+- [x] Active dead session detection with timeout watchdog (periodic heartbeat checks, early termination of hung sessions)
 
-**1. Replace throttler busy-wait with async semaphore**
-- The `AutomationThrottler.acquire()` currently spins in a `while` loop with 100ms sleeps, burning CPU
-- Replace with a continuation-based async semaphore that suspends callers until a slot opens — zero CPU usage while waiting
+## Stage 3 — Proxy Intelligence ✅
 
-**2. Adaptive post-rotation wait**
-- Currently a fixed 2000ms sleep after every IP rotation
-- Replace with a probe-based approach: after rotating, probe the new IP (up to 5s with 500ms intervals); continue immediately once probe succeeds
-- Falls back to 3s if probe never succeeds (instead of blind 2s)
+- [x] Persist full success/failure history in ProxyQualityDecayService (survives restart)
+- [x] Per-proxy bandwidth estimation in NetworkResilienceService
+- [x] Quality-aware pool eviction (evict lowest-scoring idle connections first)
+- [x] Raise weighted random selection floor (0.05 → 0.15 to reduce traffic to near-dead proxies)
+- [x] Geographic latency routing (auto-select best region based on measured latency)
 
-**3. Preflight tests all target URLs**
-- Currently only tests the first URL in the list
-- Expand to test all URLs in parallel, returning per-URL health status
-- The batch will skip any URL that failed preflight, using only healthy ones
+## Stage 4 — Batch Orchestration ✅
 
-**4. WireProxy health gate before batch**
-- Before starting a batch, if WireProxy is the active tunnel mode, verify the tunnel is actually working
-- If unhealthy, attempt one tunnel restart; if still unhealthy, log a critical warning and let the batch proceed with caution (rather than silently burning sessions)
+- [x] Real-time stats callback (every item or every 2, not every 5)
+- [x] Batch-level timeout (global deadline across all sessions)
+- [x] Adaptive inter-batch cooldown based on rate-limit signals
+- [x] Credential priority queue (prioritize previously-inconclusive items)
+- [x] Persistent auto-pause (re-triggers faster on sustained failures)
 
-**5. Quality-aware connection prewarm**
-- `ProxyConnectionPool.prewarmConnections` currently ignores proxy quality scores
-- Add a check against `ProxyQualityDecayService` — skip prewarming through demoted proxies (score < 0.2)
+## Stage 5 — Network Resilience & Observability ✅
+
+- [x] Replace Timer polling with NWPathMonitor in NetworkTruthService
+- [x] Adaptive verification intervals (more frequent during batches, less when idle)
+- [x] DNS failover strategy (multiple resolvers)
+- [x] Connection multiplexing awareness (shared TLS sessions to same host)
+- [x] Structured telemetry aggregation (metrics across batches, trend detection)

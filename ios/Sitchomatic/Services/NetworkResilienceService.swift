@@ -13,6 +13,8 @@ class NetworkResilienceService {
     private(set) var isThrottled: Bool = false
     private(set) var currentConcurrencyLimit: Int = 4
     private(set) var failoverBackoffSeconds: TimeInterval = 0
+    private(set) var proxyBandwidthEstimates: [String: ProxyBandwidthEstimate] = [:]
+    private(set) var regionLatencies: [String: RegionLatencyProfile] = [:]
 
     var enableFailClosedVerification: Bool = true
     var verificationIntervalSeconds: TimeInterval = 60
@@ -27,6 +29,57 @@ class NetworkResilienceService {
     private var failoverAttemptCount: Int = 0
     private var lastFailoverAttempt: Date?
     private let logger = DebugLogger.shared
+
+    struct ProxyBandwidthEstimate {
+        var samples: [(timestamp: Date, bytes: UInt64, durationMs: Int)] = []
+        var estimatedBps: Double = 0
+        var lastUpdated: Date = .distantPast
+
+        mutating func addSample(bytes: UInt64, durationMs: Int) {
+            let now = Date()
+            samples.append((now, bytes, durationMs))
+            let cutoff = now.addingTimeInterval(-120)
+            samples.removeAll { $0.timestamp < cutoff }
+            recalculate()
+            lastUpdated = now
+        }
+
+        private mutating func recalculate() {
+            guard !samples.isEmpty else { estimatedBps = 0; return }
+            let totalBytes = samples.reduce(UInt64(0)) { $0 + $1.bytes }
+            let totalMs = samples.reduce(0) { $0 + $1.durationMs }
+            guard totalMs > 0 else { estimatedBps = 0; return }
+            estimatedBps = Double(totalBytes) / (Double(totalMs) / 1000.0)
+        }
+
+        var label: String {
+            if estimatedBps < 1024 { return String(format: "%.0f B/s", estimatedBps) }
+            if estimatedBps < 1024 * 1024 { return String(format: "%.1f KB/s", estimatedBps / 1024) }
+            return String(format: "%.1f MB/s", estimatedBps / (1024 * 1024))
+        }
+    }
+
+    struct RegionLatencyProfile {
+        var region: String
+        var samples: [(timestamp: Date, latencyMs: Int)] = []
+        var avgLatencyMs: Double = 0
+        var lastProbed: Date = .distantPast
+
+        mutating func addSample(latencyMs: Int) {
+            let now = Date()
+            samples.append((now, latencyMs))
+            let cutoff = now.addingTimeInterval(-600)
+            samples.removeAll { $0.timestamp < cutoff }
+            recalculate()
+            lastProbed = now
+        }
+
+        private mutating func recalculate() {
+            guard !samples.isEmpty else { avgLatencyMs = 9999; return }
+            let recent = samples.suffix(10)
+            avgLatencyMs = Double(recent.reduce(0) { $0 + $1.latencyMs }) / Double(recent.count)
+        }
+    }
 
     nonisolated struct VerificationResult: Identifiable, Sendable {
         let id: UUID
@@ -185,7 +238,114 @@ class NetworkResilienceService {
         return Date().timeIntervalSince(last) < failoverBackoffSeconds
     }
 
-    // MARK: - Bandwidth-Aware Concurrency Throttling (Item 9)
+    // MARK: - Per-Proxy Bandwidth Estimation
+
+    func recordProxyBandwidth(proxyId: String, bytes: UInt64, durationMs: Int) {
+        var estimate = proxyBandwidthEstimates[proxyId] ?? ProxyBandwidthEstimate()
+        estimate.addSample(bytes: bytes, durationMs: durationMs)
+        proxyBandwidthEstimates[proxyId] = estimate
+    }
+
+    func proxyBandwidthLabel(proxyId: String) -> String {
+        proxyBandwidthEstimates[proxyId]?.label ?? "unknown"
+    }
+
+    func proxyBandwidthBps(proxyId: String) -> Double {
+        proxyBandwidthEstimates[proxyId]?.estimatedBps ?? 0
+    }
+
+    func rankProxiesByBandwidth(proxyIds: [String]) -> [String] {
+        proxyIds.sorted { a, b in
+            let bwA = proxyBandwidthEstimates[a]?.estimatedBps ?? 0
+            let bwB = proxyBandwidthEstimates[b]?.estimatedBps ?? 0
+            return bwA > bwB
+        }
+    }
+
+    // MARK: - Geographic Latency Routing
+
+    func recordRegionLatency(region: String, latencyMs: Int) {
+        var profile = regionLatencies[region] ?? RegionLatencyProfile(region: region)
+        profile.addSample(latencyMs: latencyMs)
+        regionLatencies[region] = profile
+    }
+
+    func bestRegion() -> String? {
+        guard !regionLatencies.isEmpty else { return nil }
+        let valid = regionLatencies.filter { !$0.value.samples.isEmpty }
+        guard !valid.isEmpty else { return nil }
+        return valid.min(by: { $0.value.avgLatencyMs < $1.value.avgLatencyMs })?.key
+    }
+
+    func regionLatencySummary() -> [(region: String, avgMs: Int, sampleCount: Int)] {
+        regionLatencies.map { key, profile in
+            (key, Int(profile.avgLatencyMs), profile.samples.count)
+        }.sorted { $0.avgMs < $1.avgMs }
+    }
+
+    func probeRegionLatency(region: String, proxyConfig: ProxyConfig? = nil) async -> Int {
+        let testURL = "https://api.ipify.org?format=json"
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+
+        if let proxy = proxyConfig {
+            var proxyDict: [String: Any] = [
+                "SOCKSEnable": 1,
+                "SOCKSProxy": proxy.host,
+                "SOCKSPort": proxy.port,
+            ]
+            if let u = proxy.username { proxyDict["SOCKSUser"] = u }
+            if let p = proxy.password { proxyDict["SOCKSPassword"] = p }
+            config.connectionProxyDictionary = proxyDict
+        }
+
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        guard let url = URL(string: testURL) else { return 9999 }
+        let start = CFAbsoluteTimeGetCurrent()
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 6
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                let latencyMs = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
+                recordRegionLatency(region: region, latencyMs: latencyMs)
+                return latencyMs
+            }
+        } catch {}
+        return 9999
+    }
+
+    func probeAllRegions(proxiesByRegion: [String: ProxyConfig?]) async -> String? {
+        let results = await withTaskGroup(of: (String, Int).self) { group in
+            for (region, proxy) in proxiesByRegion {
+                group.addTask {
+                    let latency = await self.probeRegionLatency(region: region, proxyConfig: proxy)
+                    return (region, latency)
+                }
+            }
+            var collected: [(String, Int)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        for (region, latency) in results {
+            logger.log("Resilience: region \(region) latency=\(latency)ms", category: .network, level: latency < 3000 ? .info : .warning)
+        }
+
+        let best = results.filter { $0.1 < 9999 }.min(by: { $0.1 < $1.1 })
+        if let best {
+            logger.log("Resilience: best region=\(best.0) (\(best.1)ms)", category: .network, level: .success)
+        }
+        return best?.0
+    }
+
+    // MARK: - Bandwidth-Aware Concurrency Throttling
 
     func recordBandwidthSample(bytes: UInt64) {
         let now = Date()
@@ -244,4 +404,134 @@ class NetworkResilienceService {
         if bandwidthEstimateBps < 1024 * 1024 { return String(format: "%.1f KB/s", bandwidthEstimateBps / 1024) }
         return String(format: "%.1f MB/s", bandwidthEstimateBps / (1024 * 1024))
     }
+
+    // MARK: - DNS Failover Strategy
+
+    private let dnsResolvers: [(label: String, url: String)] = [
+        ("Cloudflare", "https://cloudflare-dns.com/dns-query"),
+        ("Google", "https://dns.google/resolve"),
+        ("Quad9", "https://dns.quad9.net:5053/dns-query"),
+    ]
+    private var dnsResolverHealth: [String: Bool] = [:]
+    private(set) var activeDNSResolver: String = "Cloudflare"
+
+    func resolveDNS(hostname: String) async -> String? {
+        for resolver in dnsResolvers {
+            if dnsResolverHealth[resolver.label] == false { continue }
+
+            let resolved = await queryDoH(hostname: hostname, resolver: resolver)
+            if let resolved {
+                dnsResolverHealth[resolver.label] = true
+                if activeDNSResolver != resolver.label {
+                    activeDNSResolver = resolver.label
+                    logger.log("Resilience: DNS failover — now using \(resolver.label)", category: .network, level: .info)
+                }
+                return resolved
+            } else {
+                dnsResolverHealth[resolver.label] = false
+                logger.log("Resilience: DNS resolver \(resolver.label) FAILED for \(hostname)", category: .network, level: .warning)
+            }
+        }
+
+        dnsResolverHealth.removeAll()
+        logger.log("Resilience: all DNS resolvers failed for \(hostname) — resetting health", category: .network, level: .error)
+        return nil
+    }
+
+    private nonisolated func queryDoH(hostname: String, resolver: (label: String, url: String)) async -> String? {
+        let urlString = "\(resolver.url)?name=\(hostname)&type=A"
+        guard let url = URL(string: urlString) else { return nil }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForResource = 6
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = 4
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let answers = json["Answer"] as? [[String: Any]] {
+                for answer in answers {
+                    if let type = answer["type"] as? Int, type == 1,
+                       let ip = answer["data"] as? String {
+                        return ip
+                    }
+                }
+            }
+        } catch {}
+        return nil
+    }
+
+    func dnsResolverStatus() -> [(label: String, healthy: Bool)] {
+        dnsResolvers.map { resolver in
+            (resolver.label, dnsResolverHealth[resolver.label] ?? true)
+        }
+    }
+
+    func resetDNSHealth() {
+        dnsResolverHealth.removeAll()
+        activeDNSResolver = dnsResolvers.first?.label ?? "Cloudflare"
+        logger.log("Resilience: DNS resolver health reset", category: .network, level: .info)
+    }
+
+    // MARK: - Connection Multiplexing Awareness
+
+    private var hostSessionMap: [String: URLSession] = [:]
+    private let maxSharedSessions: Int = 10
+
+    func sharedSession(for host: String, proxyConfig: ProxyConfig? = nil) -> URLSession {
+        let key = proxyConfig != nil ? "\(host)_\(proxyConfig!.host):\(proxyConfig!.port)" : host
+
+        if let existing = hostSessionMap[key] {
+            return existing
+        }
+
+        if hostSessionMap.count >= maxSharedSessions {
+            let oldest = hostSessionMap.keys.first
+            if let oldest {
+                hostSessionMap[oldest]?.invalidateAndCancel()
+                hostSessionMap.removeValue(forKey: oldest)
+            }
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.httpMaximumConnectionsPerHost = 4
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
+        config.httpShouldUsePipelining = true
+
+        if let proxy = proxyConfig {
+            var proxyDict: [String: Any] = [
+                "SOCKSEnable": 1,
+                "SOCKSProxy": proxy.host,
+                "SOCKSPort": proxy.port,
+            ]
+            if let u = proxy.username { proxyDict["SOCKSUser"] = u }
+            if let p = proxy.password { proxyDict["SOCKSPassword"] = p }
+            config.connectionProxyDictionary = proxyDict
+        }
+
+        let session = URLSession(configuration: config)
+        hostSessionMap[key] = session
+        logger.log("Resilience: created shared TLS session for \(key) (pool: \(hostSessionMap.count)/\(maxSharedSessions))", category: .network, level: .debug)
+        return session
+    }
+
+    func invalidateSharedSessions() {
+        for (_, session) in hostSessionMap {
+            session.invalidateAndCancel()
+        }
+        hostSessionMap.removeAll()
+        logger.log("Resilience: all shared TLS sessions invalidated", category: .network, level: .info)
+    }
+
+    var sharedSessionCount: Int { hostSessionMap.count }
 }

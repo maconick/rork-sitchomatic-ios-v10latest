@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 
 nonisolated struct NetworkTruthSnapshot: Identifiable, Sendable {
@@ -72,11 +73,48 @@ class NetworkTruthService {
     private let proxyService = ProxyRotationService.shared
     private let logger = DebugLogger.shared
     private var refreshTimer: Timer?
+    private var pathMonitor: NWPathMonitor?
+    private let monitorQueue = DispatchQueue(label: "network-truth-monitor", qos: .utility)
+    private(set) var isNetworkAvailable: Bool = true
+    private(set) var networkInterfaceType: String = "unknown"
+    private(set) var lastPathChange: Date?
+    private var batchActive: Bool = false
+    private var adaptiveInterval: TimeInterval = 5
+    private let batchActiveInterval: TimeInterval = 3
+    private let idleInterval: TimeInterval = 10
 
     func startMonitoring(interval: TimeInterval = 5) {
         stopMonitoring()
+        adaptiveInterval = interval
         refreshSnapshot()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+
+        pathMonitor = NWPathMonitor()
+        pathMonitor?.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let wasAvailable = self.isNetworkAvailable
+                self.isNetworkAvailable = path.status == .satisfied
+                self.lastPathChange = Date()
+
+                if path.usesInterfaceType(.wifi) {
+                    self.networkInterfaceType = "WiFi"
+                } else if path.usesInterfaceType(.cellular) {
+                    self.networkInterfaceType = "Cellular"
+                } else if path.usesInterfaceType(.wiredEthernet) {
+                    self.networkInterfaceType = "Ethernet"
+                } else {
+                    self.networkInterfaceType = "Other"
+                }
+
+                if wasAvailable != self.isNetworkAvailable {
+                    self.logger.log("NetworkTruth: path changed — available=\(self.isNetworkAvailable) interface=\(self.networkInterfaceType)", category: .network, level: self.isNetworkAvailable ? .info : .critical)
+                    self.refreshSnapshot()
+                }
+            }
+        }
+        pathMonitor?.start(queue: monitorQueue)
+
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: adaptiveInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshSnapshot()
             }
@@ -86,6 +124,23 @@ class NetworkTruthService {
     func stopMonitoring() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+    }
+
+    func setBatchActive(_ active: Bool) {
+        batchActive = active
+        let newInterval = active ? batchActiveInterval : idleInterval
+        if abs(newInterval - adaptiveInterval) > 0.5 {
+            adaptiveInterval = newInterval
+            refreshTimer?.invalidate()
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: adaptiveInterval, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshSnapshot()
+                }
+            }
+            logger.log("NetworkTruth: monitoring interval adjusted to \(Int(adaptiveInterval))s (batchActive=\(active))", category: .network, level: .debug)
+        }
     }
 
     func refreshSnapshot() {

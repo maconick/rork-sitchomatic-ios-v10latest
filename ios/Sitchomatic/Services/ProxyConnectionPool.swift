@@ -233,11 +233,25 @@ class ProxyConnectionPool {
     }
 
     private func evictOldest() {
-        let idleConnections = pooledConnections.filter { $0.value.isIdle }.sorted { $0.value.lastUsedAt < $1.value.lastUsedAt }
-        if let oldest = idleConnections.first {
-            evictConnection(id: oldest.key, reason: "pool full — evicting oldest idle")
-            return
+        let qualityDecay = ProxyQualityDecayService.shared
+        let idleConnections = pooledConnections.filter { $0.value.isIdle }
+
+        if !idleConnections.isEmpty {
+            let scored = idleConnections.map { (id, info) -> (UUID, Double, Date) in
+                let proxyId = "\(info.targetHost):\(info.targetPort)"
+                let score = qualityDecay.scoreFor(proxyId: proxyId)
+                return (id, score, info.lastUsedAt)
+            }.sorted { a, b in
+                if abs(a.1 - b.1) > 0.1 { return a.1 < b.1 }
+                return a.2 < b.2
+            }
+
+            if let worst = scored.first {
+                evictConnection(id: worst.0, reason: "pool full — evicting lowest-quality idle (score: \(String(format: "%.2f", worst.1)))")
+                return
+            }
         }
+
         let allSorted = pooledConnections.sorted { $0.value.lastUsedAt < $1.value.lastUsedAt }
         if let oldest = allSorted.first {
             evictConnection(id: oldest.key, reason: "pool full — evicting oldest active")

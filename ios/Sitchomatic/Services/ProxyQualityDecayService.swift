@@ -5,7 +5,7 @@ class ProxyQualityDecayService {
     static let shared = ProxyQualityDecayService()
 
     private let logger = DebugLogger.shared
-    private let persistKey = "proxy_quality_decay_v1"
+    private let persistKey = "proxy_quality_decay_v2"
     private var proxyScores: [String: DecayingProxyScore] = [:]
     private let decayHalfLifeSeconds: TimeInterval = 1800
     private let maxRecentEntries: Int = 50
@@ -109,11 +109,12 @@ class ProxyQualityDecayService {
             (id, scoreFor(proxyId: id))
         }
 
-        let totalWeight = scored.reduce(0.0) { $0 + max($1.1, 0.05) }
+        let minFloor = 0.15
+        let totalWeight = scored.reduce(0.0) { $0 + max($1.1, minFloor) }
         var random = Double.random(in: 0..<totalWeight)
 
         for (id, weight) in scored {
-            random -= max(weight, 0.05)
+            random -= max(weight, minFloor)
             if random <= 0 { return id }
         }
 
@@ -148,9 +149,17 @@ class ProxyQualityDecayService {
     private func persistScores() {
         var dict: [String: [String: Any]] = [:]
         for (id, score) in proxyScores {
+            let successEntries: [[String: Any]] = score.successes.suffix(maxRecentEntries).map { entry in
+                ["ts": entry.date.timeIntervalSince1970, "lat": entry.latencyMs]
+            }
+            let failureEntries: [[String: Any]] = score.failures.suffix(maxRecentEntries).map { entry in
+                ["ts": entry.date.timeIntervalSince1970, "type": entry.type]
+            }
             dict[id] = [
                 "totalAttempts": score.totalAttempts,
                 "lastUpdated": score.lastUpdated.timeIntervalSince1970,
+                "successes": successEntries,
+                "failures": failureEntries,
             ]
         }
         if let data = try? JSONSerialization.data(withJSONObject: dict) {
@@ -160,6 +169,39 @@ class ProxyQualityDecayService {
 
     private func loadScores() {
         guard let data = UserDefaults.standard.data(forKey: persistKey),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else {
+            migrateFromV1()
+            return
+        }
+        for (id, values) in dict {
+            var score = DecayingProxyScore(identifier: id)
+            score.totalAttempts = values["totalAttempts"] as? Int ?? 0
+            if let ts = values["lastUpdated"] as? TimeInterval {
+                score.lastUpdated = Date(timeIntervalSince1970: ts)
+            }
+            if let successArray = values["successes"] as? [[String: Any]] {
+                score.successes = successArray.compactMap { entry in
+                    guard let ts = entry["ts"] as? TimeInterval,
+                          let lat = entry["lat"] as? Int else { return nil }
+                    return (Date(timeIntervalSince1970: ts), lat)
+                }
+            }
+            if let failureArray = values["failures"] as? [[String: Any]] {
+                score.failures = failureArray.compactMap { entry in
+                    guard let ts = entry["ts"] as? TimeInterval,
+                          let type = entry["type"] as? String else { return nil }
+                    return (Date(timeIntervalSince1970: ts), type)
+                }
+            }
+            proxyScores[id] = score
+        }
+        let totalEntries = proxyScores.values.reduce(0) { $0 + $1.successes.count + $1.failures.count }
+        logger.log("ProxyQualityDecay: loaded \(proxyScores.count) proxies with \(totalEntries) history entries", category: .proxy, level: .info)
+    }
+
+    private func migrateFromV1() {
+        let oldKey = "proxy_quality_decay_v1"
+        guard let data = UserDefaults.standard.data(forKey: oldKey),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else { return }
         for (id, values) in dict {
             var score = DecayingProxyScore(identifier: id)
@@ -169,5 +211,8 @@ class ProxyQualityDecayService {
             }
             proxyScores[id] = score
         }
+        persistScores()
+        UserDefaults.standard.removeObject(forKey: oldKey)
+        logger.log("ProxyQualityDecay: migrated \(proxyScores.count) entries from v1 to v2", category: .proxy, level: .info)
     }
 }

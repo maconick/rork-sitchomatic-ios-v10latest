@@ -8,10 +8,19 @@ class HostCircuitBreakerService {
     private var hostStates: [String: CircuitState] = [:]
 
     private let failureThreshold: Int = 3
-    private let cooldownSeconds: TimeInterval = 30
+    private let baseCooldownSeconds: TimeInterval = 30
     private let halfOpenMaxProbes: Int = 2
     private let timeoutWeight: Int = 2
     private let rateLimitWeight: Int = 3
+
+    private let cooldownByFailureType: [FailureType: TimeInterval] = [
+        .timeout: 20,
+        .connectionError: 25,
+        .rateLimited429: 90,
+        .serverError5xx: 45,
+        .blankPage: 15,
+        .generic: 30
+    ]
 
     nonisolated enum BreakerStatus: String, Sendable {
         case closed
@@ -26,6 +35,8 @@ class HostCircuitBreakerService {
         var openedAt: Date?
         var halfOpenProbes: Int = 0
         var lastFailureType: FailureType?
+        var consecutiveTrips: Int = 0
+        var effectiveCooldown: TimeInterval = 30
 
         var isTripped: Bool {
             switch status {
@@ -56,7 +67,7 @@ class HostCircuitBreakerService {
         case .closed:
             return true
         case .open:
-            if let opened = state.openedAt, Date().timeIntervalSince(opened) >= cooldownSeconds {
+            if let opened = state.openedAt, Date().timeIntervalSince(opened) >= state.effectiveCooldown {
                 state.status = .halfOpen
                 state.halfOpenProbes = 0
                 hostStates[key] = state
@@ -91,14 +102,18 @@ class HostCircuitBreakerService {
         state.lastFailureType = type
 
         if state.status == .halfOpen {
+            state.consecutiveTrips += 1
             state.status = .open
             state.openedAt = Date()
             state.halfOpenProbes = 0
-            logger.log("CircuitBreaker: \(key) HALF-OPEN → OPEN (probe failed: \(type.rawValue))", category: .network, level: .warning)
+            state.effectiveCooldown = computeCooldown(for: type, consecutiveTrips: state.consecutiveTrips)
+            logger.log("CircuitBreaker: \(key) HALF-OPEN → OPEN (probe failed: \(type.rawValue)) cooldown=\(Int(state.effectiveCooldown))s (trip #\(state.consecutiveTrips))", category: .network, level: .warning)
         } else if state.weightedFailureScore >= failureThreshold * 2 {
+            state.consecutiveTrips += 1
             state.status = .open
             state.openedAt = Date()
-            logger.log("CircuitBreaker: \(key) TRIPPED OPEN — weighted score \(state.weightedFailureScore), \(state.failureCount) failures, last: \(type.rawValue)", category: .network, level: .critical)
+            state.effectiveCooldown = computeCooldown(for: type, consecutiveTrips: state.consecutiveTrips)
+            logger.log("CircuitBreaker: \(key) TRIPPED OPEN — weighted score \(state.weightedFailureScore), \(state.failureCount) failures, last: \(type.rawValue), cooldown=\(Int(state.effectiveCooldown))s", category: .network, level: .critical)
         }
 
         hostStates[key] = state
@@ -116,6 +131,8 @@ class HostCircuitBreakerService {
                 state.weightedFailureScore = 0
                 state.openedAt = nil
                 state.halfOpenProbes = 0
+                state.consecutiveTrips = 0
+                state.effectiveCooldown = baseCooldownSeconds
                 logger.log("CircuitBreaker: \(key) HALF-OPEN → CLOSED (probes succeeded)", category: .network, level: .success)
             }
         } else {
@@ -134,13 +151,13 @@ class HostCircuitBreakerService {
     func cooldownRemaining(host: String, path: String? = nil) -> TimeInterval {
         let key = circuitKey(host: host, path: path)
         guard let state = hostStates[key], state.status == .open, let opened = state.openedAt else { return 0 }
-        return max(0, cooldownSeconds - Date().timeIntervalSince(opened))
+        return max(0, state.effectiveCooldown - Date().timeIntervalSince(opened))
     }
 
     func allOpenCircuits() -> [(key: String, failureCount: Int, remainingSeconds: Int, lastFailure: String)] {
         hostStates.compactMap { key, state in
             guard state.status == .open || state.status == .halfOpen else { return nil }
-            let remaining = state.openedAt.map { Int(max(0, cooldownSeconds - Date().timeIntervalSince($0))) } ?? 0
+            let remaining = state.openedAt.map { Int(max(0, state.effectiveCooldown - Date().timeIntervalSince($0))) } ?? 0
             return (key, state.failureCount, remaining, state.lastFailureType?.rawValue ?? "unknown")
         }.sorted { $0.remainingSeconds > $1.remainingSeconds }
     }
@@ -154,6 +171,14 @@ class HostCircuitBreakerService {
     func resetAll() {
         hostStates.removeAll()
         logger.log("CircuitBreaker: all circuits RESET", category: .network, level: .info)
+    }
+
+    private func computeCooldown(for failureType: FailureType, consecutiveTrips: Int) -> TimeInterval {
+        let typeCooldown = cooldownByFailureType[failureType] ?? baseCooldownSeconds
+        let escalationMultiplier = min(4.0, pow(1.5, Double(max(0, consecutiveTrips - 1))))
+        let cooldown = typeCooldown * escalationMultiplier
+        let maxCooldown: TimeInterval = 300
+        return min(maxCooldown, cooldown)
     }
 
     private func circuitKey(host: String, path: String?) -> String {
