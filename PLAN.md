@@ -22,9 +22,20 @@ Adds AI fallback to the login outcome classifier when static keyword matching pr
 
 ---
 
-## Parts 3-10: Planned
+## Part 3 of 10: AI-Powered Proxy & Network Strategy ✅
 
-3. **AI-Powered Proxy & Network Strategy** — AI analyzes proxy success rates per host and optimizes rotation
+AI tracks per-host proxy success rates, block rates, latency, and challenge detection — then optimizes proxy selection and rotation using learned patterns.
+
+- [x] AIProxyStrategyService — per-host proxy profiles with composite scoring, cooldowns, and AI-optimized weights
+- [x] AI proxy ranking via Rork Toolkit — periodically sends proxy performance data to AI for ranking/cooldown recommendations
+- [x] NetworkSessionFactory integration — AI-selected proxies used in SOCKS5 proxy selection
+- [x] DeviceProxyService integration — AI-selected proxies used in unified IP rotation
+- [x] LoginAutomationEngine integration — outcome recording feeds proxy performance data back into the AI strategy
+
+---
+
+## Parts 4-10: Planned
+
 4. **AI Challenge Page Solver** — AI classifies and suggests bypass strategies for challenge pages
 5. **AI Login URL Optimizer** — AI ranks and rotates login URLs based on success/block rates
 6. **AI Fingerprint Tuning** — AI adjusts browser fingerprint parameters based on detection patterns

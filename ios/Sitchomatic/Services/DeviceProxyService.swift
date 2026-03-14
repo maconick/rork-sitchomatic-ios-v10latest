@@ -87,6 +87,7 @@ class DeviceProxyService {
     private let resilience = NetworkResilienceService.shared
     private let scoring = ProxyScoringService.shared
     private let connectionPool = ProxyConnectionPool.shared
+    private let aiProxyStrategy = AIProxyStrategyService.shared
     private let logger = DebugLogger.shared
 
     var localProxyEnabled: Bool = true {
@@ -830,6 +831,10 @@ class DeviceProxyService {
     private func nextFromSOCKS5(_ proxies: [ProxyConfig]) -> ActiveNetworkConfig? {
         let working = proxies.filter { $0.isWorking || $0.lastTested == nil }
         if !working.isEmpty {
+            if let aiPick = aiProxyStrategy.bestProxy(for: "unified", from: working, target: .joe) {
+                logger.log("DeviceProxy: AI-selected SOCKS5 \(aiPick.displayString)", category: .proxy, level: .debug)
+                return .socks5(aiPick)
+            }
             let proxy = working[socks5Index % working.count]
             socks5Index += 1
             return .socks5(proxy)

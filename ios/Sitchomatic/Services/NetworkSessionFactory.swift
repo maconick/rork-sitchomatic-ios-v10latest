@@ -47,6 +47,7 @@ class NetworkSessionFactory {
     private let scoring = ProxyScoringService.shared
     private let resilience = NetworkResilienceService.shared
     private let logger = DebugLogger.shared
+    private let aiProxyStrategy = AIProxyStrategyService.shared
 
     private var joeWGIndex: Int = 0
     private var ignitionWGIndex: Int = 0
@@ -81,6 +82,12 @@ class NetworkSessionFactory {
             return .direct
 
         case .proxy:
+            let allProxies = proxyService.proxies(for: target).filter { $0.isWorking || $0.lastTested == nil }
+            let targetHost = hostForTarget(target)
+            if let aiPick = aiProxyStrategy.bestProxy(for: targetHost, from: allProxies, target: target) {
+                logger.log("NetworkFactory: AI-selected SOCKS5 \(aiPick.displayString) for \(target.rawValue)", category: .proxy, level: .debug)
+                return .socks5(aiPick)
+            }
             if let proxy = proxyService.nextWorkingProxy(for: target) {
                 logger.log("NetworkFactory: assigned SOCKS5 \(proxy.displayString) for \(target.rawValue)", category: .proxy, level: .debug)
                 return .socks5(proxy)
@@ -460,6 +467,14 @@ class NetworkSessionFactory {
                 }
             }
             connection.start(queue: queue)
+        }
+    }
+
+    private func hostForTarget(_ target: ProxyRotationService.ProxyTarget) -> String {
+        switch target {
+        case .joe: return "www.joefortune.com"
+        case .ignition: return "www.ignitioncasino.eu"
+        case .ppsr: return "ppsr.dmv.ca.gov"
         }
     }
 

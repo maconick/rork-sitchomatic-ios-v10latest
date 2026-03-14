@@ -39,6 +39,7 @@ class LoginAutomationEngine {
     private let adaptiveRetry = AdaptiveRetryService.shared
     private let urlQualityScoring = URLQualityScoringService.shared
     private let confidenceEngine = ConfidenceResultEngine.shared
+    private let aiProxyStrategy = AIProxyStrategyService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
@@ -154,6 +155,23 @@ class LoginAutomationEngine {
                 urlQualityScoring.recordLoginSuccess(urlString: targetURL.absoluteString)
                 hostFingerprint.recordPatternOutcome(host: host, pattern: "last_used", success: true)
             }
+        }
+
+        let proxyId = extractProxyId(from: netConfig)
+        if let proxyId {
+            let latencyMs = attempt.startedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
+            let isSuccess = outcome == .success || outcome == .noAcc || outcome == .permDisabled || outcome == .tempDisabled
+            let isBlocked = outcome == .connectionFailure
+            let isChallenge = outcome == .redBannerError || outcome == .smsDetected
+            aiProxyStrategy.recordOutcome(
+                proxyId: proxyId,
+                host: host,
+                target: proxyTarget.rawValue,
+                success: isSuccess,
+                latencyMs: latencyMs,
+                blocked: isBlocked,
+                challengeDetected: isChallenge
+            )
         }
 
         if let started = attempt.startedAt {
@@ -1341,6 +1359,15 @@ class LoginAutomationEngine {
             return (visible > 0, "\(visible) visible / \(total) total")
         }
         return (false, "JS eval failed or webView nil")
+    }
+
+    private func extractProxyId(from config: ActiveNetworkConfig) -> String? {
+        switch config {
+        case .socks5(let proxy): return proxy.id.uuidString
+        case .wireGuardDNS(let wg): return wg.uniqueKey
+        case .openVPNProxy(let ovpn): return ovpn.uniqueKey
+        case .direct: return nil
+        }
     }
 
     private func makeSlowDebugCaptureTaskIfNeeded(session: LoginSiteWebSession, attempt: LoginAttempt, sessionId: String) -> Task<Void, Never>? {
