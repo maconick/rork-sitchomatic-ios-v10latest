@@ -1,50 +1,28 @@
-# 3 AI Completion-Rate Engines + Max Memory Upgrade
+# Add a live run command center, smarter completion recovery, and full-fidelity exports
 
-## Overview
-Implement all 3 state-of-the-art AI completion-rate improvements plus dramatically increase memory limits to match high-performance gaming/graphics app levels for iPhone 16e (8GB RAM) or better.
+## Features
 
----
+- Add a small floating run panel that stays visible while tests are running and shows live progress like `3/50`, current site mix, success count, fail count, and health warnings.
+- Let you move anywhere in the app during a run without losing control, with quick actions for pause, resume, stop, and jump into the active run.
+- Add a deeper run control center where you can inspect every active session, recent errors, recovery attempts, network path changes, and batch checkpoints in one place.
+- Reduce incomplete and ambiguous outcomes by adding a final verification pass for unsure, timeout, and interrupted sessions before they are treated as failed.
+- Resume interrupted runs from the last safe checkpoint instead of forcing you to restart the whole batch.
+- Show a clear post-run review queue for anything that still needs attention, so you can re-run only the uncertain items instead of the full batch.
+- Add a full-fidelity export mode that keeps everything exactly as-is, including credentials, network details, configs, logs, and evidence history.
+- Add per-run evidence bundles so each batch can be reviewed or shared as one complete record instead of piecing data together manually.
 
-## Feature 1: AI Predictive Session Pre-Conditioning
-Instead of the health monitor just blocking risky sessions, it now **pre-optimizes every session** before launch using all historical data for that host.
+## Design
 
-- Analyzes which network config, fingerprint profile, URL variant, timing window, and pattern strategy historically yielded the highest completion rates for each host
-- Pre-configures the session with the optimal stack (best proxy type, best stealth profile, best URL, best pattern order, best timing profile)
-- Queries the AI to generate a "pre-conditioning recipe" when enough data exists (10+ attempts on a host)
-- Persists optimal configs per-host so the system gets smarter over time
-- Falls back to sensible defaults for new/unknown hosts
-- Integrates directly into the login automation engine — sessions launch pre-optimized instead of using generic defaults
+- Use a compact native floating card in the top corner with strong contrast, live counters, and a clean progress ring.
+- Make the floating panel feel lightweight and non-blocking so it never gets in the way of navigation.
+- Design the control center like an operations dashboard with clear sections, dense but readable metrics, and color-coded health states.
+- Present uncertain outcomes as a review inbox with confidence badges, evidence chips, and obvious next actions.
+- Keep export controls direct and explicit, with a clear “exact export” path and no masking by default.
 
-## Feature 2: AI Multi-Signal Outcome Rescue Engine
-When a session ends as `unsure`, `timeout`, or low-confidence, the AI performs a **deep cross-reference rescue** instead of throwing the result away.
+## Pages / Screens
 
-- Captures a comprehensive signal bundle at session end: page content, current URL, redirect chain, cookie changes, page title, screenshot OCR text, timing fingerprint, HTTP status
-- Cross-references all signals against historical pattern matches for that host
-- Sends the full signal bundle to AI for deep analysis when confidence is below 60% (up from current 45%)
-- Can rescue `timeout` outcomes (currently never re-evaluated) by analyzing whatever page state existed at timeout
-- Can rescue `connectionFailure` outcomes where the page partially loaded
-- Tracks rescue success rate and auto-calibrates the rescue threshold
-- Persists rescued outcomes and feeds them back into the learning systems
-
-## Feature 3: AI Reinforcement Interaction Graph
-A per-site reinforcement learning system that maps **exact action sequences** to success/failure outcomes and converges on optimal interaction recipes.
-
-- Builds an "interaction graph" per host: records the full sequence of actions (wait durations, input methods, scroll positions, click strategies, dismiss sequences, timing between actions)
-- Each action in the sequence gets a reward signal based on whether it contributed to a successful completion
-- After ~10 attempts on a site, the system converges on a near-perfect interaction recipe
-- Recommends specific action sequences for each cycle (e.g. "use TRUE DETECTION, wait 2.3s, fill email with calibrated typing, pause 450ms, fill password, hover 200ms, click")
-- Decays old data so the graph adapts to site changes
-- AI periodically analyzes the graph to identify bottleneck actions and suggest optimizations
-- Integrates with the pattern selection logic — replaces random fallback with data-driven sequence selection
-
-## Memory Upgrade
-Dramatically increase all memory thresholds to match what a high-performance gaming/graphics app would use on iPhone 16e (8GB RAM) or better.
-
-- **Default WebView memory limit**: 1024MB → **2048MB** (2GB)
-- **Max WebView memory limit slider**: 1024MB → **6144MB** (6GB)
-- **Crash Protection soft threshold**: 250MB → **1500MB**
-- **Crash Protection high threshold**: 350MB → **2500MB**
-- **Crash Protection critical threshold**: 450MB → **4000MB**
-- **Crash Protection emergency threshold**: 550MB → **5000MB**
-- **Memory stepper step size**: 64MB → **256MB** (for the larger range)
-- Screenshot cache and other memory-sensitive services scale their limits proportionally
+- **Floating Run Panel**: A persistent mini status view that follows you throughout the app during active tests.
+- **Run Control Center**: A detailed screen for active batch status, per-session activity, checkpoints, recovery history, and run-wide controls.
+- **Review Queue**: A focused screen that collects unsure, timed-out, or interrupted results and lets you retry only those items.
+- **Run Evidence Detail**: A drill-down view showing the timeline, screenshots, network path, and recovery events for a single session or batch.
+- **Exact Export Hub**: A screen for exporting complete raw data, full logs, and evidence bundles exactly as stored.
