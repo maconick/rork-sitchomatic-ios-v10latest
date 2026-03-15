@@ -1707,7 +1707,7 @@ struct AutomationSettingsView: View {
             if !vm.automationSettings.freshWebViewPerAttempt {
                 Stepper("WebView Pool: \(vm.automationSettings.reuseWebViewPoolSize)", value: $vm.automationSettings.reuseWebViewPoolSize, in: 1...24)
             }
-            Stepper("Memory Limit: \(vm.automationSettings.webViewMemoryLimitMB)MB", value: $vm.automationSettings.webViewMemoryLimitMB, in: 64...1024, step: 64)
+            Stepper("Memory Limit: \(vm.automationSettings.webViewMemoryLimitMB)MB", value: $vm.automationSettings.webViewMemoryLimitMB, in: 256...6144, step: 256)
             Toggle("JavaScript Enabled", isOn: $vm.automationSettings.webViewJSEnabled).tint(accentColor)
             Toggle("Image Loading", isOn: $vm.automationSettings.webViewImageLoadingEnabled).tint(accentColor)
         } header: {

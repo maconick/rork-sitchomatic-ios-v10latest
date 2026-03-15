@@ -6,9 +6,9 @@ class ScreenshotCacheService {
     static let shared = ScreenshotCacheService()
 
     private let cacheDirectory: URL
-    private(set) var maxMemoryCacheCount: Int = 100
-    private(set) var maxDiskCacheCount: Int = 500
-    private let maxDiskCacheSizeBytes: Int64 = 200 * 1024 * 1024
+    private(set) var maxMemoryCacheCount: Int = 300
+    private(set) var maxDiskCacheCount: Int = 1500
+    private let maxDiskCacheSizeBytes: Int64 = 500 * 1024 * 1024
     private var memoryCache: [String: UIImage] = [:]
     private var accessOrder: [String] = []
     private let logger = DebugLogger.shared

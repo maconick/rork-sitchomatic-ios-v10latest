@@ -8,10 +8,10 @@ final class CrashProtectionService {
     private let logger = DebugLogger.shared
     private var memoryTrimTimer: Task<Void, Never>?
     private var isRegistered: Bool = false
-    private let softMemoryThresholdMB: Int = 250
-    private let memoryThresholdMB: Int = 350
-    private let criticalMemoryThresholdMB: Int = 450
-    private let emergencyMemoryThresholdMB: Int = 550
+    private let softMemoryThresholdMB: Int = 1500
+    private let memoryThresholdMB: Int = 2500
+    private let criticalMemoryThresholdMB: Int = 4000
+    private let emergencyMemoryThresholdMB: Int = 5000
     private var consecutiveCriticalChecks: Int = 0
     private var lastEmergencyCleanup: Date = .distantPast
     private var emergencyBatchKillCount: Int = 0
