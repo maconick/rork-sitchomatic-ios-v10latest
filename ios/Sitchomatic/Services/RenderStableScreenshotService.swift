@@ -13,12 +13,18 @@ class RenderStableScreenshotService {
 
     func captureStableScreenshot(from webView: WKWebView?, fallbackTimeout: TimeInterval = 3.0) async -> UIImage? {
         guard let webView else { return nil }
+        guard webView.bounds.width > 0, webView.bounds.height > 0 else { return nil }
+        guard !webView.isLoading || webView.url != nil else { return nil }
 
         let readyState = try? await webView.evaluateJavaScript("document.readyState") as? String
+        if readyState == nil {
+            return nil
+        }
         if readyState != "complete" {
             let start = Date()
             while Date().timeIntervalSince(start) < 2.0 {
                 let state = try? await webView.evaluateJavaScript("document.readyState") as? String
+                if state == nil { return nil }
                 if state == "complete" { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
@@ -42,9 +48,17 @@ class RenderStableScreenshotService {
         var stableCount = 0
 
         for check in 0..<maxStabilityChecks {
+            guard webView.bounds.width > 0, webView.bounds.height > 0 else { return nil }
             let config = WKSnapshotConfiguration()
             config.rect = webView.bounds
-            guard let snapshot = try? await webView.takeSnapshot(configuration: config) else {
+            let snapshot: UIImage?
+            do {
+                snapshot = try await webView.takeSnapshot(configuration: config)
+            } catch {
+                logger.log("RenderStable: takeSnapshot failed (check \(check)): \(error.localizedDescription)", category: .screenshot, level: .debug)
+                return nil
+            }
+            guard let snapshot else {
                 try? await Task.sleep(for: .milliseconds(stabilityCheckIntervalMs))
                 continue
             }
@@ -73,9 +87,15 @@ class RenderStableScreenshotService {
             try? await Task.sleep(for: .milliseconds(stabilityCheckIntervalMs))
         }
 
+        guard webView.bounds.width > 0, webView.bounds.height > 0 else { return nil }
         let config = WKSnapshotConfiguration()
         config.rect = webView.bounds
-        return try? await webView.takeSnapshot(configuration: config)
+        do {
+            return try await webView.takeSnapshot(configuration: config)
+        } catch {
+            logger.log("RenderStable: final takeSnapshot failed: \(error.localizedDescription)", category: .screenshot, level: .debug)
+            return nil
+        }
     }
 
     private func fastImageHash(_ image: UIImage) -> Int {

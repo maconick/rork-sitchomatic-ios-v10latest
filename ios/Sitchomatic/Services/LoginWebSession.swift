@@ -617,6 +617,10 @@ class LoginWebSession: NSObject {
 
     func captureScreenshot() async -> UIImage? {
         guard let webView else { return nil }
+        guard webView.bounds.width > 0, webView.bounds.height > 0 else { return nil }
+        if webView.url == nil && !webView.isLoading {
+            return nil
+        }
         let config = WKSnapshotConfiguration()
         config.rect = webView.bounds
         do {

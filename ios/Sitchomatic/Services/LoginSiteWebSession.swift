@@ -1560,18 +1560,30 @@ class LoginSiteWebSession: NSObject {
 
     func captureScreenshot() async -> UIImage? {
         guard let webView else { return nil }
+        guard webView.bounds.width > 0, webView.bounds.height > 0 else { return nil }
+        guard !isWebViewProcessTerminated(webView) else { return nil }
         return await RenderStableScreenshotService.shared.captureStableScreenshot(from: webView)
     }
 
     func captureScreenshotFast() async -> UIImage? {
         guard let webView else { return nil }
+        guard webView.bounds.width > 0, webView.bounds.height > 0 else { return nil }
+        guard !isWebViewProcessTerminated(webView) else { return nil }
         let config = WKSnapshotConfiguration()
         config.rect = webView.bounds
         do {
             return try await webView.takeSnapshot(configuration: config)
         } catch {
+            logger.log("LoginSiteWebSession: captureScreenshotFast failed: \(error.localizedDescription)", category: .screenshot, level: .debug)
             return nil
         }
+    }
+
+    private func isWebViewProcessTerminated(_ wv: WKWebView) -> Bool {
+        if wv.url == nil && !wv.isLoading && isPageLoaded {
+            return true
+        }
+        return false
     }
 
     func fillForgotPasswordEmail(_ email: String) async -> (success: Bool, detail: String) {
