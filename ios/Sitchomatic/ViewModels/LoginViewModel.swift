@@ -621,6 +621,31 @@ class LoginViewModel {
 
     private func handleOutcome(_ outcome: LoginOutcome, credential: LoginCredential, attempt: LoginAttempt) {
         let duration = attempt.duration ?? 0
+        let reviewQueue = ReviewQueueService.shared
+        let confidence = attempt.confidenceScore ?? 1.0
+
+        if reviewQueue.shouldRouteToReview(outcome: outcome, confidence: confidence) {
+            attempt.routedToReview = true
+            reviewQueue.addItem(
+                credentialId: credential.id,
+                username: credential.username,
+                password: credential.password,
+                suggestedOutcome: outcome,
+                confidence: confidence,
+                signalBreakdown: attempt.confidenceSignals,
+                reasoning: attempt.confidenceReasoning ?? "No reasoning available",
+                screenshotIds: attempt.screenshotIds,
+                logs: attempt.logs,
+                testedURL: attempt.detectedURL ?? "",
+                networkMode: attempt.networkModeLabel ?? "unknown",
+                vpnServer: attempt.assignedVPNServer,
+                vpnIP: attempt.assignedVPNIP,
+                replayLog: attempt.replayLog
+            )
+            credential.status = .unsure
+            log("\(credential.username) — ROUTED TO REVIEW (confidence \(String(format: "%.0f%%", confidence * 100)), suggested: \(outcome))", level: .warning)
+            return
+        }
 
         switch outcome {
         case .success:

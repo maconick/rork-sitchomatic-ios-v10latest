@@ -385,9 +385,32 @@ class LoginAutomationEngine {
             }
         }
 
-        replayLogger.log(sessionId: sessionId, action: "complete", detail: "outcome=\(finalOutcomeResult)", level: finalOutcomeResult == .success ? "success" : "error")
+        let pageContent = attempt.responseSnippet ?? ""
+        let currentURL = attempt.detectedURL ?? targetURL.absoluteString
+        let confidenceResult = await confidenceEngine.evaluate(
+            pageContent: pageContent,
+            currentURL: currentURL,
+            preLoginURL: targetURL.absoluteString,
+            pageTitle: "",
+            welcomeTextFound: false,
+            redirectedToHomepage: currentURL.lowercased() != targetURL.absoluteString.lowercased() && !currentURL.lowercased().contains("/login"),
+            navigationDetected: currentURL != targetURL.absoluteString,
+            contentChanged: !pageContent.isEmpty,
+            responseTimeMs: aiLatencyMs,
+            screenshot: attempt.responseSnapshot,
+            httpStatus: nil
+        )
+        attempt.confidenceScore = confidenceResult.confidence
+        attempt.confidenceSignals = confidenceResult.signalBreakdown
+        attempt.confidenceReasoning = confidenceResult.reasoning
+        attempt.networkModeLabel = netConfig.label
+
+        replayLogger.log(sessionId: sessionId, action: "complete", detail: "outcome=\(finalOutcomeResult) confidence=\(String(format: "%.0f%%", confidenceResult.confidence * 100))", level: finalOutcomeResult == .success ? "success" : "error")
         replayLogger.addMetadata(sessionId: sessionId, key: "outcome", value: "\(finalOutcomeResult)")
-        if let replayLog = replayLogger.endSession(id: sessionId, outcome: "\(finalOutcomeResult)") {
+        replayLogger.addMetadata(sessionId: sessionId, key: "confidence", value: String(format: "%.2f", confidenceResult.confidence))
+        let completedReplayLog = replayLogger.endSession(id: sessionId, outcome: "\(finalOutcomeResult)")
+        if let replayLog = completedReplayLog {
+            attempt.replayLog = replayLog
             if let jsonData = replayLogger.exportAsJSON(replayLog) {
                 let dir = FileManager.default.temporaryDirectory.appendingPathComponent("session_replays", isDirectory: true)
                 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -396,7 +419,7 @@ class LoginAutomationEngine {
             }
         }
 
-        logger.endSession(sessionId, category: .login, message: "Login test COMPLETE: \(finalOutcomeResult) for \(attempt.credential.username)", level: finalOutcomeResult == .success ? .success : finalOutcomeResult == .noAcc ? .warning : .error)
+        logger.endSession(sessionId, category: .login, message: "Login test COMPLETE: \(finalOutcomeResult) for \(attempt.credential.username) confidence=\(String(format: "%.0f%%", confidenceResult.confidence * 100))", level: finalOutcomeResult == .success ? .success : finalOutcomeResult == .noAcc ? .warning : .error)
 
         return finalOutcomeResult
     }

@@ -19,6 +19,12 @@ class LoginAttempt: Identifiable {
     var assignedVPNServer: String?
     var assignedVPNIP: String?
     var assignedVPNCountry: String?
+    var confidenceScore: Double?
+    var confidenceSignals: [ConfidenceResultEngine.SignalContribution] = []
+    var confidenceReasoning: String?
+    var networkModeLabel: String?
+    var replayLog: SessionReplayLog?
+    var routedToReview: Bool = false
 
     init(credential: LoginCredential, sessionIndex: Int) {
         self.id = UUID()
