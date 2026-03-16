@@ -176,6 +176,12 @@ class HybridNetworkingService {
         }.joined(separator: " | ")
     }
 
+    private static let proxyRequiredTargets: Set<ProxyRotationService.ProxyTarget> = [.joe, .ignition]
+
+    private func targetRequiresProxy(_ target: ProxyRotationService.ProxyTarget) -> Bool {
+        Self.proxyRequiredTargets.contains(target)
+    }
+
     private func availableMethodsRankedByAI(for target: ProxyRotationService.ProxyTarget) -> [HybridMethod] {
         var available: [HybridMethod] = []
 
@@ -190,7 +196,12 @@ class HybridNetworkingService {
         let socks5 = proxyService.proxies(for: target).filter { $0.isWorking || $0.lastTested == nil }
         if !socks5.isEmpty { available.append(.socks5) }
 
-        available.append(.httpsDOH)
+        if !targetRequiresProxy(target) {
+            available.append(.httpsDOH)
+        } else if available.isEmpty {
+            logger.log("Hybrid: \(target.rawValue) requires proxy but none available — HTTPS/DoH fallback forced (will likely fail)", category: .network, level: .critical)
+            available.append(.httpsDOH)
+        }
 
         let host = hostForTarget(target)
         let degraded = predictiveRoute.degradedMethods(for: host)
@@ -221,6 +232,8 @@ class HybridNetworkingService {
     }
 
     private func resolveConfig(for method: HybridMethod, target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {
+        let needsProxy = targetRequiresProxy(target)
+
         switch method {
         case .wireProxy:
             let wireProxyBridge = WireProxyBridge.shared
@@ -232,12 +245,14 @@ class HybridNetworkingService {
             if let wg = configs.randomElement() {
                 return .wireGuardDNS(wg)
             }
+            if needsProxy { return cascadeFallbackProxy(target: target) }
             return .direct
 
         case .nodeMaven:
             if let proxy = NodeMavenService.shared.generateProxyConfig(sessionId: "hybrid_\(Int(Date().timeIntervalSince1970))_\(sessionIndex)") {
                 return .socks5(proxy)
             }
+            if needsProxy { return cascadeFallbackProxy(target: target) }
             return .direct
 
         case .openVPN:
@@ -253,6 +268,7 @@ class HybridNetworkingService {
             if let ovpn = configs.randomElement() {
                 return .openVPNProxy(ovpn)
             }
+            if needsProxy { return cascadeFallbackProxy(target: target) }
             return .direct
 
         case .socks5:
@@ -264,11 +280,53 @@ class HybridNetworkingService {
             if let proxy = proxies.randomElement() {
                 return .socks5(proxy)
             }
+            if needsProxy { return cascadeFallbackProxy(target: target) }
             return .direct
 
         case .httpsDOH:
             return .direct
         }
+    }
+
+    private func cascadeFallbackProxy(target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {
+        let localProxy = LocalProxyServer.shared
+
+        if WireProxyBridge.shared.isActive, localProxy.isRunning, localProxy.wireProxyMode {
+            logger.log("Hybrid: cascade fallback → WireProxy for \(target.rawValue)", category: .network, level: .info)
+            return .socks5(localProxy.localProxyConfig)
+        }
+
+        if OpenVPNProxyBridge.shared.isActive, localProxy.isRunning, localProxy.openVPNProxyMode {
+            logger.log("Hybrid: cascade fallback → OpenVPN for \(target.rawValue)", category: .network, level: .info)
+            return .socks5(localProxy.localProxyConfig)
+        }
+
+        if NodeMavenService.shared.isEnabled,
+           let proxy = NodeMavenService.shared.generateProxyConfig(sessionId: "cascade_\(Int(Date().timeIntervalSince1970))") {
+            logger.log("Hybrid: cascade fallback → NodeMaven for \(target.rawValue)", category: .network, level: .info)
+            return .socks5(proxy)
+        }
+
+        let socks5 = proxyService.proxies(for: target).filter { $0.isWorking || $0.lastTested == nil }
+        if let proxy = socks5.randomElement() {
+            logger.log("Hybrid: cascade fallback → SOCKS5 \(proxy.displayString) for \(target.rawValue)", category: .network, level: .info)
+            return .socks5(proxy)
+        }
+
+        let wgConfigs = proxyService.wgConfigs(for: target).filter { $0.isEnabled }
+        if let wg = wgConfigs.randomElement() {
+            logger.log("Hybrid: cascade fallback → WireGuard config for \(target.rawValue)", category: .network, level: .info)
+            return .wireGuardDNS(wg)
+        }
+
+        let ovpnConfigs = proxyService.vpnConfigs(for: target).filter { $0.isEnabled }
+        if let ovpn = ovpnConfigs.randomElement() {
+            logger.log("Hybrid: cascade fallback → OpenVPN config for \(target.rawValue)", category: .network, level: .info)
+            return .openVPNProxy(ovpn)
+        }
+
+        logger.log("Hybrid: NO proxy available for \(target.rawValue) — direct will likely fail", category: .network, level: .critical)
+        return .direct
     }
 
     private func hostForTarget(_ target: ProxyRotationService.ProxyTarget) -> String {

@@ -415,81 +415,42 @@ class NetworkResilienceService {
         return String(format: "%.1f MB/s", bandwidthEstimateBps / (1024 * 1024))
     }
 
-    // MARK: - DNS Failover Strategy
+    // MARK: - DNS Failover Strategy (delegated to DNSPoolService)
 
-    private let dnsResolvers: [(label: String, url: String)] = [
-        ("Cloudflare", "https://cloudflare-dns.com/dns-query"),
-        ("Google", "https://dns.google/resolve"),
-        ("Quad9", "https://dns.quad9.net:5053/dns-query"),
-    ]
-    private var dnsResolverHealth: [String: Bool] = [:]
+    private let dnsPool = DNSPoolService.shared
     private(set) var activeDNSResolver: String = "Cloudflare"
 
     func resolveDNS(hostname: String) async -> String? {
-        for resolver in dnsResolvers {
-            if dnsResolverHealth[resolver.label] == false { continue }
-
-            let resolved = await queryDoH(hostname: hostname, resolver: resolver)
-            if let resolved {
-                dnsResolverHealth[resolver.label] = true
-                if activeDNSResolver != resolver.label {
-                    activeDNSResolver = resolver.label
-                    logger.log("Resilience: DNS failover — now using \(resolver.label)", category: .network, level: .info)
-                }
-                return resolved
-            } else {
-                dnsResolverHealth[resolver.label] = false
-                logger.log("Resilience: DNS resolver \(resolver.label) FAILED for \(hostname)", category: .network, level: .warning)
+        if let answer = await dnsPool.resolveWithFullFallback(hostname: hostname) {
+            if activeDNSResolver != answer.provider {
+                activeDNSResolver = answer.provider
+                logger.log("Resilience: DNS failover — now using \(answer.provider) [\(answer.protocolUsed.rawValue)]", category: .network, level: .info)
             }
+            return answer.ip
         }
-
-        dnsResolverHealth.removeAll()
-        logger.log("Resilience: all DNS resolvers failed for \(hostname) — resetting health", category: .network, level: .error)
+        logger.log("Resilience: all DNS pool servers failed for \(hostname)", category: .network, level: .error)
         return nil
     }
 
-    private nonisolated func queryDoH(hostname: String, resolver: (label: String, url: String)) async -> String? {
-        let urlString = "\(resolver.url)?name=\(hostname)&type=A"
-        guard let url = URL(string: urlString) else { return nil }
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 5
-        config.timeoutIntervalForResource = 6
-        let session = URLSession(configuration: config)
-        defer { session.invalidateAndCancel() }
-
-        do {
-            var request = URLRequest(url: url)
-            request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
-            request.timeoutInterval = 4
-            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let answers = json["Answer"] as? [[String: Any]] {
-                for answer in answers {
-                    if let type = answer["type"] as? Int, type == 1,
-                       let ip = answer["data"] as? String {
-                        return ip
-                    }
-                }
-            }
-        } catch {}
-        return nil
+    func preflightDNSCheck(hostnames: [String]) async -> (healthy: Int, failed: Int) {
+        let poolResult = await dnsPool.preflightTestAllActive()
+        for hostname in hostnames {
+            let _ = await dnsPool.resolveWithFullFallback(hostname: hostname)
+        }
+        return (poolResult.healthy, poolResult.failed)
     }
 
     func dnsResolverStatus() -> [(label: String, healthy: Bool)] {
-        dnsResolvers.map { resolver in
-            (resolver.label, dnsResolverHealth[resolver.label] ?? true)
+        dnsPool.managedServers.map { server in
+            (server.displayLabel, server.isHealthy)
         }
     }
 
     func resetDNSHealth() {
-        dnsResolverHealth.removeAll()
-        activeDNSResolver = dnsResolvers.first?.label ?? "Cloudflare"
-        logger.log("Resilience: DNS resolver health reset", category: .network, level: .info)
+        dnsPool.resetAutoDisabled()
+        dnsPool.invalidateCache()
+        activeDNSResolver = dnsPool.activeServers.first?.displayLabel ?? "Cloudflare"
+        logger.log("Resilience: DNS pool health reset", category: .network, level: .info)
     }
 
     // MARK: - Connection Multiplexing Awareness
