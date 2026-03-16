@@ -440,6 +440,14 @@ class NetworkResilienceService {
         return (poolResult.healthy, poolResult.failed)
     }
 
+    func preflightDNSCheckDetailed(hostnames: [String]) async -> (healthy: Int, failed: Int, autoDisabled: [String]) {
+        let poolResult = await dnsPool.preflightTestAllActive()
+        for hostname in hostnames {
+            let _ = await dnsPool.resolveWithFullFallback(hostname: hostname)
+        }
+        return (poolResult.healthy, poolResult.failed, poolResult.autoDisabledDuringTest)
+    }
+
     func dnsResolverStatus() -> [(label: String, healthy: Bool)] {
         dnsPool.managedServers.map { server in
             (server.displayLabel, server.isHealthy)
@@ -478,8 +486,8 @@ class NetworkResilienceService {
 
         let config = URLSessionConfiguration.ephemeral
         config.httpMaximumConnectionsPerHost = 4
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 30
+        config.timeoutIntervalForRequest = TimeoutResolver.resolveRequestTimeout(15)
+        config.timeoutIntervalForResource = TimeoutResolver.resolveResourceTimeout(30)
         config.httpShouldUsePipelining = true
 
         if let proxy = proxyConfig {

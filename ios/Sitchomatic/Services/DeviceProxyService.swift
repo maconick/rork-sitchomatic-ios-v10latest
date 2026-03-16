@@ -1051,6 +1051,9 @@ class DeviceProxyService {
         }
 
         if ipRoutingMode == .separatePerSession, localProxyEnabled, localProxy.isRunning {
+            if perSessionWireProxyActive, wireProxyBridge.isActive, localProxy.wireProxyMode {
+                return localProxy.localProxyConfig
+            }
             if perSessionOpenVPNActive, ovpnBridge.isActive, localProxy.openVPNProxyMode {
                 return localProxy.localProxyConfig
             }

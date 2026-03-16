@@ -1,50 +1,68 @@
-# Smart AI Page Settlement & Button Recovery Detection
+# Fix Networking Issues & Unconnected Code
 
-## What Changes
-
-Two focused improvements replacing fixed wait times with smart AI-driven detection, learned from the attached working script:
+After a full review of all networking services, here are the issues found and fixes planned:
 
 ---
 
-### **Improvement 1: Smart Page Settlement Detection**
+### **Issue 1: Inconsistent Host URLs Between Services**
+`HybridNetworkingService.hostForTarget` returns different hostnames than `NetworkSessionFactory.hostForTarget`:
+- Hybrid: `joefortune24.com`, `ignitioncasino.eu`, `ppsr.com.au`
+- Factory: `www.joefortune.com`, `www.ignitioncasino.eu`, `ppsr.dmv.ca.gov`
 
-**Problem:** After page load, the app blindly waits a fixed 2000ms hoping the page has settled. JavaScript-heavy sites may need 500ms or 8000ms — the fixed wait is either too long (wasting time) or too short (interacting with unready pages).
-
-**Solution:** Replace the fixed `pageLoadExtraDelayMs` wait with an intelligent multi-signal page settlement detector that monitors:
-
-- **Network idle detection** — Injects a JS observer that hooks `XMLHttpRequest` and `fetch` to track in-flight requests. Page is "network idle" when zero requests are pending for 500ms
-- **DOM mutation stability** — Uses a `MutationObserver` to detect when the DOM stops changing. Page is "DOM stable" when no mutations occur for 400ms
-- **Animation completion** — Checks `document.getAnimations()` to see if CSS/JS animations are still running
-- **Document readyState** — Still checked but as one signal among many, not the only one
-- **Login form presence** — Specifically waits until the email/password fields are present AND interactable (not just in DOM but visible, not disabled, not obscured)
-
-The detector waits until **all signals agree** the page is settled, with a maximum timeout of 15 seconds. If settlement happens in 400ms, it proceeds in 400ms. If the page is slow, it waits as long as needed.
-
-This replaces the fixed `pageLoadExtraDelayMs` everywhere it's used.
+This means AI scoring data collected through one path won't match lookups through the other — the AI learns about one hostname but routes using a different one. **Fix:** Unify to a single shared helper.
 
 ---
 
-### **Improvement 2: Smart Login Button State Recovery**
-
-**Problem:** Between submit cycles, the app checks if the button's opacity > 0.8 and isn't disabled, but doesn't detect if the button has returned to its **original visual state** (color, text, size). After a failed login, buttons often go through: original color → loading spinner/translucent → error flash → back to original. The app doesn't wait for that full cycle.
-
-**Solution:** Replace fixed post-submit waits with a button state fingerprint system:
-
-- **Before clicking:** Capture the button's full visual fingerprint — background color (RGB), text content, width/height, opacity, border color, box-shadow, cursor style
-- **After clicking:** Poll the button every 300ms comparing current state to the saved fingerprint
-- **"Recovered" = button matches its original fingerprint** (within tolerance for minor animation jitter)
-- **Also detects intermediate states:** loading spinner text ("Loading...", "Please wait..."), reduced opacity, changed cursor, pointer-events: none — these are all "not yet recovered" signals
-- **Timeout safety:** If the button doesn't recover within 12 seconds, proceed anyway (with a log warning)
-- **AI learning:** Records how long recovery typically takes per host, so future cycles can set tighter expected windows
-
-This replaces the fixed `submitButtonWaitDelayMs` and improves the existing `checkLoginButtonReadiness` / `waitForLoginButtonReady` functions.
+### **Issue 2: `NetworkLayerService` Duplicates `NetworkSessionFactory` Logic But Is Disconnected**
+`NetworkLayerService.resolveActiveConfig()` does its own WireGuard/OpenVPN/SOCKS5 resolution with endpoint testing — but the main automation paths use `NetworkSessionFactory.nextConfig()` instead. The health check results (`wgHealthy`, `ovpnHealthy`) in `NetworkLayerService` are never consumed by the factory or automation engine. **Fix:** Wire the health check results from `NetworkLayerService` into `NetworkSessionFactory` so dead endpoints are skipped automatically.
 
 ---
 
-### **Where These Changes Apply**
+### **Issue 3: `effectiveProxyConfig` Missing Per-Session WireProxy Path**
+In `DeviceProxyService.effectiveProxyConfig`, the per-session mode only checks for OpenVPN bridge but **not** for WireProxy:
+```
+if ipRoutingMode == .separatePerSession, localProxyEnabled, localProxy.isRunning {
+    if perSessionOpenVPNActive, ovpnBridge.isActive, localProxy.openVPNProxyMode {
+        return localProxy.localProxyConfig
+    }
+}
+// Missing: perSessionWireProxyActive check!
+```
+This means per-session WireProxy traffic isn't routed through the local proxy, causing sessions to bypass the tunnel. **Fix:** Add the missing WireProxy per-session check.
 
-- The page settlement detector is used after initial page load AND after any page reload/recovery
-- The button state recovery is used between every submit cycle (cycles 2+)
-- Both feed timing data back to `AITimingOptimizerService` so the AI learns optimal windows per host
-- Existing fixed delay settings become **maximum fallback timeouts** rather than primary waits
-- All existing automation patterns benefit automatically since the changes are at the session/engine level
+---
+
+### **Issue 4: `resolveEffectiveConfig` in Factory Ignores Bridge Mode Context**
+The first two checks in `resolveEffectiveConfig` unconditionally return the local proxy config if WireProxy or OpenVPN bridge is active — even when the incoming config is `.direct` or for a target that shouldn't use the tunnel. This can accidentally route direct-mode traffic through the tunnel. **Fix:** Only apply tunnel routing when the incoming config is the matching type (`.wireGuardDNS` or `.openVPNProxy`).
+
+---
+
+### **Issue 5: `NetworkResilienceService.sharedSession` Uses Hardcoded 15s Timeout**
+The shared TLS session pool uses a fixed 15-second request timeout, ignoring the app's `TimeoutResolver` system. Sessions through this path will timeout prematurely when the app-wide timeout is set higher (e.g., 180s). **Fix:** Use `TimeoutResolver.resolveRequestTimeout()`.
+
+---
+
+### **Issue 6: `HybridNetworkingService` Health Scores Always < 0.85**
+The `calculateHealthScore` formula has a `volumePenalty` that only adds 0.05 or 0.10, and `recencyScore` maxes at 0.15. Even a perfect method (100% success, 0ms latency, just used) scores at most ~0.85. This means all methods cluster in a narrow band, making AI ranking less effective. **Fix:** Adjust the scoring weights so perfect performance can reach ~1.0.
+
+---
+
+### **Issue 7: DNS Pool `preflightTestAllActive` Signature Mismatch**
+`NetworkResilienceService.preflightDNSCheck` calls `dnsPool.preflightTestAllActive()` expecting a tuple `(healthy: Int, failed: Int)`, but `DNSPoolService.preflightTestAllActive` returns `(healthy: Int, failed: Int, autoDisabledDuringTest: [String])` — a 3-element tuple. This will cause a compile error or silent data loss. **Fix:** Update the call site to destructure the 3-tuple properly.
+
+---
+
+### **Issue 8: `ProxyConnectionPool.acquireUpstream` Direct Mode Doesn't Do SOCKS5 Handshake**
+When used from `LocalProxyConnection.connectDirect`, the pool creates a raw TCP connection to the target but the caller expects a SOCKS5-handshake-free connection. This works correctly for direct mode, but when `connectViaUpstream` bypasses the pool entirely, pool metrics are skewed (pool only tracks direct, never upstream). **Fix:** Add upstream connection pooling support.
+
+---
+
+### Summary of Changes
+1. Create a shared `TargetHostResolver` utility used by both `HybridNetworkingService` and `NetworkSessionFactory`
+2. Wire `NetworkLayerService` health results into `NetworkSessionFactory` to skip dead endpoints
+3. Add missing per-session WireProxy check in `DeviceProxyService.effectiveProxyConfig`
+4. Guard `resolveEffectiveConfig` to only apply tunnel routing for matching config types
+5. Use `TimeoutResolver` in `NetworkResilienceService.sharedSession`
+6. Fix health score formula in `HybridNetworkingService`
+7. Fix the tuple mismatch in `NetworkResilienceService.preflightDNSCheck`
+8. Add upstream proxy support to `ProxyConnectionPool.acquireUpstream` for `connectViaUpstream`

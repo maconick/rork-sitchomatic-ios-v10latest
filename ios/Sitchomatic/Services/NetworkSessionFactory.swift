@@ -249,14 +249,6 @@ class NetworkSessionFactory {
     }
 
     private func resolveEffectiveConfig(_ config: ActiveNetworkConfig) -> ActiveNetworkConfig {
-        if wireProxyBridge.isActive, localProxy.isRunning, localProxy.wireProxyMode {
-            return .socks5(localProxy.localProxyConfig)
-        }
-
-        if ovpnBridge.isActive, localProxy.isRunning, localProxy.openVPNProxyMode {
-            return .socks5(localProxy.localProxyConfig)
-        }
-
         if let localConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
             return .socks5(localConfig)
         }
@@ -265,6 +257,9 @@ class NetworkSessionFactory {
         case .socks5:
             return config
         case .wireGuardDNS:
+            if wireProxyBridge.isActive, localProxy.isRunning, localProxy.wireProxyMode {
+                return .socks5(localProxy.localProxyConfig)
+            }
             if localProxy.isRunning, localProxy.upstreamProxy != nil {
                 return .socks5(localProxy.localProxyConfig)
             }
@@ -529,17 +524,19 @@ class NetworkSessionFactory {
     }
 
     private func hostForTarget(_ target: ProxyRotationService.ProxyTarget) -> String {
-        switch target {
-        case .joe: return "www.joefortune.com"
-        case .ignition: return "www.ignitioncasino.eu"
-        case .ppsr: return "ppsr.dmv.ca.gov"
-        }
+        TargetHostResolver.hostname(for: target)
     }
 
     // MARK: - WireGuard Rotation
 
     private func nextWGConfig(for target: ProxyRotationService.ProxyTarget) -> WireGuardConfig? {
-        let configs = proxyService.wgConfigs(for: target).filter { $0.isEnabled }
+        let networkLayer = NetworkLayerService.shared
+        let configs = proxyService.wgConfigs(for: target).filter { $0.isEnabled }.filter { config in
+            if let result = networkLayer.wgHealthResults[config.displayString] {
+                return result
+            }
+            return true
+        }
         guard !configs.isEmpty else { return nil }
 
         let index: Int
@@ -561,7 +558,13 @@ class NetworkSessionFactory {
     // MARK: - OpenVPN Rotation
 
     private func nextOVPNConfig(for target: ProxyRotationService.ProxyTarget) -> OpenVPNConfig? {
-        let configs = proxyService.vpnConfigs(for: target).filter { $0.isEnabled }
+        let networkLayer = NetworkLayerService.shared
+        let configs = proxyService.vpnConfigs(for: target).filter { $0.isEnabled }.filter { config in
+            if let result = networkLayer.ovpnHealthResults[config.displayString] {
+                return result
+            }
+            return true
+        }
         guard !configs.isEmpty else { return nil }
 
         let index: Int

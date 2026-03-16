@@ -219,6 +219,17 @@ class ProxyConnectionPool {
         return Double(totalPoolHits) / Double(total) * 100
     }
 
+    private(set) var totalUpstreamConnections: Int = 0
+
+    func recordUpstreamConnectionCreated() {
+        totalUpstreamConnections += 1
+        totalPoolMisses += 1
+    }
+
+    func recordUpstreamConnectionFinished(hadError: Bool) {
+        if hadError { totalEvictions += 1 }
+    }
+
     var activeCount: Int {
         pooledConnections.values.filter { !$0.isIdle }.count
     }

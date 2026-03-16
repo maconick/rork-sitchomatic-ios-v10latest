@@ -246,6 +246,8 @@ class LocalProxyConnection {
     }
 
     private func connectViaUpstream(_ proxy: ProxyConfig, targetHost: String, targetPort: UInt16, addressType: UInt8) {
+        connectionPool.recordUpstreamConnectionCreated()
+
         let proxyEndpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(proxy.host),
             port: NWEndpoint.Port(integerLiteral: UInt16(proxy.port))
