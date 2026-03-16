@@ -16,12 +16,31 @@ final class CrashProtectionService {
     private var lastEmergencyCleanup: Date = .distantPast
     private var emergencyBatchKillCount: Int = 0
 
+    private var memoryHistory: [(timestamp: Date, mb: Int)] = []
+    private let memoryHistoryMaxCount: Int = 30
+    private var memoryGrowthRateMBPerSecond: Double = 0
+    private var lastMemoryCheckTime: Date = Date()
+    private var lastMemoryCheckMB: Int = 0
+    private var memoryDeathSpiralDetected: Bool = false
+    private var preemptiveThrottleActive: Bool = false
+
+    private let adaptiveCheckIntervalBase: TimeInterval = 5
+    private let adaptiveCheckIntervalMin: TimeInterval = 2
+    private let adaptiveCheckIntervalMax: TimeInterval = 10
+
+    private var crashCount: Int = 0
+    private var lastCrashRecoveryTime: Date = .distantPast
+    private var sessionCrashLog: [(timestamp: Date, signal: String, memoryMB: Int)] = []
+
+    private let stateFile = "crash_protection_state.json"
+
     func register() {
         guard !isRegistered else { return }
         isRegistered = true
         installSignalHandlers()
-        startPeriodicMemoryTrimming()
-        logger.log("CrashProtection: registered signal handlers and memory trimmer (soft=\(softMemoryThresholdMB)MB, high=\(memoryThresholdMB)MB, critical=\(criticalMemoryThresholdMB)MB, emergency=\(emergencyMemoryThresholdMB)MB)", category: .system, level: .info)
+        restoreState()
+        startAdaptiveMemoryTrimming()
+        logger.log("CrashProtection: registered (soft=\(softMemoryThresholdMB)MB, high=\(memoryThresholdMB)MB, critical=\(criticalMemoryThresholdMB)MB, emergency=\(emergencyMemoryThresholdMB)MB, previousCrashes=\(crashCount))", category: .system, level: .info)
     }
 
     private func installSignalHandlers() {
@@ -37,11 +56,28 @@ final class CrashProtectionService {
             default: signalName = "SIGNAL(\(signal))"
             }
 
-            let entry = "CRASH: \(signalName) at \(Date())\n"
+            var info = mach_task_basic_info()
+            var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+            let memResult = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                }
+            }
+            let memMB = memResult == KERN_SUCCESS ? Int(info.resident_size / (1024 * 1024)) : 0
+
+            let entry = "CRASH: \(signalName) at \(Date()) | Memory: \(memMB)MB | WebViews: unknown\n"
             if let data = entry.data(using: .utf8) {
                 let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
                 if let crashLog = docs?.appendingPathComponent("last_crash.log") {
                     try? data.write(to: crashLog, options: .atomic)
+                }
+            }
+
+            let stateJSON = "{\"crashCount\":\(1),\"lastCrashSignal\":\"\(signalName)\",\"lastCrashMemoryMB\":\(memMB),\"lastCrashTimestamp\":\(Date().timeIntervalSince1970)}"
+            if let stateData = stateJSON.data(using: .utf8) {
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                if let stateFile = docs?.appendingPathComponent("crash_protection_state.json") {
+                    try? stateData.write(to: stateFile, options: .atomic)
                 }
             }
         }
@@ -64,27 +100,60 @@ final class CrashProtectionService {
         }
     }
 
-    private func startPeriodicMemoryTrimming() {
+    private func startAdaptiveMemoryTrimming() {
         memoryTrimTimer?.cancel()
+        lastMemoryCheckTime = Date()
+        lastMemoryCheckMB = currentMemoryUsageMB()
         memoryTrimTimer = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(8))
+                guard let self else { return }
+                let interval = self.computeAdaptiveCheckInterval()
+                try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { return }
-                self?.performMemoryCheck()
+                self.performMemoryCheck()
             }
         }
     }
 
+    private func computeAdaptiveCheckInterval() -> TimeInterval {
+        let mb = lastMemoryCheckMB
+        if mb > criticalMemoryThresholdMB || memoryDeathSpiralDetected {
+            return adaptiveCheckIntervalMin
+        } else if mb > memoryThresholdMB {
+            return 3
+        } else if mb > softMemoryThresholdMB {
+            return adaptiveCheckIntervalBase
+        }
+        return adaptiveCheckIntervalMax
+    }
+
     private func performMemoryCheck() {
+        let now = Date()
         let usedMB = currentMemoryUsageMB()
+
+        let timeDelta = now.timeIntervalSince(lastMemoryCheckTime)
+        if timeDelta > 0 {
+            let mbDelta = Double(usedMB - lastMemoryCheckMB)
+            memoryGrowthRateMBPerSecond = mbDelta / timeDelta
+        }
+        lastMemoryCheckTime = now
+        lastMemoryCheckMB = usedMB
+
+        memoryHistory.append((now, usedMB))
+        if memoryHistory.count > memoryHistoryMaxCount {
+            memoryHistory.removeFirst(memoryHistory.count - memoryHistoryMaxCount)
+        }
+
+        detectMemoryDeathSpiral(currentMB: usedMB)
+        detectRunawayGrowth(currentMB: usedMB)
 
         if usedMB > emergencyMemoryThresholdMB {
             consecutiveCriticalChecks += 1
-            logger.log("CrashProtection: EMERGENCY memory (\(usedMB)MB) — killing active batches and purging all caches (consecutive critical: \(consecutiveCriticalChecks))", category: .system, level: .critical)
+            logger.log("CrashProtection: EMERGENCY memory (\(usedMB)MB, growth=\(String(format: "%.1f", memoryGrowthRateMBPerSecond))MB/s) — killing active batches and purging all caches (consecutive critical: \(consecutiveCriticalChecks))", category: .system, level: .critical)
             performEmergencyCleanup(usedMB: usedMB)
         } else if usedMB > criticalMemoryThresholdMB {
             consecutiveCriticalChecks += 1
-            logger.log("CrashProtection: CRITICAL memory (\(usedMB)MB) — aggressive cleanup (consecutive: \(consecutiveCriticalChecks))", category: .system, level: .critical)
+            logger.log("CrashProtection: CRITICAL memory (\(usedMB)MB, growth=\(String(format: "%.1f", memoryGrowthRateMBPerSecond))MB/s) — aggressive cleanup (consecutive: \(consecutiveCriticalChecks))", category: .system, level: .critical)
             performAggressiveCleanup()
             if consecutiveCriticalChecks >= 3 {
                 logger.log("CrashProtection: \(consecutiveCriticalChecks) consecutive critical checks — escalating to emergency", category: .system, level: .critical)
@@ -94,11 +163,53 @@ final class CrashProtectionService {
             consecutiveCriticalChecks = max(0, consecutiveCriticalChecks - 1)
             logger.log("CrashProtection: High memory (\(usedMB)MB) — soft cleanup", category: .system, level: .warning)
             performSoftCleanup()
+            preemptiveThrottleActive = false
         } else if usedMB > softMemoryThresholdMB {
             consecutiveCriticalChecks = 0
             performPreemptiveCleanup()
+            preemptiveThrottleActive = false
+            memoryDeathSpiralDetected = false
         } else {
             consecutiveCriticalChecks = 0
+            preemptiveThrottleActive = false
+            memoryDeathSpiralDetected = false
+        }
+    }
+
+    private func detectMemoryDeathSpiral(currentMB: Int) {
+        guard memoryHistory.count >= 5 else { return }
+        let recent = memoryHistory.suffix(5)
+        let allIncreasing = zip(recent.dropLast(), recent.dropFirst()).allSatisfy { $0.mb < $1.mb }
+        let totalGrowth = recent.last!.mb - recent.first!.mb
+        let timeSpan = recent.last!.timestamp.timeIntervalSince(recent.first!.timestamp)
+
+        if allIncreasing && totalGrowth > 500 && timeSpan > 0 {
+            let ratePerMin = Double(totalGrowth) / (timeSpan / 60.0)
+            if ratePerMin > 200 {
+                memoryDeathSpiralDetected = true
+                logger.log("CrashProtection: DEATH SPIRAL DETECTED — memory growing \(Int(ratePerMin))MB/min over last \(Int(timeSpan))s (\(recent.first!.mb)MB → \(recent.last!.mb)MB)", category: .system, level: .critical)
+
+                AppAlertManager.shared.pushCritical(
+                    source: .system,
+                    title: "Memory Death Spiral",
+                    message: "Memory growing at \(Int(ratePerMin))MB/min. Batches will be stopped to prevent crash."
+                )
+
+                if currentMB > criticalMemoryThresholdMB {
+                    performEmergencyCleanup(usedMB: currentMB)
+                }
+            }
+        }
+    }
+
+    private func detectRunawayGrowth(currentMB: Int) {
+        guard memoryGrowthRateMBPerSecond > 50 && currentMB > softMemoryThresholdMB else { return }
+
+        if !preemptiveThrottleActive {
+            preemptiveThrottleActive = true
+            logger.log("CrashProtection: RUNAWAY GROWTH — \(String(format: "%.0f", memoryGrowthRateMBPerSecond))MB/s detected at \(currentMB)MB — preemptive throttle active", category: .system, level: .critical)
+
+            performAggressiveCleanup()
         }
     }
 
@@ -151,11 +262,19 @@ final class CrashProtectionService {
             PPSRAutomationViewModel.shared.emergencyStop()
         }
 
+        DeadSessionDetector.shared.stopAllWatchdogs()
+
         URLCache.shared.removeAllCachedResponses()
         URLCache.shared.memoryCapacity = 0
 
+        NetworkResilienceService.shared.invalidateSharedSessions()
+
         if timeSinceLast < 60 {
             logger.log("CrashProtection: TWO emergency cleanups within \(Int(timeSinceLast))s — app may be in memory death spiral", category: .system, level: .critical)
+
+            PersistentFileStorageService.shared.forceSave()
+            LoginViewModel.shared.persistCredentialsNow()
+            PPSRAutomationViewModel.shared.persistCardsNow()
         }
 
         let afterMB = currentMemoryUsageMB()
@@ -179,12 +298,69 @@ final class CrashProtectionService {
         guard let crashLog = docs?.appendingPathComponent("last_crash.log") else { return nil }
         guard let data = try? Data(contentsOf: crashLog) else { return nil }
         try? FileManager.default.removeItem(at: crashLog)
-        return String(data: data, encoding: .utf8)
+        let crashInfo = String(data: data, encoding: .utf8)
+
+        if crashInfo != nil {
+            crashCount += 1
+            lastCrashRecoveryTime = Date()
+            let mb = currentMemoryUsageMB()
+            sessionCrashLog.append((Date(), crashInfo?.components(separatedBy: " ").first ?? "UNKNOWN", mb))
+            persistState()
+
+            AppAlertManager.shared.pushCritical(
+                source: .system,
+                title: "Crash Recovery",
+                message: "App recovered from a previous crash. Memory at recovery: \(mb)MB."
+            )
+        }
+
+        return crashInfo
+    }
+
+    var isMemoryDeathSpiral: Bool { memoryDeathSpiralDetected }
+    var isPreemptiveThrottleActive: Bool { preemptiveThrottleActive }
+    var currentGrowthRateMBPerSec: Double { memoryGrowthRateMBPerSecond }
+    var totalCrashCount: Int { crashCount }
+
+    var shouldReduceConcurrency: Bool {
+        let mb = currentMemoryUsageMB()
+        return mb > memoryThresholdMB || memoryDeathSpiralDetected || preemptiveThrottleActive
+    }
+
+    var recommendedMaxConcurrency: Int {
+        let mb = currentMemoryUsageMB()
+        if mb > criticalMemoryThresholdMB || memoryDeathSpiralDetected { return 1 }
+        if mb > memoryThresholdMB || preemptiveThrottleActive { return 2 }
+        if mb > softMemoryThresholdMB { return 3 }
+        return 5
     }
 
     var diagnosticSummary: String {
         let mb = currentMemoryUsageMB()
         let webViews = WebViewPool.shared.activeCount
-        return "Memory: \(mb)MB | WebViews: \(webViews) | EmergencyKills: \(emergencyBatchKillCount) | ConsecutiveCritical: \(consecutiveCriticalChecks)"
+        let growth = String(format: "%.1f", memoryGrowthRateMBPerSecond)
+        let spiral = memoryDeathSpiralDetected ? " SPIRAL!" : ""
+        return "Memory: \(mb)MB (\(growth)MB/s\(spiral)) | WebViews: \(webViews) | EmergencyKills: \(emergencyBatchKillCount) | Crashes: \(crashCount) | ConsecutiveCritical: \(consecutiveCriticalChecks)"
+    }
+
+    private func persistState() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        guard let stateURL = docs?.appendingPathComponent(stateFile) else { return }
+        let json = "{\"crashCount\":\(crashCount),\"emergencyKills\":\(emergencyBatchKillCount),\"lastCrashTimestamp\":\(lastCrashRecoveryTime.timeIntervalSince1970)}"
+        try? json.data(using: .utf8)?.write(to: stateURL, options: .atomic)
+    }
+
+    private func restoreState() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        guard let stateURL = docs?.appendingPathComponent(stateFile) else { return }
+        guard let data = try? Data(contentsOf: stateURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        if let count = json["crashCount"] as? Int {
+            crashCount = count
+        }
+        if let kills = json["emergencyKills"] as? Int {
+            emergencyBatchKillCount = kills
+        }
     }
 }

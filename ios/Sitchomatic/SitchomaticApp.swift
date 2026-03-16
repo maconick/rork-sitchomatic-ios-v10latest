@@ -123,6 +123,8 @@ struct SitchomaticApp: App {
                         DebugLogger.shared.log("Previous crash detected: \(previousCrash.prefix(200))", category: .system, level: .critical)
                     }
 
+                    AppStabilityCoordinator.shared.start()
+
                     let monitor = MemoryPressureMonitor.shared
                     monitor.register()
                     monitor.onMemoryWarning {

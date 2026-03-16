@@ -221,7 +221,17 @@ class ConcurrentAutomationEngine {
         let startTime = Date()
         let batchId = "concurrent_ppsr_\(UUID().uuidString.prefix(8))"
 
-        await throttler.updateMaxConcurrency(maxConcurrency)
+        let stabilityCap = CrashProtectionService.shared.recommendedMaxConcurrency
+        let effectiveMaxConcurrency = min(maxConcurrency, stabilityCap)
+        if effectiveMaxConcurrency < maxConcurrency {
+            logger.log("ConcurrentEngine: concurrency capped \(maxConcurrency) → \(effectiveMaxConcurrency) by stability monitor", category: .automation, level: .warning)
+        }
+        await throttler.updateMaxConcurrency(effectiveMaxConcurrency)
+
+        AppStabilityCoordinator.shared.registerTaskGroupWatchdog(id: batchId, timeout: Double(checks.count) * timeout * 0.8) { [weak self] in
+            self?.logger.log("ConcurrentEngine: PPSR batch watchdog FIRED — force cancelling", category: .automation, level: .critical)
+            self?.cancel()
+        }
         let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         logger.startSession(batchId, category: .ppsr, message: "ConcurrentEngine: starting \(checks.count) PPSR checks, maxConcurrency=\(maxConcurrency)")
 
@@ -242,6 +252,16 @@ class ConcurrentAutomationEngine {
         for batchStart in stride(from: 0, to: checks.count, by: batchSize) {
             if cancelFlag { break }
 
+            if CrashProtectionService.shared.isMemoryDeathSpiral {
+                logger.log("ConcurrentEngine: PPSR batch aborting — memory death spiral detected", category: .automation, level: .critical)
+                break
+            }
+
+            let currentCap = CrashProtectionService.shared.recommendedMaxConcurrency
+            if currentCap < batchSize {
+                await throttler.updateMaxConcurrency(currentCap)
+            }
+
             let batchEnd = min(batchStart + batchSize, checks.count)
             let batch = Array(checks[batchStart..<batchEnd])
 
@@ -255,7 +275,8 @@ class ConcurrentAutomationEngine {
                     }
                     group.addTask {
                         guard !Task.isCancelled else { return (cardId, CheckOutcome.timeout, 0) }
-                        await self.throttler.acquire()
+                        let acquired = await self.throttler.acquire()
+                        guard acquired else { return (cardId, CheckOutcome.timeout, 0) }
                         guard !Task.isCancelled else {
                             await self.throttler.release(succeeded: false)
                             return (cardId, CheckOutcome.timeout, 0)
@@ -346,6 +367,7 @@ class ConcurrentAutomationEngine {
         let totalMs = Int(Date().timeIntervalSince(startTime) * 1000)
         let avgLatency = latencies.isEmpty ? 0 : latencies.reduce(0, +) / latencies.count
 
+        AppStabilityCoordinator.shared.cancelTaskGroupWatchdog(id: batchId)
         logger.endSession(batchId, category: .ppsr, message: "ConcurrentEngine: batch complete — \(successCount) pass, \(failureCount) fail, avgLatency=\(avgLatency)ms, total=\(totalMs)ms")
 
         if allResults.count >= 3 {
@@ -405,7 +427,17 @@ class ConcurrentAutomationEngine {
         batchDeadline = Date().addingTimeInterval(maxBatchDurationSeconds)
         logger.log("ConcurrentEngine: batch deadline set to \(Int(maxBatchDurationSeconds))s from now", category: .automation, level: .info)
 
-        await throttler.updateMaxConcurrency(maxConcurrency)
+        let stabilityCap = CrashProtectionService.shared.recommendedMaxConcurrency
+        let effectiveMaxConcurrency = min(maxConcurrency, stabilityCap)
+        if effectiveMaxConcurrency < maxConcurrency {
+            logger.log("ConcurrentEngine: login concurrency capped \(maxConcurrency) → \(effectiveMaxConcurrency) by stability monitor", category: .automation, level: .warning)
+        }
+        await throttler.updateMaxConcurrency(effectiveMaxConcurrency)
+
+        AppStabilityCoordinator.shared.registerTaskGroupWatchdog(id: batchId, timeout: maxBatchDurationSeconds * 1.2) { [weak self] in
+            self?.logger.log("ConcurrentEngine: login batch watchdog FIRED — force cancelling", category: .automation, level: .critical)
+            self?.cancel()
+        }
 
         let timeout = TimeoutResolver.resolveAutomationTimeout(timeout)
         let proxyService = ProxyRotationService.shared
@@ -462,12 +494,26 @@ class ConcurrentAutomationEngine {
         credentialRetryTracker.removeAll()
         consecutiveAllFailBatches = 0
 
-        let batchSize = maxConcurrency
+        let batchSize = effectiveMaxConcurrency
         for batchStart in stride(from: 0, to: attempts.count, by: batchSize) {
             if cancelFlag { break }
             if isBatchDeadlineExceeded() {
                 logger.log("ConcurrentEngine: BATCH DEADLINE EXCEEDED after \(Int(Date().timeIntervalSince(startTime)))s — stopping batch", category: .automation, level: .critical)
                 break
+            }
+
+            if CrashProtectionService.shared.isMemoryDeathSpiral {
+                logger.log("ConcurrentEngine: login batch aborting — memory death spiral detected at \(CrashProtectionService.shared.currentMemoryUsageMB())MB", category: .automation, level: .critical)
+                PersistentFileStorageService.shared.forceSave()
+                LoginViewModel.shared.persistCredentialsNow()
+                break
+            }
+
+            let currentCap = CrashProtectionService.shared.recommendedMaxConcurrency
+            let currentThrottlerMax = await throttler.currentStats().maxConcurrency
+            if currentCap < currentThrottlerMax {
+                await throttler.updateMaxConcurrency(currentCap)
+                logger.log("ConcurrentEngine: stability throttle \(currentThrottlerMax) → \(currentCap)", category: .automation, level: .warning)
             }
 
             let batchEnd = min(batchStart + batchSize, attempts.count)
@@ -510,9 +556,9 @@ class ConcurrentAutomationEngine {
 
                     group.addTask {
                         guard !Task.isCancelled else { return (username, LoginOutcome.timeout, 0, index) }
-                        await self.throttler.acquire()
-                        guard !Task.isCancelled else {
-                            await self.throttler.release(succeeded: false)
+                        let acquired = await self.throttler.acquire()
+                        guard acquired, !Task.isCancelled else {
+                            if acquired { await self.throttler.release(succeeded: false) }
                             return (username, LoginOutcome.timeout, 0, index)
                         }
                         let taskStart = Date()
@@ -834,6 +880,7 @@ class ConcurrentAutomationEngine {
         let totalMs = Int(Date().timeIntervalSince(startTime) * 1000)
         let avgLatency = latencies.isEmpty ? 0 : latencies.reduce(0, +) / latencies.count
 
+        AppStabilityCoordinator.shared.cancelTaskGroupWatchdog(id: batchId)
         logger.endSession(batchId, category: .login, message: "ConcurrentEngine: login batch complete — \(successCount) success, \(failureCount) fail, avgLatency=\(avgLatency)ms | network=\(networkSummary)")
 
         isRunning = false
