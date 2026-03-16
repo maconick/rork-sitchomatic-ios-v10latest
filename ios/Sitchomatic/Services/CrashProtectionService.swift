@@ -31,8 +31,23 @@ final class CrashProtectionService {
     private var crashCount: Int = 0
     private var lastCrashRecoveryTime: Date = .distantPast
     private var sessionCrashLog: [(timestamp: Date, signal: String, memoryMB: Int)] = []
+    private(set) var lastCrashReport: CrashReport?
 
     private let stateFile = "crash_protection_state.json"
+    private let crashReportFile = "crash_report_pending.json"
+    private var continuousLogFlushTask: Task<Void, Never>?
+
+    nonisolated struct CrashReport: Codable, Sendable {
+        let signal: String
+        let memoryMB: Int
+        let timestamp: TimeInterval
+        let crashLog: String
+        let diagnosticLog: String
+        let iosVersion: String
+        let deviceModel: String
+        let appVersion: String
+        let screenshotKeys: [String]
+    }
 
     func register() {
         guard !isRegistered else { return }
@@ -40,7 +55,47 @@ final class CrashProtectionService {
         installSignalHandlers()
         restoreState()
         startAdaptiveMemoryTrimming()
+        startContinuousLogFlush()
         logger.log("CrashProtection: registered (soft=\(softMemoryThresholdMB)MB, high=\(memoryThresholdMB)MB, critical=\(criticalMemoryThresholdMB)MB, emergency=\(emergencyMemoryThresholdMB)MB, previousCrashes=\(crashCount))", category: .system, level: .info)
+    }
+
+    private func startContinuousLogFlush() {
+        continuousLogFlushTask?.cancel()
+        continuousLogFlushTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled, let self else { return }
+                DebugLogger.shared.persistLatestLog()
+                self.persistPreCrashDiagnostics()
+            }
+        }
+    }
+
+    private func persistPreCrashDiagnostics() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        guard let diagURL = docs?.appendingPathComponent("pre_crash_diagnostics.txt") else { return }
+        let memMB = currentMemoryUsageMB()
+        let growth = String(format: "%.1f", memoryGrowthRateMBPerSecond)
+        let webViews = WebViewPool.shared.activeCount
+        let loginRunning = LoginViewModel.shared.isRunning
+        let ppsrRunning = PPSRAutomationViewModel.shared.isRunning
+        let diag = """
+        === PRE-CRASH DIAGNOSTICS ===
+        Timestamp: \(Date())
+        Memory: \(memMB)MB (growth: \(growth)MB/s)
+        WebViews: \(webViews)
+        Login Batch: \(loginRunning ? "RUNNING" : "idle")
+        PPSR Batch: \(ppsrRunning ? "RUNNING" : "idle")
+        Death Spiral: \(memoryDeathSpiralDetected)
+        Consecutive Critical: \(consecutiveCriticalChecks)
+        Emergency Kills: \(emergencyBatchKillCount)
+        Total Crashes: \(crashCount)
+        iOS: \(UIDevice.current.systemVersion)
+        Device: \(UIDevice.current.model)
+        App: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
+        ===
+        """
+        try? diag.write(to: diagURL, atomically: true, encoding: .utf8)
     }
 
     private func installSignalHandlers() {
@@ -297,24 +352,109 @@ final class CrashProtectionService {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         guard let crashLog = docs?.appendingPathComponent("last_crash.log") else { return nil }
         guard let data = try? Data(contentsOf: crashLog) else { return nil }
-        try? FileManager.default.removeItem(at: crashLog)
         let crashInfo = String(data: data, encoding: .utf8)
 
-        if crashInfo != nil {
+        let diagURL = docs?.appendingPathComponent("pre_crash_diagnostics.txt")
+        let diagnosticLog = diagURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "No pre-crash diagnostics"
+
+        let persistedLog = docs?.appendingPathComponent("debug_log_latest.txt")
+        let savedLog = persistedLog.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+
+        let screenshotDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("ScreenshotCache", isDirectory: true)
+        var screenshotKeys: [String] = []
+        if let dir = screenshotDir, let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+            let recent = files.filter { $0.pathExtension == "jpg" }
+                .sorted { a, b in
+                    let aDate = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                    let bDate = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                    return aDate > bDate
+                }
+                .prefix(20)
+            screenshotKeys = recent.map { $0.deletingPathExtension().lastPathComponent }
+        }
+
+        if let crashInfo {
             crashCount += 1
             lastCrashRecoveryTime = Date()
             let mb = currentMemoryUsageMB()
-            sessionCrashLog.append((Date(), crashInfo?.components(separatedBy: " ").first ?? "UNKNOWN", mb))
+            sessionCrashLog.append((Date(), crashInfo.components(separatedBy: " ").first ?? "UNKNOWN", mb))
             persistState()
 
-            AppAlertManager.shared.pushCritical(
-                source: .system,
-                title: "Crash Recovery",
-                message: "App recovered from a previous crash. Memory at recovery: \(mb)MB."
+            let stateJSON = docs?.appendingPathComponent(stateFile)
+            var signal = "UNKNOWN"
+            var crashMemMB = 0
+            var crashTimestamp: TimeInterval = Date().timeIntervalSince1970
+            if let stateURL = stateJSON, let stateData = try? Data(contentsOf: stateURL),
+               let json = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any] {
+                signal = json["lastCrashSignal"] as? String ?? "UNKNOWN"
+                crashMemMB = json["lastCrashMemoryMB"] as? Int ?? 0
+                crashTimestamp = json["lastCrashTimestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
+            }
+
+            let report = CrashReport(
+                signal: signal,
+                memoryMB: crashMemMB,
+                timestamp: crashTimestamp,
+                crashLog: crashInfo,
+                diagnosticLog: diagnosticLog + "\n\n=== PERSISTED LOG (tail) ===\n" + String(savedLog.suffix(5000)),
+                iosVersion: UIDevice.current.systemVersion,
+                deviceModel: UIDevice.current.model,
+                appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?",
+                screenshotKeys: screenshotKeys
             )
+            lastCrashReport = report
+
+            if let encoded = try? JSONEncoder().encode(report) {
+                let reportURL = docs?.appendingPathComponent(crashReportFile)
+                try? encoded.write(to: reportURL!, options: .atomic)
+            }
         }
 
+        try? FileManager.default.removeItem(at: crashLog)
+        if let diagURL { try? FileManager.default.removeItem(at: diagURL) }
+
         return crashInfo
+    }
+
+    func loadPendingCrashReport() -> CrashReport? {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        guard let reportURL = docs?.appendingPathComponent(crashReportFile) else { return nil }
+        guard let data = try? Data(contentsOf: reportURL) else { return nil }
+        return try? JSONDecoder().decode(CrashReport.self, from: data)
+    }
+
+    func clearPendingCrashReport() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        if let reportURL = docs?.appendingPathComponent(crashReportFile) {
+            try? FileManager.default.removeItem(at: reportURL)
+        }
+        lastCrashReport = nil
+    }
+
+    func generateCrashReportText() -> String {
+        guard let report = lastCrashReport else { return "No crash report available" }
+        let crashDate = Date(timeIntervalSince1970: report.timestamp)
+        return """
+        ========================================
+        CRASH REPORT FOR RORK
+        ========================================
+        Signal: \(report.signal)
+        Memory at Crash: \(report.memoryMB)MB
+        Crash Time: \(crashDate)
+        iOS Version: \(report.iosVersion)
+        Device: \(report.deviceModel)
+        App Version: \(report.appVersion)
+        Screenshots Preserved: \(report.screenshotKeys.count)
+
+        === CRASH LOG ===
+        \(report.crashLog)
+
+        === PRE-CRASH DIAGNOSTICS ===
+        \(report.diagnosticLog)
+        ========================================
+        END OF CRASH REPORT
+        ========================================
+        """
     }
 
     var isMemoryDeathSpiral: Bool { memoryDeathSpiralDetected }

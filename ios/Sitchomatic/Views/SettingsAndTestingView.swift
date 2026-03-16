@@ -111,6 +111,35 @@ struct SettingsAndTestingView: View {
                     color: Color(red: 0.0, green: 0.78, blue: 1.0)
                 )
             }
+
+            NavigationLink {
+                NetworkRepairView()
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.orange.opacity(0.12))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                            .font(.body)
+                            .foregroundStyle(.orange)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Repair Network").font(.subheadline.bold())
+                        Text("Full restart of all network protocols")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if NetworkRepairService.shared.isRepairing {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else if let result = NetworkRepairService.shared.lastRepairResult {
+                        Image(systemName: result.overallSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(result.overallSuccess ? .green : .red)
+                            .font(.caption)
+                    }
+                }
+            }
         } header: {
             Label("Network & VPN", systemImage: "lock.shield.fill")
         } footer: {

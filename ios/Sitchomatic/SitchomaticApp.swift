@@ -10,6 +10,8 @@ struct SitchomaticApp: App {
     @State private var hasEverOpenedJoe: Bool = false
     @State private var hasEverOpenedIgnition: Bool = false
     @State private var hasEverOpenedPPSR: Bool = false
+    @State private var showCrashReport: Bool = false
+    @State private var pendingCrashReport: CrashProtectionService.CrashReport?
 
     private var activeMode: ActiveAppMode? {
         ActiveAppMode(rawValue: activeModeRaw)
@@ -121,6 +123,10 @@ struct SitchomaticApp: App {
                     CrashProtectionService.shared.register()
                     if let previousCrash = CrashProtectionService.shared.checkForPreviousCrash() {
                         DebugLogger.shared.log("Previous crash detected: \(previousCrash.prefix(200))", category: .system, level: .critical)
+                        if let report = CrashProtectionService.shared.lastCrashReport {
+                            pendingCrashReport = report
+                            showCrashReport = true
+                        }
                     }
 
                     AppStabilityCoordinator.shared.start()
@@ -165,6 +171,23 @@ struct SitchomaticApp: App {
                         default: break
                         }
                     }
+                }
+            }
+            .sheet(isPresented: $showCrashReport) {
+                if let report = pendingCrashReport {
+                    CrashReportPopupView(
+                        report: report,
+                        onDismiss: {
+                            showCrashReport = false
+                            CrashProtectionService.shared.clearPendingCrashReport()
+                        },
+                        onSend: { reportText in
+                            UIPasteboard.general.string = reportText
+                            DebugLogger.shared.log("Crash report copied to clipboard for sending to Rork", category: .system, level: .info)
+                            showCrashReport = false
+                            CrashProtectionService.shared.clearPendingCrashReport()
+                        }
+                    )
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
