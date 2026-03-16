@@ -58,6 +58,7 @@ class LoginSiteWebSession: NSObject {
     private(set) var navigationCount: Int = 0
     private(set) var processTerminated: Bool = false
     var onProcessTerminated: (() -> Void)?
+    var monitoringSessionId: String?
 
     init(targetURL: URL, networkConfig: ActiveNetworkConfig = .direct, proxyTarget: ProxyRotationService.ProxyTarget? = nil) {
         self.targetURL = targetURL
@@ -1810,6 +1811,9 @@ class LoginSiteWebSession: NSObject {
         guard let webView else { return nil }
         do {
             let result = try await webView.evaluateJavaScript(js)
+            if let sid = monitoringSessionId {
+                SessionActivityMonitor.shared.recordJSResponse(sessionId: sid)
+            }
             if let str = result as? String { return str }
             if let num = result as? NSNumber { return "\(num)" }
             return nil
@@ -1826,6 +1830,9 @@ class LoginSiteWebSession: NSObject {
 extension LoginSiteWebSession: WKNavigationDelegate {
     nonisolated func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         Task { @MainActor in
+            if let sid = self.monitoringSessionId {
+                SessionActivityMonitor.shared.recordNavigation(sessionId: sid)
+            }
             if self.stealthEnabled, let profile = self.stealthProfile {
                 let earlyJS = PPSRStealthService.shared.buildComprehensiveStealthJSPublic(profile: profile)
                 _ = await self.executeJS(earlyJS)
@@ -1836,6 +1843,9 @@ extension LoginSiteWebSession: WKNavigationDelegate {
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor in
+            if let sid = self.monitoringSessionId {
+                SessionActivityMonitor.shared.recordNavigation(sessionId: sid)
+            }
             self.isPageLoaded = true
             if let cont = self.pageLoadContinuation {
                 self.pageLoadContinuation = nil
@@ -1867,6 +1877,9 @@ extension LoginSiteWebSession: WKNavigationDelegate {
     nonisolated func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         Task { @MainActor in
             self.navigationCount += 1
+            if let sid = self.monitoringSessionId {
+                SessionActivityMonitor.shared.recordNavigation(sessionId: sid)
+            }
         }
         decisionHandler(.allow)
     }
@@ -1889,6 +1902,9 @@ extension LoginSiteWebSession: WKNavigationDelegate {
         if let httpResponse = navigationResponse.response as? HTTPURLResponse {
             Task { @MainActor in
                 self.lastHTTPStatusCode = httpResponse.statusCode
+                if let sid = self.monitoringSessionId {
+                    SessionActivityMonitor.shared.recordResourceLoad(sessionId: sid)
+                }
             }
         }
         decisionHandler(.allow)

@@ -50,6 +50,7 @@ class LoginAutomationEngine {
     private let aiPreConditioning = AISessionPreConditioningService.shared
     private let aiOutcomeRescue = AIOutcomeRescueEngine.shared
     private let aiInteractionGraph = AIReinforcementInteractionGraph.shared
+    private let activityMonitor = SessionActivityMonitor.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
@@ -64,7 +65,7 @@ class LoginAutomationEngine {
         activeSessions < maxConcurrency
     }
 
-    func runLoginTest(_ attempt: LoginAttempt, targetURL: URL, timeout: TimeInterval = 90) async -> LoginOutcome {
+    func runLoginTest(_ attempt: LoginAttempt, targetURL: URL, timeout: TimeInterval = 180) async -> LoginOutcome {
         let timeout = TimeoutResolver.resolveTestTimeout(timeout, userSetting: automationSettings.pageLoadTimeout)
         activeSessions += 1
         defer { activeSessions -= 1 }
@@ -116,6 +117,7 @@ class LoginAutomationEngine {
         attempt.logs.append(PPSRLogEntry(message: "Network: \(netConfig.label)\(networkConfigOverride != nil ? " (override)" : "")", level: .info))
 
         let session = LoginSiteWebSession(targetURL: targetURL, networkConfig: netConfig)
+        session.monitoringSessionId = sessionId
         session.stealthEnabled = stealthEnabled
         session.fingerprintValidationEnabled = automationSettings.fingerprintValidationEnabled
         session.onFingerprintLog = { [weak self] msg, level in
@@ -139,6 +141,9 @@ class LoginAutomationEngine {
         let slowDebugTask = makeSlowDebugCaptureTaskIfNeeded(session: session, attempt: attempt, sessionId: sessionId)
         defer { slowDebugTask?.cancel() }
 
+        activityMonitor.startMonitoring(sessionId: sessionId)
+        defer { activityMonitor.stopMonitoring(sessionId: sessionId) }
+
         logger.startTimer(key: sessionId)
         let outcome: LoginOutcome = await withTaskGroup(of: LoginOutcome.self) { group in
             group.addTask {
@@ -150,19 +155,55 @@ class LoginAutomationEngine {
                 return .timeout
             }
 
+            group.addTask { @MainActor in
+                try? await Task.sleep(for: .seconds(SessionActivityMonitor.idleThresholdSeconds))
+                while !Task.isCancelled {
+                    let idle = self.activityMonitor.isIdle(sessionId: sessionId)
+                    let hasAny = self.activityMonitor.hasActivity(sessionId: sessionId)
+                    if idle && !hasAny {
+                        self.logger.log("IdleWatchdog: \(sessionId) has ZERO network activity after \(Int(SessionActivityMonitor.idleThresholdSeconds))s — killing", category: .webView, level: .error, sessionId: sessionId)
+                        return .timeout
+                    }
+                    if idle && hasAny {
+                        let secondsIdle = self.activityMonitor.secondsSinceLastActivity(sessionId: sessionId)
+                        if secondsIdle >= SessionActivityMonitor.idleThresholdSeconds {
+                            self.logger.log("IdleWatchdog: \(sessionId) went idle for \(Int(secondsIdle))s after prior activity — killing", category: .webView, level: .error, sessionId: sessionId)
+                            return .timeout
+                        }
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                }
+                return .timeout
+            }
+
             let first = await group.next() ?? .timeout
             group.cancelAll()
             return first
         }
         let totalMs = logger.stopTimer(key: sessionId)
 
+        let wasIdleTimeout: Bool
         if outcome == .timeout {
-            attempt.status = .failed
-            attempt.errorMessage = "Test timed out after \(Int(timeout))s — auto-requeuing"
-            attempt.completedAt = Date()
-            attempt.logs.append(PPSRLogEntry(message: "TIMEOUT: Test exceeded \(Int(timeout))s limit", level: .warning))
-            logger.log("TIMEOUT after \(Int(timeout))s for \(attempt.credential.username)", category: .login, level: .error, sessionId: sessionId, durationMs: totalMs)
-            onUnusualFailure?("Timeout for \(attempt.credential.username) after \(Int(timeout))s")
+            let idleStatus = activityMonitor.checkIdleStatus(sessionId: sessionId)
+            if case .idle(let secs) = idleStatus {
+                wasIdleTimeout = true
+                attempt.status = .failed
+                attempt.errorMessage = "Idle timeout — zero network activity for \(Int(secs))s, retrying with different config"
+                attempt.completedAt = Date()
+                attempt.logs.append(PPSRLogEntry(message: "IDLE TIMEOUT: No network activity for \(Int(secs))s — will retry in \(Int(SessionActivityMonitor.idleRetryDelaySeconds))s with AI fallback", level: .warning))
+                logger.log("IDLE TIMEOUT after \(Int(secs))s idle for \(attempt.credential.username) — AI will pick fallback", category: .login, level: .error, sessionId: sessionId, durationMs: totalMs)
+                onUnusualFailure?("Idle timeout for \(attempt.credential.username) — no activity for \(Int(secs))s")
+            } else {
+                wasIdleTimeout = false
+                attempt.status = .failed
+                attempt.errorMessage = "Test timed out after \(Int(timeout))s — auto-requeuing"
+                attempt.completedAt = Date()
+                attempt.logs.append(PPSRLogEntry(message: "TIMEOUT: Test exceeded \(Int(timeout))s limit", level: .warning))
+                logger.log("TIMEOUT after \(Int(timeout))s for \(attempt.credential.username)", category: .login, level: .error, sessionId: sessionId, durationMs: totalMs)
+                onUnusualFailure?("Timeout for \(attempt.credential.username) after \(Int(timeout))s")
+            }
+        } else {
+            wasIdleTimeout = false
         }
 
         if outcome == .connectionFailure {

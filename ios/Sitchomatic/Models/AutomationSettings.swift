@@ -291,8 +291,8 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     // MARK: - Recorded Flow Override
     var urlFlowAssignments: [URLFlowAssignment] = []
 
-    static let minimumTimeoutSeconds: TimeInterval = 90
-    static let minimumTimeoutMilliseconds: Int = 90_000
+    static let minimumTimeoutSeconds: TimeInterval = 180
+    static let minimumTimeoutMilliseconds: Int = 180_000
 
     func normalizedTimeouts() -> AutomationSettings {
         var normalized = self

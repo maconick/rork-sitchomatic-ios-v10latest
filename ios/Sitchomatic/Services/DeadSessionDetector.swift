@@ -6,6 +6,7 @@ class DeadSessionDetector {
     static let shared = DeadSessionDetector()
 
     private let logger = DebugLogger.shared
+    private let activityMonitor = SessionActivityMonitor.shared
     private let heartbeatTimeoutSeconds: TimeInterval = 15
     private var activeWatchdogs: [String: Task<Void, Never>] = [:]
     private var sessionStartTimes: [String: Date] = [:]
@@ -36,7 +37,9 @@ class DeadSessionDetector {
             return first
         }
 
-        if !alive {
+        if alive {
+            activityMonitor.recordJSResponse(sessionId: sessionId)
+        } else {
             logger.log("DeadSessionDetector: session HUNG — no JS response in \(Int(heartbeatTimeoutSeconds))s", category: .webView, level: .error, sessionId: sessionId)
         }
 
@@ -66,6 +69,7 @@ class DeadSessionDetector {
     ) {
         stopWatchdog(sessionId: sessionId)
         sessionStartTimes[sessionId] = Date()
+        activityMonitor.startMonitoring(sessionId: sessionId)
 
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -77,6 +81,14 @@ class DeadSessionDetector {
 
                 let elapsed = Date().timeIntervalSince(self.sessionStartTimes[sessionId] ?? Date())
                 let remaining = timeout - elapsed
+
+                let idleStatus = self.activityMonitor.checkIdleStatus(sessionId: sessionId)
+                if case .idle(let secondsIdle) = idleStatus, secondsIdle >= SessionActivityMonitor.idleThresholdSeconds {
+                    self.logger.log("DeadSessionDetector: IDLE TIMEOUT for \(sessionId) — no activity for \(Int(secondsIdle))s, killing session", category: .webView, level: .error, sessionId: sessionId)
+                    await onTimeout()
+                    self.cleanupWatchdog(sessionId: sessionId)
+                    return
+                }
 
                 if remaining <= 0 {
                     self.logger.log("DeadSessionDetector: watchdog TIMEOUT for \(sessionId) after \(Int(elapsed))s", category: .webView, level: .critical, sessionId: sessionId)
@@ -101,7 +113,7 @@ class DeadSessionDetector {
         }
 
         activeWatchdogs[sessionId] = task
-        logger.log("DeadSessionDetector: watchdog started for \(sessionId) (timeout=\(Int(timeout))s, interval=\(Int(checkInterval))s)", category: .webView, level: .debug, sessionId: sessionId)
+        logger.log("DeadSessionDetector: watchdog started for \(sessionId) (timeout=\(Int(timeout))s, interval=\(Int(checkInterval))s, idleThreshold=\(Int(SessionActivityMonitor.idleThresholdSeconds))s)", category: .webView, level: .debug, sessionId: sessionId)
     }
 
     func stopWatchdog(sessionId: String) {
@@ -115,6 +127,7 @@ class DeadSessionDetector {
         for (sessionId, task) in activeWatchdogs {
             task.cancel()
             sessionStartTimes.removeValue(forKey: sessionId)
+            activityMonitor.stopMonitoring(sessionId: sessionId)
         }
         activeWatchdogs.removeAll()
         logger.log("DeadSessionDetector: all watchdogs stopped", category: .webView, level: .info)
@@ -134,5 +147,6 @@ class DeadSessionDetector {
     private func cleanupWatchdog(sessionId: String) {
         activeWatchdogs.removeValue(forKey: sessionId)
         sessionStartTimes.removeValue(forKey: sessionId)
+        activityMonitor.stopMonitoring(sessionId: sessionId)
     }
 }

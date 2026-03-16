@@ -34,6 +34,7 @@ class AdaptiveRetryService {
 
     nonisolated enum FailureCategory: String, Sendable {
         case timeout
+        case idleTimeout
         case connectionFailure
         case fieldDetectionMiss
         case submitNoOp
@@ -103,6 +104,16 @@ class AdaptiveRetryService {
 
     func policyFor(_ category: FailureCategory) -> RetryPolicy {
         switch category {
+        case .idleTimeout:
+            return RetryPolicy(
+                maxRetries: 3,
+                baseDelayMs: 1000,
+                backoffMultiplier: 1.0,
+                shouldRotateURL: true,
+                shouldRotateProxy: true,
+                shouldRecycleWebView: true,
+                shouldSwitchPattern: false
+            )
         case .timeout:
             return RetryPolicy(
                 maxRetries: 2,
@@ -202,7 +213,7 @@ class AdaptiveRetryService {
         return Int(delay + jitter)
     }
 
-    func categorizeOutcome(_ outcome: LoginOutcome, challengeType: ChallengePageClassifier.ChallengeType? = nil, fieldDetectionFailed: Bool = false, submitFailed: Bool = false) -> FailureCategory {
+    func categorizeOutcome(_ outcome: LoginOutcome, challengeType: ChallengePageClassifier.ChallengeType? = nil, fieldDetectionFailed: Bool = false, submitFailed: Bool = false, isIdleTimeout: Bool = false) -> FailureCategory {
         if let challenge = challengeType {
             switch challenge {
             case .rateLimit: return .rateLimited
@@ -216,7 +227,7 @@ class AdaptiveRetryService {
         }
 
         switch outcome {
-        case .timeout: return .timeout
+        case .timeout: return isIdleTimeout ? .idleTimeout : .timeout
         case .connectionFailure: return fieldDetectionFailed ? .fieldDetectionMiss : .connectionFailure
         case .permDisabled, .tempDisabled: return .disabledAccount
         case .redBannerError: return .rateLimited

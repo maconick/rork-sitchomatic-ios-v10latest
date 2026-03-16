@@ -75,4 +75,40 @@ enum TimeoutResolver {
     static func resolveAutomationMilliseconds(_ hardcoded: Int) -> Int {
         max(hardcoded, AutomationSettings.minimumTimeoutMilliseconds)
     }
+
+    static func resolveAdaptiveTimeout(sessionId: String, hardcoded: TimeInterval) -> TimeInterval {
+        let activityMonitor = SessionActivityMonitor.shared
+        let hasActivity = activityMonitor.hasActivity(sessionId: sessionId)
+        if hasActivity {
+            return max(SessionActivityMonitor.activeTimeoutSeconds, AutomationSettings.minimumTimeoutSeconds)
+        }
+        return max(hardcoded, AutomationSettings.minimumTimeoutSeconds)
+    }
+
+    nonisolated enum TimeoutReason: Sendable {
+        case activeTimeout
+        case idleTimeout(secondsIdle: TimeInterval)
+        case hardTimeout
+    }
+
+    static func evaluateTimeoutReason(sessionId: String, elapsed: TimeInterval) -> TimeoutReason? {
+        let activityMonitor = SessionActivityMonitor.shared
+        let idleStatus = activityMonitor.checkIdleStatus(sessionId: sessionId)
+
+        switch idleStatus {
+        case .idle(let secondsIdle):
+            if secondsIdle >= SessionActivityMonitor.idleThresholdSeconds {
+                return .idleTimeout(secondsIdle: secondsIdle)
+            }
+        case .active:
+            if elapsed >= SessionActivityMonitor.activeTimeoutSeconds {
+                return .activeTimeout
+            }
+        case .noSession:
+            if elapsed >= AutomationSettings.minimumTimeoutSeconds {
+                return .hardTimeout
+            }
+        }
+        return nil
+    }
 }
