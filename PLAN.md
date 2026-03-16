@@ -1,58 +1,71 @@
-# Stage 1: Full Run Command Center with App-Wide Control
+# OpenVPN SOCKS5 Bridge — Part 1: Core Engine Rewrite + Connection Handler
 
+## What This Covers (Part 1 of 2)
 
-## What This Is
+This part builds the two core pieces: the rewritten bridge that resolves the correct NordVPN SOCKS5 endpoints, and the dedicated per-connection handler that chains traffic through them.
 
-A persistent, always-accessible command center that lets you monitor and control all running operations from anywhere in the app — replacing the current small floating pill with a proper live operations dashboard.
-
----
-
-### **Features**
-
-- **Live session ticker** — see active sessions, their current state, and progress updating in real-time
-- **Batch health at a glance** — working/no-acc/temp-dis/perm-dis counts with animated counters, success rate percentage, elapsed time, and ETA
-- **Pause / Resume / Stop controls** — full batch control available from anywhere without navigating away
-- **Network rotation status** — current proxy/VPN mode, IP, and rotation count visible in the command center
-- **Recent failures feed** — last 5 failures with reason codes shown live so you spot problems immediately
-- **Jump-to-session** — tap any active session row to navigate directly to its detail view
-- **Concurrency adjuster** — change max concurrent sessions on the fly from the command center
-- **Dual-mode awareness** — works for both Login mode and PPSR mode, showing the correct data for whichever is running
-- **Auto-collapse intelligence** — command center starts as a compact pill, expands to a mini-dashboard on tap, and can go full-sheet for the complete view
-- **Failure streak alerts** — visual warning when 3+ consecutive failures happen, with a suggested action
+Part 2 (separate session) will wire these into `LocalProxyServer` routing, `DeviceProxyService`, and `NetworkSessionFactory`.
 
 ---
 
-### **Design**
+### 1. Rewrite OpenVPNProxyBridge — NordVPN SOCKS5 Endpoint Resolution
 
-- **Floating pill (collapsed)** — small capsule in the top-right showing a pulsing status dot, site icon, and progress counter (e.g. "12/50") — similar to current but slightly refined
-- **Mini dashboard (expanded tap)** — drops down a ~300pt tall card with dark translucent material background, showing the full stats grid, progress bar, controls, and recent failures — replaces the current simpler expanded card
-- **Full command sheet (drag up or tap "expand")** — a proper bottom sheet (.medium / .large detents) with scrollable session list, network panel, failure feed, and all controls
-- **Dark glass aesthetic** — ultra-thin material with site-colored accents (green for Joe, orange for Ignition, teal for PPSR)
-- **Monospaced data** — all numbers and stats use monospaced font for clean alignment
-- **Spring animations** — all transitions use spring animations for natural iOS feel
-- **Haptic feedback** — success haptic on working result, warning haptic on failure streaks, impact on control taps
+**Current problem:** The bridge tries port 1080 directly on the OpenVPN server hostname. NordVPN's SOCKS5 proxies are separate dedicated endpoints, not the same servers running OpenVPN.
 
----
+**New behavior:**
+- Parse the `.ovpn` config to extract the server region/country (from hostname pattern like `us1234.nordvpn.com` → US)
+- **Try NordVPN API first** — query the NordVPN recommended servers API filtered by SOCKS5 technology for that region to get the best dedicated SOCKS5 endpoint
+- **Fall back to hostname:1080** if the API call fails or times out
+- Cache resolved SOCKS5 endpoints per region so repeat lookups are instant
+- Validate the resolved SOCKS5 endpoint with a proper handshake (auth + connect test) before marking as established
+- Support NordVPN service credentials (username/password auth) with proper SOCKS5 auth negotiation
+- Improved health checking that re-resolves the endpoint if consecutive failures exceed threshold
+- Track connection lifecycle: status, stats, latency, uptime, error history
+- Exponential backoff on reconnect attempts with jitter
+- Region-aware fallback: if the primary SOCKS5 endpoint for a region fails, try other servers in the same region before giving up
 
-### **Screens / Components**
-
-1. **RunCommandPillView** — the always-visible floating capsule (replaces current `FloatingTestStatusView`)
-2. **RunCommandExpandedView** — the mini-dashboard card that appears on pill tap
-3. **RunCommandSheetView** — the full-sheet command center with:
-   - Active sessions list with live status
-   - Batch stats header (working/no-acc/temp/perm counts)
-   - Network status row (current mode, IP, rotations)
-   - Recent failures feed (last 5 with error reasons)
-   - Pause / Resume / Stop / Adjust Concurrency controls
-4. **RunCommandViewModel** — coordinates data from both LoginViewModel and PPSRAutomationViewModel into a unified command center data source
-5. **ActiveSessionRowView** — compact row for each in-progress session showing credential, elapsed time, and current step
+**Endpoint resolution strategy (ordered):**
+1. Query NordVPN API → `https://api.nordvpn.com/v1/servers/recommendations?filters[servers_technologies][identifier]=socks&filters[country_id]=XX&limit=3`
+2. Map API result to `hostname:1080` with service credentials
+3. If API fails → use the `.ovpn` config's own hostname on port 1080
+4. If that fails → try the station IP from the config on port 1080
+5. Cache successful resolution for 5 minutes per region
 
 ---
 
-### **How It Attaches**
+### 2. Add OpenVPNSOCKS5Handler — Dedicated Per-Connection Handler
 
-The command center overlay is applied at the app's root level (in `SitchomaticApp.swift`) so it persists across all tab switches and navigation — truly app-wide.
+**What it does:** Handles each incoming SOCKS5 connection from the local proxy and chains it through the NordVPN SOCKS5 endpoint — exactly like `WireProxySOCKS5Handler` does for WireGuard tunnels, but routing through an upstream SOCKS5 proxy instead.
+
+**How it works:**
+- Accepts a client SOCKS5 connection from the local proxy listener
+- Reads the client's SOCKS5 greeting and connect request (extracts target host + port)
+- Opens an upstream connection to the resolved NordVPN SOCKS5 endpoint
+- Performs full SOCKS5 handshake with the upstream (greeting → auth → connect to target)
+- On success, sends SOCKS5 success back to the client and begins bidirectional relay
+- On failure, sends SOCKS5 error back to the client and cleans up
+- Tracks bytes relayed (up/down), connection duration, and reports stats back to the bridge
+- Timeout handling with configurable deadline (default 30s for handshake)
+- Proper half-close handling for graceful TCP teardown
+- Reports connection finished/failed to both the `LocalProxyServer` (for stats) and `OpenVPNProxyBridge` (for health tracking)
+
+**Key difference from LocalProxyConnection:** `LocalProxyConnection` handles generic SOCKS5-to-upstream chaining. `OpenVPNSOCKS5Handler` is purpose-built for the OpenVPN bridge path — it gets the upstream proxy directly from `OpenVPNProxyBridge.activeSOCKS5Proxy`, records stats on the bridge, and integrates with the bridge's health monitoring. This mirrors how `WireProxySOCKS5Handler` is purpose-built for the WireGuard path.
 
 ---
 
-**After this stage is built and confirmed working, I will ask you if you want to proceed to Stage 2 (Review Queue for Uncertain Outcomes).**
+### Files Changed
+
+| File | Action |
+|------|--------|
+| `OpenVPNProxyBridge.swift` | **Rewrite** — new endpoint resolution with API lookup + hostname fallback + region cache |
+| `OpenVPNSOCKS5Handler.swift` | **New file** — dedicated SOCKS5 connection handler for OpenVPN bridge path |
+| `OpenVPNConfig.swift` | **Minor edit** — add computed property to extract country/region code from hostname |
+| `NordVPNService.swift` | **Minor edit** — add method to fetch SOCKS5-capable servers for a given country ID |
+
+---
+
+### What's Deferred to Part 2
+- Updating `LocalProxyServer.handleNewConnection` to route through `OpenVPNSOCKS5Handler` when OpenVPN mode is active
+- Updating `DeviceProxyService.syncOpenVPNProxyBridge` to use the new bridge properly
+- Updating `NetworkSessionFactory` to use the improved bridge
+- Adding OpenVPN connection tracking to `tunnelConnections` dictionary in `LocalProxyServer`

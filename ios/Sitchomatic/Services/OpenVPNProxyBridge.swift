@@ -18,6 +18,13 @@ nonisolated struct OpenVPNBridgeStats: Sendable {
     var handshakeLatencyMs: Int = 0
     var lastValidatedAt: Date?
     var consecutiveFailures: Int = 0
+    var resolutionSource: String = ""
+}
+
+nonisolated struct SOCKS5RegionCacheEntry: Sendable {
+    let proxy: ProxyConfig
+    let resolvedAt: Date
+    let source: String
 }
 
 @Observable
@@ -40,9 +47,12 @@ class OpenVPNProxyBridge {
     private var isReconnecting: Bool = false
 
     private let socks5Port: Int = 1080
-    private let validationTimeout: TimeInterval = 8
+    private let regionCacheTTL: TimeInterval = 300
+    private var regionCache: [String: SOCKS5RegionCacheEntry] = [:]
 
     var isActive: Bool { status == .established }
+
+    // MARK: - Start
 
     func start(with config: OpenVPNConfig) async {
         guard status == .stopped || status == .failed else { return }
@@ -52,101 +62,28 @@ class OpenVPNProxyBridge {
         lastError = nil
         reconnectAttempts = 0
 
-        let serverHost = resolveServerHost(from: config)
-        guard !serverHost.isEmpty else {
-            status = .failed
-            lastError = "Cannot resolve server hostname from OpenVPN config"
-            logger.log("OpenVPNBridge: no hostname in config \(config.fileName)", category: .vpn, level: .error)
-            return
-        }
-
-        let nordService = NordVPNService.shared
-        let username = nordService.serviceUsername
-        let password = nordService.servicePassword
-
-        let proxy = ProxyConfig(
-            host: serverHost,
-            port: socks5Port,
-            username: username.isEmpty ? nil : username,
-            password: password.isEmpty ? nil : password
-        )
-
         let startTime = CFAbsoluteTimeGetCurrent()
-        let (alive, validated) = await validateSOCKS5Endpoint(proxy)
-        let latencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
 
-        if alive && validated {
-            activeSOCKS5Proxy = proxy
+        if let resolved = await resolveSOCKS5Endpoint(for: config) {
+            let latencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+            activeSOCKS5Proxy = resolved.proxy
             status = .established
             connectedSince = Date()
             stats.handshakeLatencyMs = latencyMs
             stats.lastValidatedAt = Date()
             stats.consecutiveFailures = 0
+            stats.resolutionSource = resolved.source
             startHealthCheck()
-            logger.log("OpenVPNBridge: ESTABLISHED via SOCKS5 → \(serverHost):\(socks5Port) (\(latencyMs)ms)", category: .vpn, level: .success)
+            logger.log("OpenVPNBridge: ESTABLISHED via \(resolved.source) → \(resolved.proxy.host):\(resolved.proxy.port) (\(latencyMs)ms)", category: .vpn, level: .success)
             return
-        }
-
-        if alive && !validated && !nordService.hasServiceCredentials {
-            activeSOCKS5Proxy = proxy
-            status = .established
-            connectedSince = Date()
-            stats.handshakeLatencyMs = latencyMs
-            stats.lastValidatedAt = Date()
-            stats.consecutiveFailures = 0
-            startHealthCheck()
-            logger.log("OpenVPNBridge: ESTABLISHED (no-auth) via SOCKS5 → \(serverHost):\(socks5Port) (\(latencyMs)ms)", category: .vpn, level: .success)
-            return
-        }
-
-        let directTCPAlive = await testDirectTCPConnection(host: serverHost, port: UInt16(config.remotePort))
-        if directTCPAlive {
-            let altProxy = ProxyConfig(
-                host: serverHost,
-                port: config.remotePort,
-                username: username.isEmpty ? nil : username,
-                password: password.isEmpty ? nil : password
-            )
-            let (altAlive, _) = await validateSOCKS5Endpoint(altProxy)
-            if altAlive {
-                activeSOCKS5Proxy = altProxy
-                status = .established
-                connectedSince = Date()
-                stats.handshakeLatencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
-                stats.lastValidatedAt = Date()
-                stats.consecutiveFailures = 0
-                startHealthCheck()
-                logger.log("OpenVPNBridge: ESTABLISHED via alt port \(serverHost):\(config.remotePort)", category: .vpn, level: .success)
-                return
-            }
-        }
-
-        let stationIP = resolveStationIP(from: config)
-        if !stationIP.isEmpty && stationIP != serverHost {
-            let stationProxy = ProxyConfig(
-                host: stationIP,
-                port: socks5Port,
-                username: username.isEmpty ? nil : username,
-                password: password.isEmpty ? nil : password
-            )
-            let (stationAlive, _) = await validateSOCKS5Endpoint(stationProxy)
-            if stationAlive {
-                activeSOCKS5Proxy = stationProxy
-                status = .established
-                connectedSince = Date()
-                stats.handshakeLatencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
-                stats.lastValidatedAt = Date()
-                stats.consecutiveFailures = 0
-                startHealthCheck()
-                logger.log("OpenVPNBridge: ESTABLISHED via station IP \(stationIP):\(socks5Port)", category: .vpn, level: .success)
-                return
-            }
         }
 
         status = .failed
-        lastError = "SOCKS5 endpoint unreachable on \(serverHost):\(socks5Port)"
-        logger.log("OpenVPNBridge: FAILED — all connection strategies exhausted for \(config.fileName)", category: .vpn, level: .error)
+        lastError = "All SOCKS5 resolution strategies exhausted for \(config.fileName)"
+        logger.log("OpenVPNBridge: FAILED — \(lastError!)", category: .vpn, level: .error)
     }
+
+    // MARK: - Stop
 
     func stop() {
         stopHealthCheck()
@@ -160,6 +97,8 @@ class OpenVPNProxyBridge {
         logger.log("OpenVPNBridge: stopped", category: .vpn, level: .info)
     }
 
+    // MARK: - Reconnect
+
     func reconnectPreservingSessions() async {
         guard let config = activeConfig, !isReconnecting else { return }
         isReconnecting = true
@@ -171,11 +110,16 @@ class OpenVPNProxyBridge {
         stop()
         stats = preservedStats
 
-        let backoffDelay = min(Double(reconnectAttempts + 1) * 1.5, 8.0)
+        let jitter = Double.random(in: 0...1.0)
+        let backoffDelay = min(Double(reconnectAttempts + 1) * 1.5 + jitter, 10.0)
         try? await Task.sleep(for: .seconds(backoffDelay))
 
         reconnectAttempts += 1
         isReconnecting = false
+
+        if let regionKey = config.nordCountryCode {
+            regionCache.removeValue(forKey: regionKey)
+        }
 
         await start(with: config)
 
@@ -183,6 +127,8 @@ class OpenVPNProxyBridge {
             await reconnectPreservingSessions()
         }
     }
+
+    // MARK: - Stats Recording
 
     func recordConnectionServed() {
         stats.connectionsServed += 1
@@ -196,6 +142,118 @@ class OpenVPNProxyBridge {
     func recordBytes(up: UInt64, down: UInt64) {
         stats.bytesUpstream += up
         stats.bytesDownstream += down
+    }
+
+    // MARK: - Endpoint Resolution
+
+    private func resolveSOCKS5Endpoint(for config: OpenVPNConfig) async -> (proxy: ProxyConfig, source: String)? {
+        let nordService = NordVPNService.shared
+        let username = nordService.serviceUsername
+        let password = nordService.servicePassword
+        let authUser: String? = username.isEmpty ? nil : username
+        let authPass: String? = password.isEmpty ? nil : password
+
+        if let regionKey = config.nordCountryCode, let cached = regionCache[regionKey] {
+            if Date().timeIntervalSince(cached.resolvedAt) < regionCacheTTL {
+                let (alive, _) = await validateSOCKS5Endpoint(cached.proxy)
+                if alive {
+                    logger.log("OpenVPNBridge: using cached \(cached.source) endpoint for region \(regionKey)", category: .vpn, level: .debug)
+                    return (cached.proxy, "cached(\(cached.source))")
+                }
+                regionCache.removeValue(forKey: regionKey)
+                logger.log("OpenVPNBridge: cached endpoint for \(regionKey) failed validation, re-resolving", category: .vpn, level: .warning)
+            } else {
+                regionCache.removeValue(forKey: regionKey)
+            }
+        }
+
+        if let countryId = config.nordCountryId {
+            let apiServers = await nordService.fetchSOCKS5Servers(countryId: countryId, limit: 3)
+            for server in apiServers {
+                let proxy = ProxyConfig(
+                    host: server.hostname,
+                    port: socks5Port,
+                    username: authUser,
+                    password: authPass
+                )
+                let (alive, validated) = await validateSOCKS5Endpoint(proxy)
+                if alive && (validated || !nordService.hasServiceCredentials) {
+                    cacheEndpoint(proxy: proxy, regionKey: config.nordCountryCode, source: "NordAPI(\(server.hostname))")
+                    return (proxy, "NordAPI(\(server.hostname))")
+                }
+
+                let stationProxy = ProxyConfig(
+                    host: server.station,
+                    port: socks5Port,
+                    username: authUser,
+                    password: authPass
+                )
+                let (stationAlive, stationValidated) = await validateSOCKS5Endpoint(stationProxy)
+                if stationAlive && (stationValidated || !nordService.hasServiceCredentials) {
+                    cacheEndpoint(proxy: stationProxy, regionKey: config.nordCountryCode, source: "NordAPI-station(\(server.station))")
+                    return (stationProxy, "NordAPI-station(\(server.station))")
+                }
+            }
+            if !apiServers.isEmpty {
+                logger.log("OpenVPNBridge: all \(apiServers.count) API SOCKS5 servers unreachable for country \(countryId), trying hostname fallback", category: .vpn, level: .warning)
+            }
+        }
+
+        let serverHost = config.remoteHost
+        guard !serverHost.isEmpty else { return nil }
+
+        let hostnameProxy = ProxyConfig(
+            host: serverHost,
+            port: socks5Port,
+            username: authUser,
+            password: authPass
+        )
+        let (hostAlive, hostValidated) = await validateSOCKS5Endpoint(hostnameProxy)
+        if hostAlive && (hostValidated || !nordService.hasServiceCredentials) {
+            cacheEndpoint(proxy: hostnameProxy, regionKey: config.nordCountryCode, source: "hostname(\(serverHost):1080)")
+            return (hostnameProxy, "hostname(\(serverHost):1080)")
+        }
+
+        let stationIP = resolveStationIP(from: config)
+        if !stationIP.isEmpty && stationIP != serverHost {
+            let stationProxy = ProxyConfig(
+                host: stationIP,
+                port: socks5Port,
+                username: authUser,
+                password: authPass
+            )
+            let (stationAlive, stationValidated) = await validateSOCKS5Endpoint(stationProxy)
+            if stationAlive && (stationValidated || !nordService.hasServiceCredentials) {
+                cacheEndpoint(proxy: stationProxy, regionKey: config.nordCountryCode, source: "stationIP(\(stationIP):1080)")
+                return (stationProxy, "stationIP(\(stationIP):1080)")
+            }
+        }
+
+        if config.remotePort != socks5Port {
+            let altProxy = ProxyConfig(
+                host: serverHost,
+                port: config.remotePort,
+                username: authUser,
+                password: authPass
+            )
+            let (altAlive, _) = await validateSOCKS5Endpoint(altProxy)
+            if altAlive {
+                cacheEndpoint(proxy: altProxy, regionKey: config.nordCountryCode, source: "altPort(\(serverHost):\(config.remotePort))")
+                return (altProxy, "altPort(\(serverHost):\(config.remotePort))")
+            }
+        }
+
+        return nil
+    }
+
+    private func cacheEndpoint(proxy: ProxyConfig, regionKey: String?, source: String) {
+        guard let key = regionKey else { return }
+        regionCache[key] = SOCKS5RegionCacheEntry(proxy: proxy, resolvedAt: Date(), source: source)
+    }
+
+    func invalidateRegionCache() {
+        regionCache.removeAll()
+        logger.log("OpenVPNBridge: region cache cleared", category: .vpn, level: .debug)
     }
 
     // MARK: - Health Check
@@ -226,7 +284,10 @@ class OpenVPNProxyBridge {
             logger.log("OpenVPNBridge: health check FAILED (consecutive: \(stats.consecutiveFailures))", category: .vpn, level: .warning)
 
             if stats.consecutiveFailures >= 3 {
-                logger.log("OpenVPNBridge: 3+ consecutive failures — initiating reconnect", category: .vpn, level: .error)
+                logger.log("OpenVPNBridge: 3+ failures — re-resolving endpoint", category: .vpn, level: .error)
+                if let config = activeConfig, let regionKey = config.nordCountryCode {
+                    regionCache.removeValue(forKey: regionKey)
+                }
                 await reconnectPreservingSessions()
             }
         }
@@ -234,7 +295,7 @@ class OpenVPNProxyBridge {
 
     // MARK: - SOCKS5 Validation
 
-    nonisolated private func validateSOCKS5Endpoint(_ proxy: ProxyConfig) async -> (alive: Bool, validated: Bool) {
+    nonisolated func validateSOCKS5Endpoint(_ proxy: ProxyConfig) async -> (alive: Bool, validated: Bool) {
         await withCheckedContinuation { continuation in
             let endpoint = NWEndpoint.hostPort(
                 host: NWEndpoint.Host(proxy.host),
@@ -274,16 +335,18 @@ class OpenVPNProxyBridge {
 
                         connection.receive(minimumIncompleteLength: 2, maximumLength: 16) { data, _, _, recvError in
                             guard !completed else { return }
-                            completed = true
-                            timeoutWork.cancel()
 
                             if recvError != nil {
+                                completed = true
+                                timeoutWork.cancel()
                                 connection.cancel()
                                 continuation.resume(returning: (true, false))
                                 return
                             }
 
                             guard let data, data.count >= 2, data[0] == 0x05 else {
+                                completed = true
+                                timeoutWork.cancel()
                                 connection.cancel()
                                 continuation.resume(returning: (true, false))
                                 return
@@ -302,12 +365,18 @@ class OpenVPNProxyBridge {
 
                                 connection.send(content: authPacket, completion: .contentProcessed { authSendError in
                                     if authSendError != nil {
+                                        guard !completed else { return }
+                                        completed = true
+                                        timeoutWork.cancel()
                                         connection.cancel()
                                         continuation.resume(returning: (true, false))
                                         return
                                     }
 
                                     connection.receive(minimumIncompleteLength: 2, maximumLength: 4) { authData, _, _, authRecvError in
+                                        guard !completed else { return }
+                                        completed = true
+                                        timeoutWork.cancel()
                                         connection.cancel()
                                         if authRecvError != nil {
                                             continuation.resume(returning: (true, false))
@@ -322,12 +391,18 @@ class OpenVPNProxyBridge {
                                     }
                                 })
                             } else if authMethod == 0x00 {
+                                completed = true
+                                timeoutWork.cancel()
                                 connection.cancel()
                                 continuation.resume(returning: (true, true))
                             } else if authMethod == 0xFF {
+                                completed = true
+                                timeoutWork.cancel()
                                 connection.cancel()
                                 continuation.resume(returning: (true, false))
                             } else {
+                                completed = true
+                                timeoutWork.cancel()
                                 connection.cancel()
                                 continuation.resume(returning: (true, true))
                             }
@@ -356,65 +431,7 @@ class OpenVPNProxyBridge {
         }
     }
 
-    nonisolated private func testDirectTCPConnection(host: String, port: UInt16) async -> Bool {
-        await withCheckedContinuation { continuation in
-            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-                continuation.resume(returning: false)
-                return
-            }
-            let connection = NWConnection(
-                host: NWEndpoint.Host(host),
-                port: nwPort,
-                using: .tcp
-            )
-            let queue = DispatchQueue(label: "ovpn-tcp-test.\(UUID().uuidString.prefix(6))")
-            var completed = false
-
-            let timeoutWork = DispatchWorkItem { [weak connection] in
-                guard !completed else { return }
-                completed = true
-                connection?.cancel()
-                continuation.resume(returning: false)
-            }
-            queue.asyncAfter(deadline: .now() + 5, execute: timeoutWork)
-
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    guard !completed else { return }
-                    completed = true
-                    timeoutWork.cancel()
-                    connection.cancel()
-                    continuation.resume(returning: true)
-                case .failed, .cancelled:
-                    guard !completed else { return }
-                    completed = true
-                    timeoutWork.cancel()
-                    continuation.resume(returning: false)
-                default:
-                    break
-                }
-            }
-            connection.start(queue: queue)
-        }
-    }
-
-    // MARK: - Host Resolution
-
-    private func resolveServerHost(from config: OpenVPNConfig) -> String {
-        let host = config.remoteHost
-        guard !host.isEmpty else { return "" }
-
-        if host.contains(".nordvpn.com") {
-            return host
-        }
-
-        if host.rangeOfCharacter(from: CharacterSet.letters) != nil {
-            return host
-        }
-
-        return host
-    }
+    // MARK: - Host Resolution Helpers
 
     private func resolveStationIP(from config: OpenVPNConfig) -> String {
         let lines = config.rawContent.components(separatedBy: .newlines)
@@ -452,5 +469,9 @@ class OpenVPNProxyBridge {
     var activeProxyLabel: String? {
         guard let proxy = activeSOCKS5Proxy else { return nil }
         return "\(proxy.host):\(proxy.port)"
+    }
+
+    var resolutionSourceLabel: String {
+        stats.resolutionSource.isEmpty ? "—" : stats.resolutionSource
     }
 }

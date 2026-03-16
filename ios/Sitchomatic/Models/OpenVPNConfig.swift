@@ -59,6 +59,36 @@ nonisolated struct OpenVPNConfig: Identifiable, Codable, Sendable {
         return host
     }
 
+    var nordCountryCode: String? {
+        let host = remoteHost.lowercased()
+        guard host.contains(".nordvpn.com") else { return nil }
+        let prefix = host.replacingOccurrences(of: ".nordvpn.com", with: "")
+        let letters = prefix.filter { $0.isLetter }
+        guard letters.count >= 2 else { return nil }
+        return String(letters.prefix(2)).uppercased()
+    }
+
+    var nordCountryId: Int? {
+        guard let code = nordCountryCode else { return nil }
+        return Self.nordCountryCodeToId[code]
+    }
+
+    private static let nordCountryCodeToId: [String: Int] = [
+        "AL": 2, "AR": 10, "AU": 13, "AT": 14, "AZ": 15,
+        "BE": 21, "BA": 27, "BR": 30, "BG": 33, "CA": 38,
+        "CL": 43, "CO": 47, "CR": 52, "HR": 54, "CY": 56,
+        "CZ": 57, "DK": 58, "EE": 68, "FI": 73, "FR": 74,
+        "GE": 80, "DE": 81, "GR": 84, "HK": 97, "HU": 98,
+        "IS": 99, "IN": 100, "ID": 101, "IE": 104, "IL": 105,
+        "IT": 106, "JP": 108, "LV": 119, "LT": 125, "LU": 126,
+        "MY": 131, "MX": 140, "MD": 142, "NL": 153, "NZ": 156,
+        "MK": 128, "NO": 163, "PA": 170, "PE": 172, "PH": 174,
+        "PL": 176, "PT": 177, "RO": 179, "RS": 192, "SG": 195,
+        "SK": 196, "SI": 197, "ZA": 200, "KR": 114, "ES": 202,
+        "SE": 208, "CH": 209, "TW": 211, "TH": 214, "TR": 220,
+        "UA": 225, "AE": 226, "GB": 227, "US": 228, "VN": 234
+    ]
+
     static func parse(fileName: String, content: String) -> OpenVPNConfig? {
         let lines = content.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

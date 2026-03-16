@@ -713,6 +713,41 @@ class NordVPNService {
         )
     }
 
+    func fetchSOCKS5Servers(countryId: Int, limit: Int = 3) async -> [NordVPNServer] {
+        var components = URLComponents(string: "https://api.nordvpn.com/v1/servers/recommendations")
+        components?.queryItems = [
+            URLQueryItem(name: "filters[servers_technologies][identifier]", value: "socks"),
+            URLQueryItem(name: "filters[country_id]", value: "\(countryId)"),
+            URLQueryItem(name: "limit", value: "\(limit)")
+        ]
+
+        guard let url = components?.url else { return [] }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 15
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                logger.log("NordVPN: SOCKS5 fetch HTTP \(http.statusCode) for country \(countryId)", category: .vpn, level: .warning)
+                return []
+            }
+            let servers = try JSONDecoder().decode([NordVPNServer].self, from: data)
+            logger.log("NordVPN: fetched \(servers.count) SOCKS5 servers for country \(countryId)", category: .vpn, level: .success)
+            return servers
+        } catch {
+            logger.log("NordVPN: SOCKS5 fetch failed for country \(countryId) — \(error.localizedDescription)", category: .vpn, level: .warning)
+            return []
+        }
+    }
+
     // MARK: - Auto-Populate Configs
 
     func autoPopulateConfigs(forceRefresh: Bool = false) async {
