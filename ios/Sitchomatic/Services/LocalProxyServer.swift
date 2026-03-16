@@ -63,6 +63,7 @@ class LocalProxyServer {
     private var listener: NWListener?
     private var connections: [UUID: LocalProxyConnection] = [:]
     private var tunnelConnections: [UUID: WireProxySOCKS5Handler] = [:]
+    private var ovpnConnections: [UUID: OpenVPNSOCKS5Handler] = [:]
     private let queue = DispatchQueue(label: "local-proxy-server", qos: .userInitiated)
     private let logger = DebugLogger.shared
     private let preferredPort: UInt16 = 18080
@@ -128,6 +129,10 @@ class LocalProxyServer {
             conn.cancel()
         }
         tunnelConnections.removeAll()
+        for conn in ovpnConnections.values {
+            conn.cancel()
+        }
+        ovpnConnections.removeAll()
         activeConnectionDetails.removeAll()
 
         isRunning = false
@@ -324,7 +329,7 @@ class LocalProxyServer {
     }
 
     private func handleNewConnection(_ nwConnection: NWConnection) {
-        let totalActive = connections.count + tunnelConnections.count
+        let totalActive = connections.count + tunnelConnections.count + ovpnConnections.count
         if totalActive >= maxConcurrentConnections {
             rejectedConnections += 1
             nwConnection.cancel()
@@ -344,11 +349,24 @@ class LocalProxyServer {
                 server: self
             )
             tunnelConnections[id] = tunnelConn
-            stats.activeConnections = connections.count + tunnelConnections.count
+            stats.activeConnections = connections.count + tunnelConnections.count + ovpnConnections.count
             if stats.activeConnections > stats.peakActiveConnections {
                 stats.peakActiveConnections = stats.activeConnections
             }
             tunnelConn.start()
+        } else if openVPNProxyMode && OpenVPNProxyBridge.shared.isActive {
+            let ovpnConn = OpenVPNSOCKS5Handler(
+                id: id,
+                clientConnection: nwConnection,
+                queue: queue,
+                server: self
+            )
+            ovpnConnections[id] = ovpnConn
+            stats.activeConnections = connections.count + tunnelConnections.count + ovpnConnections.count
+            if stats.activeConnections > stats.peakActiveConnections {
+                stats.peakActiveConnections = stats.activeConnections
+            }
+            ovpnConn.start()
         } else {
             let connection = LocalProxyConnection(
                 id: id,
@@ -359,7 +377,7 @@ class LocalProxyServer {
                 timeoutSeconds: connectionTimeoutSeconds
             )
             connections[id] = connection
-            stats.activeConnections = connections.count + tunnelConnections.count
+            stats.activeConnections = connections.count + tunnelConnections.count + ovpnConnections.count
             if stats.activeConnections > stats.peakActiveConnections {
                 stats.peakActiveConnections = stats.activeConnections
             }
@@ -369,6 +387,7 @@ class LocalProxyServer {
 
     func tunnelConnectionFinished(id: UUID) {
         tunnelConnections.removeValue(forKey: id)
-        stats.activeConnections = connections.count + tunnelConnections.count
+        ovpnConnections.removeValue(forKey: id)
+        stats.activeConnections = connections.count + tunnelConnections.count + ovpnConnections.count
     }
 }

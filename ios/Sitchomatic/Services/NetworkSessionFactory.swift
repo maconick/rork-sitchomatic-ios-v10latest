@@ -70,7 +70,7 @@ class NetworkSessionFactory {
             }
             if deviceProxy.isOpenVPNBridgeActive, localProxy.isRunning, localProxy.openVPNProxyMode {
                 let localConfig = localProxy.localProxyConfig
-                logger.log("NetworkFactory: OpenVPN bridge active → 127.0.0.1:\(localConfig.port) for \(target.rawValue)", category: .vpn, level: .debug)
+                logger.log("NetworkFactory: OpenVPN handler active → 127.0.0.1:\(localConfig.port) for \(target.rawValue)", category: .vpn, level: .debug)
                 return .socks5(localConfig)
             }
             if let localConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
@@ -79,6 +79,11 @@ class NetworkSessionFactory {
             }
             logger.log("NetworkFactory: using united IP → \(config.label) for \(target.rawValue)", category: .network, level: .debug)
             return config
+        }
+
+        if let perSessionConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
+            logger.log("NetworkFactory: per-session tunnel active → 127.0.0.1:\(perSessionConfig.port) for \(target.rawValue)", category: .vpn, level: .debug)
+            return .socks5(perSessionConfig)
         }
 
         let mode = proxyService.connectionMode(for: target)
@@ -252,10 +257,8 @@ class NetworkSessionFactory {
             return .socks5(localProxy.localProxyConfig)
         }
 
-        if deviceProxy.isEnabled {
-            if let localConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
-                return .socks5(localConfig)
-            }
+        if let localConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
+            return .socks5(localConfig)
         }
 
         switch config {
@@ -267,11 +270,11 @@ class NetworkSessionFactory {
             }
             return config
         case .openVPNProxy:
+            if ovpnBridge.isActive, localProxy.isRunning, localProxy.openVPNProxyMode {
+                return .socks5(localProxy.localProxyConfig)
+            }
             if ovpnBridge.isActive, let bridgeProxy = ovpnBridge.activeSOCKS5Proxy {
                 return .socks5(bridgeProxy)
-            }
-            if localProxy.isRunning, localProxy.upstreamProxy != nil {
-                return .socks5(localProxy.localProxyConfig)
             }
             return config
         case .direct:

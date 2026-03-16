@@ -110,11 +110,14 @@ class DeviceProxyService {
             persistSettings()
             if ipRoutingMode == .appWideUnited {
                 stopPerSessionWireProxy()
+                stopPerSessionOpenVPN()
                 activateUnifiedMode()
             } else {
                 deactivateUnifiedMode()
                 if isWireProxyCompatibleMode {
                     activatePerSessionWireProxy()
+                } else if isOpenVPNProxyCompatibleMode {
+                    activatePerSessionOpenVPN()
                 }
             }
         }
@@ -148,8 +151,16 @@ class DeviceProxyService {
         isWireProxyCompatibleMode
     }
 
+    var shouldShowOpenVPNSection: Bool {
+        isOpenVPNProxyCompatibleMode
+    }
+
     var shouldShowWireProxyDashboard: Bool {
         shouldShowWireProxySection && wireProxyBridge.isActive
+    }
+
+    var shouldShowOpenVPNDashboard: Bool {
+        shouldShowOpenVPNSection && ovpnBridge.isActive
     }
 
     var canManageWireProxyTunnel: Bool {
@@ -161,8 +172,20 @@ class DeviceProxyService {
         return perSessionWireProxyActive
     }
 
+    var canManageOpenVPNBridge: Bool {
+        guard shouldShowOpenVPNSection else { return false }
+        if isEnabled {
+            guard case .openVPNProxy = activeConfig else { return false }
+            return true
+        }
+        return perSessionOpenVPNActive
+    }
+
     private(set) var perSessionWireProxyActive: Bool = false
     private var perSessionWGConfig: WireGuardConfig?
+    private(set) var perSessionOpenVPNActive: Bool = false
+    private(set) var perSessionOpenVPNStarting: Bool = false
+    private var perSessionOVPNConfig: OpenVPNConfig?
 
     var rotationInterval: RotationInterval = .everyBatch {
         didSet {
@@ -257,6 +280,11 @@ class DeviceProxyService {
         if rotateOnBatchStart && isWireProxyCompatibleMode && perSessionWireProxyActive {
             rotatePerSessionWireProxy()
             logger.log("DeviceProxy: per-session WireGuard rotated on batch start", category: .vpn, level: .info)
+        }
+
+        if rotateOnBatchStart && isOpenVPNProxyCompatibleMode && perSessionOpenVPNActive {
+            rotatePerSessionOpenVPN()
+            logger.log("DeviceProxy: per-session OpenVPN rotated on batch start", category: .vpn, level: .info)
         }
 
         if proxyService.unifiedConnectionMode == .hybrid {
@@ -456,10 +484,9 @@ class DeviceProxyService {
 
         Task {
             await ovpnBridge.start(with: config)
-            if ovpnBridge.isActive, let socksProxy = ovpnBridge.activeSOCKS5Proxy {
-                localProxy.updateUpstream(socksProxy)
+            if ovpnBridge.isActive {
                 localProxy.enableOpenVPNProxyMode(true)
-                logger.log("DeviceProxy: OpenVPN bridge active → \(socksProxy.host):\(socksProxy.port) for \(config.serverName)", category: .vpn, level: .success)
+                logger.log("DeviceProxy: OpenVPN bridge active → \(ovpnBridge.activeProxyLabel ?? "unknown") for \(config.serverName), handler mode enabled", category: .vpn, level: .success)
             } else {
                 localProxy.enableOpenVPNProxyMode(false)
                 logger.log("DeviceProxy: OpenVPN bridge failed for \(config.serverName) — retrying with next config", category: .vpn, level: .error)
@@ -488,9 +515,8 @@ class DeviceProxyService {
             try? await Task.sleep(for: .seconds(Double(attempt) * 0.5 + 0.5))
 
             await ovpnBridge.start(with: nextOVPN)
-            if ovpnBridge.isActive, let socksProxy = ovpnBridge.activeSOCKS5Proxy {
+            if ovpnBridge.isActive {
                 ovpnIndex += attempt + 1
-                localProxy.updateUpstream(socksProxy)
                 localProxy.enableOpenVPNProxyMode(true)
                 logger.log("DeviceProxy: OpenVPN bridge retry succeeded with \(nextOVPN.serverName) on attempt \(attempt + 1)/\(maxRetries)", category: .vpn, level: .success)
                 return
@@ -620,12 +646,15 @@ class DeviceProxyService {
         if !isOpenVPNProxyCompatibleMode {
             ovpnBridge.stop()
             localProxy.enableOpenVPNProxyMode(false)
+            stopPerSessionOpenVPN()
         }
 
         if isEnabled {
             performRotation(reason: "Connection Mode Changed")
         } else if isWireProxyCompatibleMode && !perSessionWireProxyActive {
             activatePerSessionWireProxy()
+        } else if isOpenVPNProxyCompatibleMode && !perSessionOpenVPNActive {
+            activatePerSessionOpenVPN()
         }
     }
 
@@ -785,6 +814,149 @@ class DeviceProxyService {
         return nil
     }
 
+    var openVPNActiveConfigLabel: String? {
+        if isEnabled, case .openVPNProxy(let ovpn) = activeConfig {
+            return ovpn.serverName
+        }
+        if perSessionOpenVPNActive, let ovpn = perSessionOVPNConfig {
+            return ovpn.serverName
+        }
+        return nil
+    }
+
+    // MARK: - Per-Session OpenVPN
+
+    func activatePerSessionOpenVPN() {
+        guard !isEnabled, isOpenVPNProxyCompatibleMode else { return }
+        guard !perSessionOpenVPNStarting else {
+            logger.log("DeviceProxy: per-session OpenVPN activation already in progress", category: .vpn, level: .debug)
+            return
+        }
+        let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
+        let allOVPN = collectUniqueOVPN(targets: targets)
+        guard !allOVPN.isEmpty else {
+            logger.log("DeviceProxy: no OVPN configs available for per-session OpenVPN", category: .vpn, level: .warning)
+            return
+        }
+
+        perSessionOpenVPNStarting = true
+        perSessionOpenVPNActive = true
+
+        ovpnBridge.stop()
+        localProxy.enableOpenVPNProxyMode(false)
+
+        if localProxyEnabled && !localProxy.isRunning {
+            localProxy.start()
+        }
+
+        Task {
+            try? await Task.sleep(for: .seconds(0.5))
+
+            if !localProxy.isRunning && localProxyEnabled {
+                localProxy.start()
+                try? await Task.sleep(for: .seconds(0.3))
+            }
+
+            let ovpn = allOVPN[ovpnIndex % allOVPN.count]
+            ovpnIndex += 1
+            perSessionOVPNConfig = ovpn
+
+            await ovpnBridge.start(with: ovpn)
+            if ovpnBridge.isActive {
+                localProxy.enableOpenVPNProxyMode(true)
+                logger.log("DeviceProxy: per-session OpenVPN active \u{2192} \(ovpn.serverName) via \(ovpnBridge.activeProxyLabel ?? "unknown")", category: .vpn, level: .success)
+            } else {
+                logger.log("DeviceProxy: per-session OpenVPN failed for \(ovpn.serverName) \u{2014} retrying", category: .vpn, level: .error)
+                await retryPerSessionOpenVPN(failedServer: ovpn.serverName)
+            }
+
+            if !ovpnBridge.isActive {
+                perSessionOpenVPNActive = false
+                perSessionOVPNConfig = nil
+                localProxy.enableOpenVPNProxyMode(false)
+                logger.log("DeviceProxy: per-session OpenVPN failed to start after all attempts", category: .vpn, level: .error)
+            }
+
+            perSessionOpenVPNStarting = false
+        }
+    }
+
+    private func retryPerSessionOpenVPN(failedServer: String) async {
+        let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
+        let allOVPN = collectUniqueOVPN(targets: targets)
+        let candidates = allOVPN.filter { $0.serverName != failedServer }
+        guard !candidates.isEmpty else {
+            logger.log("DeviceProxy: no alternative OVPN configs for per-session retry", category: .vpn, level: .error)
+            return
+        }
+
+        let maxRetries = min(candidates.count, 5)
+        for i in 0..<maxRetries {
+            let nextOVPN = candidates[(ovpnIndex + i) % candidates.count]
+            perSessionOVPNConfig = nextOVPN
+
+            ovpnBridge.stop()
+            try? await Task.sleep(for: .seconds(Double(i) * 0.5 + 0.5))
+
+            await ovpnBridge.start(with: nextOVPN)
+            if ovpnBridge.isActive {
+                ovpnIndex += i + 1
+                localProxy.enableOpenVPNProxyMode(true)
+                logger.log("DeviceProxy: per-session OpenVPN retry succeeded \u{2192} \(nextOVPN.serverName) on attempt \(i + 1)/\(maxRetries)", category: .vpn, level: .success)
+                return
+            }
+            logger.log("DeviceProxy: per-session OpenVPN retry \(i + 1)/\(maxRetries) failed for \(nextOVPN.serverName)", category: .vpn, level: .warning)
+        }
+
+        ovpnIndex += maxRetries
+        localProxy.enableOpenVPNProxyMode(false)
+        logger.log("DeviceProxy: per-session OpenVPN all \(maxRetries) retries exhausted", category: .vpn, level: .error)
+    }
+
+    private func stopPerSessionOpenVPN() {
+        guard perSessionOpenVPNActive else { return }
+        ovpnBridge.stop()
+        localProxy.enableOpenVPNProxyMode(false)
+        perSessionOpenVPNActive = false
+        perSessionOVPNConfig = nil
+        logger.log("DeviceProxy: per-session OpenVPN stopped", category: .vpn, level: .info)
+    }
+
+    func rotatePerSessionOpenVPN() {
+        guard perSessionOpenVPNActive, !isEnabled, !perSessionOpenVPNStarting else { return }
+        ovpnBridge.stop()
+        localProxy.enableOpenVPNProxyMode(false)
+        perSessionOpenVPNActive = false
+        activatePerSessionOpenVPN()
+    }
+
+    func reconnectOpenVPN() {
+        if !isEnabled && perSessionOpenVPNActive {
+            ovpnBridge.stop()
+            localProxy.enableOpenVPNProxyMode(false)
+            logger.log("DeviceProxy: OpenVPN reconnect requested (per-session)", category: .vpn, level: .info)
+            activatePerSessionOpenVPN()
+            return
+        }
+        guard canManageOpenVPNBridge else { return }
+        ovpnBridge.stop()
+        localProxy.enableOpenVPNProxyMode(false)
+        logger.log("DeviceProxy: OpenVPN reconnect requested", category: .vpn, level: .info)
+        if case .openVPNProxy(let ovpn) = activeConfig {
+            syncOpenVPNProxyBridge(ovpn)
+        }
+    }
+
+    func stopOpenVPN() {
+        ovpnBridge.stop()
+        localProxy.enableOpenVPNProxyMode(false)
+        if !isEnabled {
+            perSessionOpenVPNActive = false
+            perSessionOVPNConfig = nil
+        }
+        logger.log("DeviceProxy: OpenVPN manually stopped", category: .vpn, level: .info)
+    }
+
     func handleProfileSwitch() {
         wireProxyBridge.stop()
         ovpnBridge.stop()
@@ -793,6 +965,9 @@ class DeviceProxyService {
         localProxy.updateUpstream(nil)
         perSessionWireProxyActive = false
         perSessionWGConfig = nil
+        perSessionOpenVPNActive = false
+        perSessionOVPNConfig = nil
+        perSessionOpenVPNStarting = false
 
         activeConfig = nil
         activeEndpointLabel = nil
@@ -810,6 +985,8 @@ class DeviceProxyService {
             performRotation(reason: "Profile Switch")
         } else if isWireProxyCompatibleMode {
             activatePerSessionWireProxy()
+        } else if isOpenVPNProxyCompatibleMode {
+            activatePerSessionOpenVPN()
         }
 
         let profile = NordVPNService.shared.activeKeyProfile
@@ -850,23 +1027,32 @@ class DeviceProxyService {
     }
 
     var effectiveProxyConfig: ProxyConfig? {
-        guard ipRoutingMode == .appWideUnited, isActive, localProxyEnabled, localProxy.isRunning else { return nil }
-        switch activeConfig {
-        case .socks5:
-            return localProxy.localProxyConfig
-        case .wireGuardDNS:
-            if isWireProxyCompatibleMode, wireProxyBridge.isActive {
+        if ipRoutingMode == .appWideUnited, isActive, localProxyEnabled, localProxy.isRunning {
+            switch activeConfig {
+            case .socks5:
                 return localProxy.localProxyConfig
+            case .wireGuardDNS:
+                if isWireProxyCompatibleMode, wireProxyBridge.isActive {
+                    return localProxy.localProxyConfig
+                }
+                return nil
+            case .openVPNProxy:
+                if ovpnBridge.isActive, localProxy.openVPNProxyMode {
+                    return localProxy.localProxyConfig
+                }
+                return nil
+            case .direct, .none:
+                return nil
             }
-            return nil
-        case .openVPNProxy:
-            if ovpnBridge.isActive {
-                return localProxy.localProxyConfig
-            }
-            return nil
-        case .direct, .none:
-            return nil
         }
+
+        if ipRoutingMode == .separatePerSession, localProxyEnabled, localProxy.isRunning {
+            if perSessionOpenVPNActive, ovpnBridge.isActive, localProxy.openVPNProxyMode {
+                return localProxy.localProxyConfig
+            }
+        }
+
+        return nil
     }
 
     private func resolveNextConfig() -> ActiveNetworkConfig {

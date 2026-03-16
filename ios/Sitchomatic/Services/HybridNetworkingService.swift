@@ -178,6 +178,11 @@ class HybridNetworkingService {
     private func resolveConfig(for method: HybridMethod, target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {
         switch method {
         case .wireProxy:
+            let wireProxyBridge = WireProxyBridge.shared
+            let localProxy = LocalProxyServer.shared
+            if wireProxyBridge.isActive, localProxy.isRunning, localProxy.wireProxyMode {
+                return .socks5(localProxy.localProxyConfig)
+            }
             let configs = proxyService.wgConfigs(for: target).filter { $0.isEnabled }
             if let wg = configs.randomElement() {
                 return .wireGuardDNS(wg)
@@ -191,6 +196,14 @@ class HybridNetworkingService {
             return .direct
 
         case .openVPN:
+            let ovpnBridge = OpenVPNProxyBridge.shared
+            let localProxy = LocalProxyServer.shared
+            if ovpnBridge.isActive, localProxy.isRunning, localProxy.openVPNProxyMode {
+                return .socks5(localProxy.localProxyConfig)
+            }
+            if ovpnBridge.isActive, let bridgeProxy = ovpnBridge.activeSOCKS5Proxy {
+                return .socks5(bridgeProxy)
+            }
             let configs = proxyService.vpnConfigs(for: target).filter { $0.isEnabled }
             if let ovpn = configs.randomElement() {
                 return .openVPNProxy(ovpn)
