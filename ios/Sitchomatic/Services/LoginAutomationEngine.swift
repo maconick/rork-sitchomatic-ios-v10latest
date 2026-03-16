@@ -51,6 +51,7 @@ class LoginAutomationEngine {
     private let aiOutcomeRescue = AIOutcomeRescueEngine.shared
     private let aiInteractionGraph = AIReinforcementInteractionGraph.shared
     private let activityMonitor = SessionActivityMonitor.shared
+    private let liveSpeed = LiveSpeedAdaptationService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
@@ -252,6 +253,14 @@ class LoginAutomationEngine {
             let responseTime = Date().timeIntervalSince(started)
             logger.log("Response time: \(Int(responseTime * 1000))ms on \(targetURL.host ?? "")", category: .timing, level: .debug, sessionId: sessionId, durationMs: Int(responseTime * 1000))
             onResponseTime?(targetURL.absoluteString, responseTime)
+
+            liveSpeed.recordLatency(
+                latencyMs: Int(responseTime * 1000),
+                success: outcome == .success || outcome == .noAcc || outcome == .permDisabled || outcome == .tempDisabled,
+                wasTimeout: outcome == .timeout,
+                wasConnectionFailure: outcome == .connectionFailure,
+                host: host
+            )
         }
 
         let aiLatencyMs = attempt.startedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0

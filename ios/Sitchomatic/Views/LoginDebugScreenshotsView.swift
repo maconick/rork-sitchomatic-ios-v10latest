@@ -4,25 +4,103 @@ struct LoginDebugScreenshotsView: View {
     @Bindable var vm: LoginViewModel
     @State private var selectedScreenshot: PPSRDebugScreenshot?
     @State private var selectedAlbum: LoginScreenshotAlbum?
-    @State private var viewMode: ViewMode = .albums
+    @State private var selectedCategory: ScreenshotCategory = .all
     @State private var showFlipbook: Bool = false
     @State private var flipbookStartIndex: Int = 0
+    @State private var showEvidenceBundles: Bool = false
+    @State private var showReviewQueue: Bool = false
+    @State private var showSpeedStatus: Bool = false
 
-    private enum ViewMode: String, CaseIterable {
-        case albums = "Albums"
+    private enum ScreenshotCategory: String, CaseIterable {
         case all = "All"
+        case working = "Working"
+        case noAcc = "No Acc"
+        case permDisabled = "Perm Dis"
+        case tempDisabled = "Temp Dis"
+        case unsure = "Unsure"
+        case overridden = "Overridden"
+        case aiDetected = "AI Detected"
+
+        var icon: String {
+            switch self {
+            case .all: "photo.stack"
+            case .working: "checkmark.seal.fill"
+            case .noAcc: "xmark.seal.fill"
+            case .permDisabled: "lock.slash.fill"
+            case .tempDisabled: "clock.badge.exclamationmark.fill"
+            case .unsure: "questionmark.diamond.fill"
+            case .overridden: "hand.point.up.left.fill"
+            case .aiDetected: "cpu"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .all: .blue
+            case .working: .green
+            case .noAcc: .red
+            case .permDisabled: .purple
+            case .tempDisabled: .orange
+            case .unsure: .yellow
+            case .overridden: .cyan
+            case .aiDetected: .indigo
+            }
+        }
     }
 
     private var albums: [LoginScreenshotAlbum] {
-        let grouped = Dictionary(grouping: vm.debugScreenshots) { $0.albumKey }
+        let filtered = filteredScreenshots
+        let grouped = Dictionary(grouping: filtered) { $0.albumKey }
         return grouped.map { key, shots in
-            LoginScreenshotAlbum(
+            let credId = shots.first?.cardId ?? ""
+            let credential = vm.credentials.first(where: { $0.id == credId })
+            return LoginScreenshotAlbum(
                 id: key,
                 credentialUsername: shots.first?.cardDisplayNumber ?? "",
-                credentialId: shots.first?.cardId ?? "",
+                credentialId: credId,
+                credentialStatus: credential?.status,
                 screenshots: shots.sorted { $0.timestamp > $1.timestamp }
             )
         }.sorted { $0.latestTimestamp > $1.latestTimestamp }
+    }
+
+    private var filteredScreenshots: [PPSRDebugScreenshot] {
+        switch selectedCategory {
+        case .all:
+            return vm.debugScreenshots
+        case .working:
+            return vm.debugScreenshots.filter { matchesCredentialStatus($0, .working) }
+        case .noAcc:
+            return vm.debugScreenshots.filter { matchesCredentialStatus($0, .noAcc) }
+        case .permDisabled:
+            return vm.debugScreenshots.filter { matchesCredentialStatus($0, .permDisabled) }
+        case .tempDisabled:
+            return vm.debugScreenshots.filter { matchesCredentialStatus($0, .tempDisabled) }
+        case .unsure:
+            return vm.debugScreenshots.filter { matchesCredentialStatus($0, .unsure) }
+        case .overridden:
+            return vm.debugScreenshots.filter { $0.hasUserOverride }
+        case .aiDetected:
+            return vm.debugScreenshots.filter { $0.autoDetectedResult != .unknown }
+        }
+    }
+
+    private func matchesCredentialStatus(_ screenshot: PPSRDebugScreenshot, _ status: CredentialStatus) -> Bool {
+        guard let cred = vm.credentials.first(where: { $0.id == screenshot.cardId }) else { return false }
+        return cred.status == status
+    }
+
+    private func countForCategory(_ category: ScreenshotCategory) -> Int {
+        switch category {
+        case .all: return vm.debugScreenshots.count
+        case .working: return vm.debugScreenshots.filter { matchesCredentialStatus($0, .working) }.count
+        case .noAcc: return vm.debugScreenshots.filter { matchesCredentialStatus($0, .noAcc) }.count
+        case .permDisabled: return vm.debugScreenshots.filter { matchesCredentialStatus($0, .permDisabled) }.count
+        case .tempDisabled: return vm.debugScreenshots.filter { matchesCredentialStatus($0, .tempDisabled) }.count
+        case .unsure: return vm.debugScreenshots.filter { matchesCredentialStatus($0, .unsure) }.count
+        case .overridden: return vm.debugScreenshots.filter { $0.hasUserOverride }.count
+        case .aiDetected: return vm.debugScreenshots.filter { $0.autoDetectedResult != .unknown }.count
+        }
     }
 
     var body: some View {
@@ -31,49 +109,50 @@ struct LoginDebugScreenshotsView: View {
                 ContentUnavailableView("No Screenshots", systemImage: "photo.stack", description: Text("Enable Debug Mode and run a test to capture screenshots."))
             } else {
                 VStack(spacing: 0) {
-                    Picker("View", selection: $viewMode) {
-                        ForEach(ViewMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
-                    }
-                    .pickerStyle(.segmented).padding(.horizontal).padding(.vertical, 8)
-
-                    switch viewMode {
-                    case .albums:
-                        ScrollView {
-                            LazyVStack(spacing: 12) {
-                                ForEach(albums) { album in
-                                    Button { selectedAlbum = album } label: { LoginAlbumCard(album: album) }.buttonStyle(.plain)
-                                }
-                            }.padding(.horizontal).padding(.vertical, 12)
-                        }
-                    case .all:
-                        ScrollView {
-                            LazyVStack(spacing: 12) {
-                                ForEach(Array(vm.debugScreenshots.enumerated()), id: \.element.id) { index, screenshot in
-                                    Button { selectedScreenshot = screenshot } label: { LoginScreenshotCard(screenshot: screenshot) }
-                                        .buttonStyle(.plain)
-                                        .contextMenu {
-                                            Button {
-                                                flipbookStartIndex = index
-                                                showFlipbook = true
-                                            } label: {
-                                                Label("Flipbook View", systemImage: "book.pages")
-                                            }
-                                        }
-                                }
-                            }.padding(.horizontal).padding(.vertical, 12)
-                        }
-                    }
+                    categoryFilterBar
+                    speedAdaptationBanner
+                    albumsList
                 }
                 .background(Color(.systemGroupedBackground))
             }
         }
         .navigationTitle("Debug Screenshots")
         .toolbar {
-            if !vm.debugScreenshots.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(role: .destructive) { vm.clearDebugScreenshots() } label: {
-                        Image(systemName: "trash")
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Section("Actions") {
+                        Button {
+                            showReviewQueue = true
+                        } label: {
+                            Label("Review Queue", systemImage: "checklist")
+                        }
+                        Button {
+                            showEvidenceBundles = true
+                        } label: {
+                            Label("Evidence Bundles", systemImage: "archivebox.fill")
+                        }
                     }
+                    Section("Speed") {
+                        Button {
+                            showSpeedStatus.toggle()
+                        } label: {
+                            Label("Speed Status", systemImage: "gauge.with.dots.needle.67percent")
+                        }
+                        Button {
+                            LiveSpeedAdaptationService.shared.reset()
+                        } label: {
+                            Label("Reset Speed Adaptation", systemImage: "arrow.counterclockwise")
+                        }
+                    }
+                    Section {
+                        Button(role: .destructive) {
+                            vm.clearDebugScreenshots()
+                        } label: {
+                            Label("Clear All Screenshots", systemImage: "trash")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
             }
         }
@@ -83,8 +162,165 @@ struct LoginDebugScreenshotsView: View {
         .sheet(item: $selectedAlbum) { album in
             LoginAlbumDetailSheet(album: album, vm: vm)
         }
+        .sheet(isPresented: $showEvidenceBundles) {
+            NavigationStack {
+                EvidenceBundleListView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Done") { showEvidenceBundles = false }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showReviewQueue) {
+            NavigationStack {
+                ReviewQueueView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Done") { showReviewQueue = false }
+                        }
+                    }
+            }
+        }
         .fullScreenCover(isPresented: $showFlipbook) {
-            ScreenshotFlipbookView(screenshots: vm.debugScreenshots, startIndex: flipbookStartIndex)
+            ScreenshotFlipbookView(screenshots: filteredScreenshots, startIndex: flipbookStartIndex)
+        }
+    }
+
+    private var categoryFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(ScreenshotCategory.allCases, id: \.self) { category in
+                    categoryChip(category)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func categoryChip(_ category: ScreenshotCategory) -> some View {
+        let count = countForCategory(category)
+        let isSelected = selectedCategory == category
+        return Button {
+            withAnimation(.spring(duration: 0.25)) {
+                selectedCategory = category
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: category.icon)
+                    .font(.system(size: 10, weight: .bold))
+                Text(category.rawValue)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(isSelected ? .white.opacity(0.2) : .primary.opacity(0.08))
+                        .clipShape(Capsule())
+                }
+            }
+            .foregroundStyle(isSelected ? .white : .secondary)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(isSelected ? category.color.opacity(0.7) : Color(.tertiarySystemGroupedBackground))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .sensoryFeedback(.selection, trigger: selectedCategory)
+    }
+
+    private var speedAdaptationBanner: some View {
+        Group {
+            if showSpeedStatus {
+                let liveSpeed = LiveSpeedAdaptationService.shared
+                HStack(spacing: 8) {
+                    Image(systemName: liveSpeed.currentSpeedMultiplier < 1.0 ? "hare.fill" : (liveSpeed.currentSpeedMultiplier > 1.0 ? "tortoise.fill" : "gauge.with.dots.needle.50percent"))
+                        .font(.caption)
+                        .foregroundStyle(liveSpeed.currentSpeedMultiplier < 1.0 ? .green : (liveSpeed.currentSpeedMultiplier > 1.0 ? .orange : .blue))
+                    Text(liveSpeed.statusSummary())
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button {
+                        withAnimation(.snappy) { showSpeedStatus = false }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 6)
+                .background(Color(.secondarySystemGroupedBackground))
+            }
+        }
+    }
+
+    private var albumsList: some View {
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                ForEach(albums) { album in
+                    Button { selectedAlbum = album } label: {
+                        LoginAlbumCard(album: album, vm: vm)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        if let credId = album.credentialId.nilIfEmpty, let cred = vm.credentials.first(where: { $0.id == credId }) {
+                            Section("Credential: \(cred.username.prefix(20))") {
+                                Label("Status: \(cred.displayStatus)", systemImage: statusIcon(for: cred.status))
+                            }
+                            Section("Quick Actions") {
+                                Button {
+                                    if let shot = album.screenshots.first {
+                                        vm.correctResult(for: shot, override: .markedPass)
+                                    }
+                                } label: {
+                                    Label("Mark All Pass", systemImage: "checkmark.circle.fill")
+                                }
+                                Button {
+                                    if let shot = album.screenshots.first {
+                                        vm.correctResult(for: shot, override: .markedFail)
+                                    }
+                                } label: {
+                                    Label("Mark All Fail", systemImage: "xmark.circle.fill")
+                                }
+                                Button {
+                                    if let shot = album.screenshots.first {
+                                        vm.requeueCredentialFromScreenshot(shot)
+                                    }
+                                } label: {
+                                    Label("Retest Credential", systemImage: "arrow.clockwise")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if filteredScreenshots.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: selectedCategory.icon)
+                            .font(.system(size: 36))
+                            .foregroundStyle(selectedCategory.color.opacity(0.4))
+                        Text("No \(selectedCategory.rawValue) Screenshots")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 60)
+                }
+            }
+            .padding(.horizontal).padding(.vertical, 12)
+        }
+    }
+
+    private func statusIcon(for status: CredentialStatus) -> String {
+        switch status {
+        case .untested: "circle.dashed"
+        case .testing: "arrow.triangle.2.circlepath"
+        case .working: "checkmark.seal.fill"
+        case .noAcc: "xmark.seal.fill"
+        case .permDisabled: "lock.slash.fill"
+        case .tempDisabled: "clock.badge.exclamationmark.fill"
+        case .unsure: "questionmark.diamond.fill"
         }
     }
 }
@@ -93,16 +329,42 @@ struct LoginScreenshotAlbum: Identifiable {
     let id: String
     let credentialUsername: String
     let credentialId: String
+    let credentialStatus: CredentialStatus?
     let screenshots: [PPSRDebugScreenshot]
 
     var title: String { credentialUsername.isEmpty ? "Unknown" : credentialUsername }
     var latestTimestamp: Date { screenshots.first?.timestamp ?? .distantPast }
     var passCount: Int { screenshots.filter { $0.effectiveResult == .markedPass }.count }
     var failCount: Int { screenshots.filter { $0.effectiveResult == .markedFail }.count }
+    var unknownCount: Int { screenshots.filter { $0.effectiveResult == .none }.count }
+    var overrideCount: Int { screenshots.filter { $0.hasUserOverride }.count }
+    var aiDetectedCount: Int { screenshots.filter { $0.autoDetectedResult != .unknown }.count }
+
+    var statusColor: Color {
+        guard let status = credentialStatus else { return .gray }
+        switch status {
+        case .working: return .green
+        case .noAcc: return .red
+        case .permDisabled: return .purple
+        case .tempDisabled: return .orange
+        case .unsure: return .yellow
+        case .untested: return .gray
+        case .testing: return .blue
+        }
+    }
+
+    var statusLabel: String {
+        credentialStatus?.rawValue ?? "Unknown"
+    }
 }
 
 struct LoginAlbumCard: View {
     let album: LoginScreenshotAlbum
+    let vm: LoginViewModel
+
+    private var evidenceBundle: EvidenceBundle? {
+        EvidenceBundleService.shared.bundles.first(where: { $0.credentialId == album.credentialId })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -111,38 +373,96 @@ struct LoginAlbumCard: View {
                     .overlay { Image(uiImage: firstShot.image).resizable().aspectRatio(contentMode: .fill).allowsHitTesting(false) }
                     .clipShape(.rect(cornerRadii: .init(topLeading: 12, topTrailing: 12)))
                     .overlay(alignment: .bottomLeading) {
-                        Text("\(album.screenshots.count) screenshots")
-                            .font(.system(.caption2, design: .monospaced, weight: .medium))
-                            .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(.black.opacity(0.6)).clipShape(Capsule()).padding(8)
+                        HStack(spacing: 6) {
+                            Text("\(album.screenshots.count)")
+                                .font(.system(.caption2, design: .monospaced, weight: .heavy))
+                                .foregroundStyle(.white)
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.black.opacity(0.6)).clipShape(Capsule()).padding(8)
+                    }
+                    .overlay(alignment: .topLeading) {
+                        credentialStatusBadge.padding(8)
                     }
                     .overlay(alignment: .topTrailing) {
-                        if let latest = album.screenshots.first {
-                            resultBadge(for: latest)
-                                .padding(8)
-                        }
+                        resultBadge(for: firstShot).padding(8)
                     }
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(album.title)
-                    .font(.system(.subheadline, design: .monospaced, weight: .semibold)).lineLimit(1)
-                HStack(spacing: 12) {
-                    Label("\(album.screenshots.count) tests", systemImage: "doc.text")
+                HStack {
+                    Text(album.title)
+                        .font(.system(.subheadline, design: .monospaced, weight: .semibold)).lineLimit(1)
                     Spacer()
-                    if album.passCount > 0 {
-                        HStack(spacing: 2) { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green); Text("\(album.passCount)") }
-                    }
-                    if album.failCount > 0 {
-                        HStack(spacing: 2) { Image(systemName: "xmark.circle.fill").foregroundStyle(.red); Text("\(album.failCount)") }
+                    if let bundle = evidenceBundle {
+                        HStack(spacing: 3) {
+                            Circle()
+                                .fill(confidenceColor(bundle.confidence))
+                                .frame(width: 6, height: 6)
+                            Text("\(Int(bundle.confidence * 100))%")
+                                .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                                .foregroundStyle(confidenceColor(bundle.confidence))
+                        }
                     }
                 }
-                .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+
+                HStack(spacing: 6) {
+                    if album.passCount > 0 {
+                        miniStat(icon: "checkmark.circle.fill", count: album.passCount, color: .green)
+                    }
+                    if album.failCount > 0 {
+                        miniStat(icon: "xmark.circle.fill", count: album.failCount, color: .red)
+                    }
+                    if album.unknownCount > 0 {
+                        miniStat(icon: "questionmark.circle.fill", count: album.unknownCount, color: .orange)
+                    }
+                    if album.overrideCount > 0 {
+                        miniStat(icon: "hand.point.up.left.fill", count: album.overrideCount, color: .cyan)
+                    }
+                    if album.aiDetectedCount > 0 {
+                        miniStat(icon: "cpu", count: album.aiDetectedCount, color: .indigo)
+                    }
+                    Spacer()
+                    if evidenceBundle != nil {
+                        Image(systemName: "archivebox.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.cyan.opacity(0.6))
+                    }
+                }
             }
             .padding(12)
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(album.statusColor.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    private var credentialStatusBadge: some View {
+        Text(album.statusLabel.uppercased())
+            .font(.system(size: 8, weight: .heavy, design: .monospaced))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(album.statusColor.opacity(0.85))
+            .clipShape(Capsule())
+    }
+
+    private func miniStat(icon: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: icon).font(.system(size: 8)).foregroundStyle(color)
+            Text("\(count)").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(color)
+        }
+    }
+
+    private func confidenceColor(_ confidence: Double) -> Color {
+        if confidence < 0.4 { return .red }
+        if confidence < 0.7 { return .orange }
+        return .green
     }
 
     private func resultBadge(for screenshot: PPSRDebugScreenshot) -> some View {
@@ -198,6 +518,14 @@ struct LoginScreenshotCard: View {
                             .font(.system(.caption2, design: .monospaced, weight: .bold))
                             .foregroundStyle(screenshot.userOverride == .markedPass ? .green : .red)
                     }
+                    if screenshot.autoDetectedResult != .unknown {
+                        HStack(spacing: 2) {
+                            Image(systemName: "cpu").font(.system(size: 8))
+                            Text(screenshot.autoDetectedResult == .pass ? "AI:PASS" : "AI:FAIL")
+                                .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        }
+                        .foregroundStyle(screenshot.autoDetectedResult == .pass ? .green : .red)
+                    }
                 }
                 .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
             }
@@ -235,38 +563,23 @@ struct LoginAlbumDetailSheet: View {
     @State private var showFlipbook: Bool = false
     @State private var flipbookStartIndex: Int = 0
 
+    private var credential: LoginCredential? {
+        vm.credentials.first(where: { $0.id == album.credentialId })
+    }
+
+    private var evidenceBundle: EvidenceBundle? {
+        EvidenceBundleService.shared.bundles.first(where: { $0.credentialId == album.credentialId })
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Image(systemName: "photo.stack.fill").foregroundStyle(.green)
-                            Text("Login Session").font(.headline)
-                            Spacer()
-                        }
-                        HStack(spacing: 6) {
-                            Image(systemName: "person.fill").font(.caption).foregroundStyle(.secondary)
-                            Text(album.title).font(.system(.caption, design: .monospaced, weight: .semibold))
-                        }
-                        Text("\(album.screenshots.count) screenshots captured").font(.caption).foregroundStyle(.tertiary)
+                    credentialInfoCard
+                    if let bundle = evidenceBundle {
+                        evidenceCard(bundle)
                     }
-                    .padding().background(Color(.secondarySystemGroupedBackground)).clipShape(.rect(cornerRadius: 12))
-
-                    LazyVStack(spacing: 12) {
-                        ForEach(Array(album.screenshots.enumerated()), id: \.element.id) { index, screenshot in
-                            Button { selectedScreenshot = screenshot } label: { LoginScreenshotCard(screenshot: screenshot) }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button {
-                                        flipbookStartIndex = index
-                                        showFlipbook = true
-                                    } label: {
-                                        Label("Flipbook View", systemImage: "book.pages")
-                                    }
-                                }
-                        }
-                    }
+                    screenshotsList
                 }
                 .padding(.horizontal).padding(.vertical, 12)
             }
@@ -279,6 +592,186 @@ struct LoginAlbumDetailSheet: View {
             }
         }
         .presentationDetents([.large])
+    }
+
+    private var credentialInfoCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "photo.stack.fill").foregroundStyle(album.statusColor)
+                Text("Login Session").font(.headline)
+                Spacer()
+                Text(album.statusLabel.uppercased())
+                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(album.statusColor).clipShape(Capsule())
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "person.fill").font(.caption).foregroundStyle(.secondary)
+                Text(album.title).font(.system(.caption, design: .monospaced, weight: .semibold))
+            }
+            HStack(spacing: 12) {
+                Text("\(album.screenshots.count) screenshots").font(.caption).foregroundStyle(.tertiary)
+                if album.overrideCount > 0 {
+                    Label("\(album.overrideCount) overridden", systemImage: "hand.point.up.left.fill")
+                        .font(.caption2).foregroundStyle(.cyan)
+                }
+                if album.aiDetectedCount > 0 {
+                    Label("\(album.aiDetectedCount) AI detected", systemImage: "cpu")
+                        .font(.caption2).foregroundStyle(.indigo)
+                }
+            }
+
+            if let cred = credential {
+                HStack(spacing: 8) {
+                    Button {
+                        if let shot = album.screenshots.first {
+                            vm.correctResult(for: shot, override: .markedPass)
+                        }
+                    } label: {
+                        Label("Pass", systemImage: "checkmark.circle.fill")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(cred.status == .working ? Color.green : Color.green.opacity(0.12))
+                            .foregroundStyle(cred.status == .working ? .white : .green)
+                            .clipShape(Capsule())
+                    }
+                    Button {
+                        if let shot = album.screenshots.first {
+                            vm.correctResult(for: shot, override: .markedFail)
+                        }
+                    } label: {
+                        Label("Fail", systemImage: "xmark.circle.fill")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(cred.status == .noAcc ? Color.red : Color.red.opacity(0.12))
+                            .foregroundStyle(cred.status == .noAcc ? .white : .red)
+                            .clipShape(Capsule())
+                    }
+                    Button {
+                        if let shot = album.screenshots.first {
+                            vm.requeueCredentialFromScreenshot(shot)
+                        }
+                    } label: {
+                        Label("Retest", systemImage: "arrow.clockwise")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(Color.orange.opacity(0.12))
+                            .foregroundStyle(.orange)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+        }
+        .padding().background(Color(.secondarySystemGroupedBackground)).clipShape(.rect(cornerRadius: 12))
+    }
+
+    private func evidenceCard(_ bundle: EvidenceBundle) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "archivebox.fill").foregroundStyle(.cyan)
+                Text("Evidence Bundle").font(.headline)
+                Spacer()
+                confidenceIndicator(bundle.confidence)
+            }
+
+            HStack(spacing: 12) {
+                Label(bundle.outcomeLabel, systemImage: "flag.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(outcomeColor(bundle.outcome))
+                Label(bundle.durationFormatted, systemImage: "clock")
+                    .font(.caption).foregroundStyle(.secondary)
+                Label(bundle.networkMode, systemImage: "network")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            if !bundle.reasoning.isEmpty {
+                Text(bundle.reasoning)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+
+            if !bundle.signalBreakdown.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(bundle.signalBreakdown.prefix(5), id: \.source) { signal in
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(signal.weightedScore > 0.3 ? Color.green : (signal.weightedScore > 0.15 ? Color.orange : Color.red))
+                                .frame(width: 4, height: 4)
+                            Text(signal.source)
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.0f%%", signal.weightedScore * 100))
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(8)
+                .background(Color(.tertiarySystemGroupedBackground))
+                .clipShape(.rect(cornerRadius: 8))
+            }
+        }
+        .padding().background(Color(.secondarySystemGroupedBackground)).clipShape(.rect(cornerRadius: 12))
+    }
+
+    private func confidenceIndicator(_ confidence: Double) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(confidence < 0.4 ? Color.red : (confidence < 0.7 ? Color.orange : Color.green))
+                .frame(width: 8, height: 8)
+            Text("\(Int(confidence * 100))%")
+                .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                .foregroundStyle(confidence < 0.4 ? .red : (confidence < 0.7 ? .orange : .green))
+        }
+    }
+
+    private func outcomeColor(_ outcome: LoginOutcome) -> Color {
+        switch outcome {
+        case .success: .green
+        case .noAcc: .red
+        case .permDisabled: .purple
+        case .tempDisabled: .orange
+        case .unsure: .yellow
+        case .connectionFailure, .timeout: .gray
+        case .redBannerError: .red
+        case .smsDetected: .orange
+        }
+    }
+
+    private var screenshotsList: some View {
+        LazyVStack(spacing: 12) {
+            ForEach(Array(album.screenshots.enumerated()), id: \.element.id) { index, screenshot in
+                Button { selectedScreenshot = screenshot } label: { LoginScreenshotCard(screenshot: screenshot) }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button {
+                            flipbookStartIndex = index
+                            showFlipbook = true
+                        } label: {
+                            Label("Flipbook View", systemImage: "book.pages")
+                        }
+                        Section("Override") {
+                            Button { vm.correctResult(for: screenshot, override: .markedPass) } label: {
+                                Label("Mark Pass", systemImage: "checkmark.circle.fill")
+                            }
+                            Button { vm.correctResult(for: screenshot, override: .markedFail) } label: {
+                                Label("Mark Fail", systemImage: "xmark.circle.fill")
+                            }
+                            if screenshot.hasUserOverride {
+                                Button { vm.resetScreenshotOverride(screenshot) } label: {
+                                    Label("Reset Override", systemImage: "arrow.uturn.backward")
+                                }
+                            }
+                        }
+                        Button { vm.requeueCredentialFromScreenshot(screenshot) } label: {
+                            Label("Retest Credential", systemImage: "arrow.clockwise")
+                        }
+                    }
+            }
+        }
     }
 }
 
@@ -297,13 +790,25 @@ struct LoginScreenshotCorrectionSheet: View {
     @State private var isDragging: Bool = false
     @State private var bannerScanResult: String?
 
+    private var credential: LoginCredential? {
+        vm.credentials.first(where: { $0.id == screenshot.cardId })
+    }
+
+    private var evidenceBundle: EvidenceBundle? {
+        EvidenceBundleService.shared.bundles.first(where: { $0.credentialId == screenshot.cardId })
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    credentialStatusCard
                     screenshotSection
                     greenBannerScanSection
                     autoDetectionInfo
+                    if let bundle = evidenceBundle {
+                        evidenceSummaryCard(bundle)
+                    }
                     correctionSection
                     noteSection
                 }
@@ -328,6 +833,94 @@ struct LoginScreenshotCorrectionSheet: View {
             }
         }
         .presentationDetents([.large])
+    }
+
+    private var credentialStatusCard: some View {
+        Group {
+            if let cred = credential {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(cred.username)
+                            .font(.system(.caption, design: .monospaced, weight: .bold))
+                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(cred.displayStatus.uppercased())
+                                .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(statusColor(cred.status))
+                                .clipShape(Capsule())
+                            if cred.totalTests > 0 {
+                                Text("\(cred.totalTests) tests")
+                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    Spacer()
+                    if let bundle = evidenceBundle {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(Int(bundle.confidence * 100))%")
+                                .font(.system(size: 16, weight: .heavy, design: .monospaced))
+                                .foregroundStyle(bundle.confidence < 0.4 ? .red : (bundle.confidence < 0.7 ? .orange : .green))
+                            Text("confidence")
+                                .font(.system(size: 8, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(.rect(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(statusColor(cred.status).opacity(0.3), lineWidth: 1)
+                )
+            }
+        }
+    }
+
+    private func statusColor(_ status: CredentialStatus) -> Color {
+        switch status {
+        case .working: .green
+        case .noAcc: .red
+        case .permDisabled: .purple
+        case .tempDisabled: .orange
+        case .unsure: .yellow
+        case .untested: .gray
+        case .testing: .blue
+        }
+    }
+
+    private func evidenceSummaryCard(_ bundle: EvidenceBundle) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "archivebox.fill").foregroundStyle(.cyan)
+                Text("Evidence Bundle").font(.headline)
+                Spacer()
+                Text(bundle.outcomeLabel.uppercased())
+                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(bundle.outcome == .success ? .green : .red)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background((bundle.outcome == .success ? Color.green : Color.red).opacity(0.12))
+                    .clipShape(Capsule())
+            }
+            HStack(spacing: 12) {
+                Label(bundle.durationFormatted, systemImage: "clock").font(.caption)
+                Label(bundle.networkMode, systemImage: "network").font(.caption)
+                if bundle.retryCount > 0 {
+                    Label("\(bundle.retryCount) retries", systemImage: "arrow.clockwise").font(.caption)
+                }
+            }
+            .foregroundStyle(.secondary)
+            if !bundle.reasoning.isEmpty {
+                Text(bundle.reasoning)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+            }
+        }
+        .padding().background(Color(.secondarySystemGroupedBackground)).clipShape(.rect(cornerRadius: 12))
     }
 
     private var screenshotSection: some View {
@@ -550,7 +1143,7 @@ struct LoginScreenshotCorrectionSheet: View {
                 .clipShape(.rect(cornerRadius: 8))
             }
 
-            Text("Only a green \"Welcome\" banner confirms a successful login. Use Crop Region to mark the detection area.")
+            Text("Only a green banner confirms a successful login. Use Crop Region to mark the detection area.")
                 .font(.caption2).foregroundStyle(.tertiary)
         }
         .padding().background(Color(.secondarySystemGroupedBackground)).clipShape(.rect(cornerRadius: 12))
@@ -560,7 +1153,7 @@ struct LoginScreenshotCorrectionSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "cpu").foregroundStyle(.blue)
-                Text("Auto Detection").font(.headline)
+                Text("AI Detection").font(.headline)
                 Spacer()
                 autoDetectionBadge
             }
@@ -667,5 +1260,11 @@ extension View {
                     mask().blendMode(.destinationOut)
                 }
         )
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

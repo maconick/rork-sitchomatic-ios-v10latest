@@ -128,6 +128,7 @@ class ConcurrentAutomationEngine {
     private let proxyQualityDecay = ProxyQualityDecayService.shared
     private let preflightService = PreflightSmokeTestService.shared
     private let customTools = AICustomToolsCoordinator.shared
+    private let liveSpeed = LiveSpeedAdaptationService.shared
     private(set) var isRunning: Bool = false
     private var cancelFlag: Bool = false
     private var deadAccounts: Set<String> = []
@@ -703,6 +704,23 @@ class ConcurrentAutomationEngine {
                     let isRL = outcome == .redBannerError || outcome == .smsDetected
                     anomalyForecasting.recordError(key: forecastKey, isRateLimit: isRL)
                 }
+
+                let isSuccess = outcome == .success || outcome == .noAcc || outcome == .permDisabled || outcome == .tempDisabled
+                liveSpeed.recordLatency(
+                    latencyMs: latency,
+                    success: isSuccess,
+                    wasTimeout: outcome == .timeout,
+                    wasConnectionFailure: outcome == .connectionFailure
+                )
+            }
+
+            if let concurrencyDelta = liveSpeed.currentConcurrencyRecommendation, concurrencyDelta != 0 {
+                let currentMax = await throttler.currentStats().maxConcurrency
+                let newMax = max(1, min(10, currentMax + concurrencyDelta))
+                if newMax != currentMax {
+                    await throttler.updateMaxConcurrency(newMax)
+                    logger.log("ConcurrentEngine: LiveSpeed concurrency \(currentMax) → \(newMax) (\(liveSpeed.lastAdaptationReason))", category: .automation, level: .info)
+                }
             }
 
             let loginForecast = anomalyForecasting.forecast(key: "login_\(proxyTarget.rawValue)")
@@ -723,18 +741,22 @@ class ConcurrentAutomationEngine {
                 let anomalyThrottle = anomalyForecasting.shouldThrottleRequests(key: "login_\(proxyTarget.rawValue)")
                 let batchSuccessRate = batchResults.isEmpty ? 0.5 : Double(batchResults.filter { $0.1 == .success }.count) / Double(batchResults.count)
                 let rateLimitMultiplier = rateLimitSignalCount > 3 ? 2.5 : (rateLimitSignalCount > 0 ? 1.5 : 1.0)
-                let cooldown: Int
+                let baseCooldown: Int
                 if anomalyThrottle.shouldThrottle {
-                    cooldown = anomalyThrottle.delayMs
+                    baseCooldown = anomalyThrottle.delayMs
                 } else if batchSuccessRate > 0.8 {
-                    cooldown = Int(Double(Int.random(in: 250...600)) * rateLimitMultiplier)
+                    baseCooldown = Int(Double(Int.random(in: 250...600)) * rateLimitMultiplier)
                 } else if batchSuccessRate < 0.3 {
-                    cooldown = Int(Double(Int.random(in: 1500...3000)) * rateLimitMultiplier)
-                    logger.log("ConcurrentEngine: low login success rate (\(Int(batchSuccessRate * 100))%) — extended cooldown \(cooldown)ms (rateLimitSignals=\(rateLimitSignalCount))", category: .automation, level: .warning)
+                    baseCooldown = Int(Double(Int.random(in: 1500...3000)) * rateLimitMultiplier)
+                    logger.log("ConcurrentEngine: low login success rate (\(Int(batchSuccessRate * 100))%) — extended cooldown \(baseCooldown)ms (rateLimitSignals=\(rateLimitSignalCount))", category: .automation, level: .warning)
                 } else {
-                    cooldown = Int(Double(Int.random(in: 500...1200)) * rateLimitMultiplier)
+                    baseCooldown = Int(Double(Int.random(in: 500...1200)) * rateLimitMultiplier)
                 }
-                try? await Task.sleep(for: .milliseconds(cooldown))
+                let adaptedCooldown = liveSpeed.adaptDelay(baseCooldown)
+                if adaptedCooldown != baseCooldown {
+                    logger.log("ConcurrentEngine: LiveSpeed adapted cooldown \(baseCooldown)ms → \(adaptedCooldown)ms (\(String(format: "%.2f", liveSpeed.currentSpeedMultiplier))x)", category: .timing, level: .debug)
+                }
+                try? await Task.sleep(for: .milliseconds(adaptedCooldown))
             }
         }
 

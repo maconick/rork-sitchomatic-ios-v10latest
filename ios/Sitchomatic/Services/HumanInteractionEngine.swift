@@ -53,6 +53,7 @@ class HumanInteractionEngine {
     private let logger = DebugLogger.shared
     private let patternLearning = LoginPatternLearning.shared
     private let aiTiming = AITimingOptimizerService.shared
+    private let liveSpeed = LiveSpeedAdaptationService.shared
     private var currentHost: String = ""
     private var currentPattern: String = ""
 
@@ -71,8 +72,9 @@ class HumanInteractionEngine {
     }
 
     private func aiOptimizedDelay(category: TimingCategory, fallbackMin: Int, fallbackMax: Int) -> Int {
-        guard !currentHost.isEmpty else { return humanDelay(minMs: fallbackMin, maxMs: fallbackMax) }
-        return aiTiming.optimizedDelay(for: currentHost, category: category, pattern: currentPattern)
+        guard !currentHost.isEmpty else { return liveSpeed.adaptDelay(humanDelay(minMs: fallbackMin, maxMs: fallbackMax)) }
+        let baseDelay = aiTiming.optimizedDelay(for: currentHost, category: category, pattern: currentPattern)
+        return liveSpeed.adaptDelay(baseDelay)
     }
 
     func selectBestPattern(for url: String) -> LoginFormPattern {
