@@ -47,12 +47,24 @@ struct FloatingTestStatusView: View {
         isLoginRunning ? loginVM.batchTotalCount : ppsrVM.batchTotalCount
     }
 
-    private var successCount: Int {
-        isLoginRunning ? loginVM.batchSuccessCount : 0
+    private var workingCount: Int {
+        guard isLoginRunning else { return 0 }
+        return loginVM.attempts.filter { $0.status.isTerminal && $0.credential.status == .working }.count
     }
 
-    private var failCount: Int {
-        isLoginRunning ? loginVM.batchFailCount : 0
+    private var noAccCount: Int {
+        guard isLoginRunning else { return 0 }
+        return loginVM.attempts.filter { $0.status.isTerminal && $0.credential.status == .noAcc }.count
+    }
+
+    private var tempDisCount: Int {
+        guard isLoginRunning else { return 0 }
+        return loginVM.attempts.filter { $0.status.isTerminal && $0.credential.status == .tempDisabled }.count
+    }
+
+    private var permDisCount: Int {
+        guard isLoginRunning else { return 0 }
+        return loginVM.attempts.filter { $0.status.isTerminal && $0.credential.status == .permDisabled }.count
     }
 
     private var elapsedString: String {
@@ -159,9 +171,14 @@ struct FloatingTestStatusView: View {
                 statusBadge
             }
 
+            HStack(spacing: 8) {
+                statColumn(value: "\(workingCount)", label: "WORK", color: .green)
+                statColumn(value: "\(noAccCount)", label: "NO ACC", color: .red)
+                statColumn(value: "\(tempDisCount)", label: "TEMP", color: .orange)
+                statColumn(value: "\(permDisCount)", label: "PERM", color: .purple)
+            }
+
             HStack(spacing: 12) {
-                statColumn(value: "\(successCount)", label: "PASS", color: .green)
-                statColumn(value: "\(failCount)", label: "FAIL", color: .red)
                 statColumn(value: elapsedString, label: "TIME", color: .white)
                 statColumn(value: etaString, label: "ETA", color: .white.opacity(0.7))
             }

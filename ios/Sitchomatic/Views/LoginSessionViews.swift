@@ -9,17 +9,35 @@ struct LoginSessionMonitorContentView: View {
     nonisolated enum FilterOption: String, CaseIterable, Identifiable, Sendable {
         case all = "All"
         case active = "Active"
-        case completed = "Passed"
-        case failed = "Failed"
+        case working = "Working"
+        case noAcc = "No Acc"
+        case tempDisabled = "Temp Dis"
+        case permDisabled = "Perm Dis"
+        case unsure = "Unsure"
         var id: String { rawValue }
+
+        var color: Color {
+            switch self {
+            case .all: .primary
+            case .active: .blue
+            case .working: .green
+            case .noAcc: .red
+            case .tempDisabled: .orange
+            case .permDisabled: .purple
+            case .unsure: .yellow
+            }
+        }
     }
 
     private var filteredAttempts: [LoginAttempt] {
         switch filterStatus {
         case .all: vm.attempts
         case .active: vm.attempts.filter { !$0.status.isTerminal }
-        case .completed: vm.completedAttempts
-        case .failed: vm.failedAttempts
+        case .working: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .working }
+        case .noAcc: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .noAcc }
+        case .tempDisabled: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .tempDisabled }
+        case .permDisabled: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .permDisabled }
+        case .unsure: vm.attempts.filter { $0.status.isTerminal && ($0.credential.status == .unsure || $0.credential.status == .untested) }
         }
     }
 
@@ -50,7 +68,7 @@ struct LoginSessionMonitorContentView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(FilterOption.allCases) { option in
-                    LoginSessionFilterChip(title: option.rawValue, count: countFor(option), isSelected: filterStatus == option) {
+                    LoginSessionFilterChip(title: option.rawValue, count: countFor(option), isSelected: filterStatus == option, color: option.color) {
                         withAnimation(.snappy) { filterStatus = option }
                     }
                 }
@@ -63,8 +81,11 @@ struct LoginSessionMonitorContentView: View {
         switch option {
         case .all: vm.attempts.count
         case .active: vm.activeAttempts.count
-        case .completed: vm.completedAttempts.count
-        case .failed: vm.failedAttempts.count
+        case .working: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .working }.count
+        case .noAcc: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .noAcc }.count
+        case .tempDisabled: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .tempDisabled }.count
+        case .permDisabled: vm.attempts.filter { $0.status.isTerminal && $0.credential.status == .permDisabled }.count
+        case .unsure: vm.attempts.filter { $0.status.isTerminal && ($0.credential.status == .unsure || $0.credential.status == .untested) }.count
         }
     }
 
@@ -86,8 +107,8 @@ struct LoginSessionMonitorContentView: View {
                             screenshot: latestScreenshot,
                             title: attempt.credential.username,
                             subtitle: "S\(attempt.sessionIndex) · \(attempt.formattedDuration)",
-                            statusColor: attemptStatusColor(attempt.status),
-                            statusText: attempt.status.rawValue,
+                            statusColor: attemptStatusColor(attempt),
+                            statusText: attemptStatusLabel(attempt),
                             badge: attempt.hasScreenshot ? "📷" : nil
                         )
                     }
@@ -99,13 +120,21 @@ struct LoginSessionMonitorContentView: View {
         }
     }
 
-    private func attemptStatusColor(_ status: LoginAttemptStatus) -> Color {
-        switch status {
-        case .completed: .green
-        case .failed: .red
-        case .queued: .secondary
-        default: .green
+    private func attemptStatusColor(_ attempt: LoginAttempt) -> Color {
+        guard attempt.status.isTerminal else { return .blue }
+        switch attempt.credential.status {
+        case .working: return .green
+        case .noAcc: return .red
+        case .permDisabled: return .purple
+        case .tempDisabled: return .orange
+        case .unsure, .untested: return .yellow
+        case .testing: return .blue
         }
+    }
+
+    private func attemptStatusLabel(_ attempt: LoginAttempt) -> String {
+        guard attempt.status.isTerminal else { return attempt.status.rawValue }
+        return attempt.credential.status.rawValue
     }
 }
 
@@ -113,6 +142,7 @@ struct LoginSessionFilterChip: View {
     let title: String
     let count: Int
     let isSelected: Bool
+    var color: Color = .green
     let action: () -> Void
 
     var body: some View {
@@ -127,7 +157,7 @@ struct LoginSessionFilterChip: View {
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(isSelected ? Color.green : Color(.tertiarySystemFill))
+            .background(isSelected ? color : Color(.tertiarySystemFill))
             .foregroundStyle(isSelected ? .white : .primary)
             .clipShape(Capsule())
         }
@@ -183,7 +213,7 @@ struct LoginSessionRow: View {
             }
 
             HStack {
-                Text(attempt.status.rawValue).font(.caption).foregroundStyle(statusColor)
+                Text(displayStatus).font(.caption).foregroundStyle(statusColor)
                 Spacer()
                 Label(attempt.formattedDuration, systemImage: "timer")
                     .font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
@@ -193,12 +223,22 @@ struct LoginSessionRow: View {
     }
 
     private var statusColor: Color {
-        switch attempt.status {
-        case .completed: .green
-        case .failed: .red
-        case .queued: .secondary
-        default: .green
+        guard attempt.status.isTerminal else {
+            return attempt.status == .queued ? .secondary : .blue
         }
+        switch attempt.credential.status {
+        case .working: return .green
+        case .noAcc: return .red
+        case .permDisabled: return .purple
+        case .tempDisabled: return .orange
+        case .unsure, .untested: return .yellow
+        case .testing: return .blue
+        }
+    }
+
+    private var displayStatus: String {
+        guard attempt.status.isTerminal else { return attempt.status.rawValue }
+        return attempt.credential.status.rawValue
     }
 }
 
@@ -228,9 +268,9 @@ struct LoginSessionDetailSheet: View {
                     LabeledContent("Status") {
                         HStack(spacing: 4) {
                             Image(systemName: attempt.status.icon)
-                            Text(attempt.status.rawValue)
+                            Text(attempt.status.isTerminal ? attempt.credential.status.rawValue : attempt.status.rawValue)
                         }
-                        .foregroundStyle(attempt.status == .completed ? .green : attempt.status == .failed ? .red : .blue)
+                        .foregroundStyle(statusColorForDetail)
                     }
                     LabeledContent("Session", value: "S\(attempt.sessionIndex)")
                     LabeledContent("Duration", value: attempt.formattedDuration)
@@ -282,6 +322,18 @@ struct LoginSessionDetailSheet: View {
         }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .presentationContentInteraction(.scrolls)
+    }
+
+    private var statusColorForDetail: Color {
+        guard attempt.status.isTerminal else { return .blue }
+        switch attempt.credential.status {
+        case .working: return .green
+        case .noAcc: return .red
+        case .permDisabled: return .purple
+        case .tempDisabled: return .orange
+        case .unsure, .untested: return .yellow
+        case .testing: return .blue
+        }
     }
 
     private func logColor(_ level: PPSRLogEntry.Level) -> Color {
