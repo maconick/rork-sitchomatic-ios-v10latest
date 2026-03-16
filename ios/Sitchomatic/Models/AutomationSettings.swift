@@ -238,6 +238,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Blank Page Recovery
     var blankPageRecoveryEnabled: Bool = true
+    var blankPageTimeoutSeconds: Int = 20
     var blankPageWaitThresholdSeconds: Int = 90
     var blankPageFallback1_WaitAndRecheck: Bool = true
     var blankPageFallback2_ChangeURL: Bool = true
@@ -303,7 +304,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
         normalized.loginButtonWaitForEnabledTimeoutMs = max(normalized.loginButtonWaitForEnabledTimeoutMs, Self.minimumTimeoutMilliseconds)
         normalized.mfaWaitTimeoutSeconds = max(normalized.mfaWaitTimeoutSeconds, Int(Self.minimumTimeoutSeconds))
         normalized.captchaWaitTimeoutSeconds = max(normalized.captchaWaitTimeoutSeconds, Int(Self.minimumTimeoutSeconds))
-        normalized.blankPageWaitThresholdSeconds = max(normalized.blankPageWaitThresholdSeconds, Int(Self.minimumTimeoutSeconds))
+        normalized.blankPageWaitThresholdSeconds = max(normalized.blankPageWaitThresholdSeconds, 30)
         normalized.http429RetryAfterSeconds = max(normalized.http429RetryAfterSeconds, Int(Self.minimumTimeoutSeconds))
         return normalized
     }

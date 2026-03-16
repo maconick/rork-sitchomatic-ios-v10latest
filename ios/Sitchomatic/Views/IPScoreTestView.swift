@@ -665,10 +665,11 @@ struct IPScoreTestView: View {
         let wkConfig = WKWebViewConfiguration()
         wkConfig.websiteDataStore = .nonPersistent()
 
-        if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
-            networkFactory.configureWKWebView(config: wkConfig, networkConfig: config, target: .joe)
-        } else {
+        let appWideNet = networkFactory.appWideConfig(for: .joe)
+        if case .direct = appWideNet {
             networkFactory.configureWKWebView(config: wkConfig, networkConfig: session.networkConfig, target: .joe, bypassTunnel: true)
+        } else {
+            networkFactory.configureWKWebView(config: wkConfig, networkConfig: appWideNet, target: .joe)
         }
 
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 414, height: 896), configuration: wkConfig)
@@ -692,16 +693,19 @@ struct IPScoreTestView: View {
     }
 
     private func assignNetworkToSession(_ session: IPScoreSession, index: Int, mode: ConnectionMode) {
-        if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
-            session.networkConfig = config
-            session.networkLabel = "United IP: \(config.label)"
-            if case .wireGuardDNS(let wg) = config {
+        let appNetConfig = networkFactory.appWideConfig(for: .joe)
+        if case .direct = appNetConfig {
+            // fall through to per-mode assignment below
+        } else {
+            session.networkConfig = appNetConfig
+            session.networkLabel = "App-Wide: \(appNetConfig.label)"
+            if case .wireGuardDNS(let wg) = appNetConfig {
                 session.assignedVPNServer = wg.fileName
                 session.assignedVPNIP = wg.peerEndpoint
-            } else if case .openVPNProxy(let ovpn) = config {
+            } else if case .openVPNProxy(let ovpn) = appNetConfig {
                 session.assignedVPNServer = ovpn.fileName
                 session.assignedVPNIP = ovpn.remoteHost
-            } else if case .socks5(let proxy) = config {
+            } else if case .socks5(let proxy) = appNetConfig {
                 session.assignedProxy = proxy.displayString
             }
             return

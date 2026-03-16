@@ -46,12 +46,7 @@ class PPSRAutomationEngine {
 
         let session = LoginWebSession()
         session.stealthEnabled = stealthEnabled
-
-        if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
-            session.networkConfig = config
-        } else {
-            session.networkConfig = networkFactory.nextConfig(for: .ppsr)
-        }
+        session.networkConfig = networkFactory.appWideConfig(for: .ppsr)
         logger.log("PPSR session network: \(session.networkConfig.label)", category: .network, level: .info, sessionId: sessionId)
 
         session.onFingerprintLog = { [weak self] msg, level in
@@ -148,30 +143,46 @@ class PPSRAutomationEngine {
         check.logs.append(PPSRLogEntry(message: "Page loaded: \"\(pageTitle)\"", level: .info))
         logger.log("Page title: \"\(pageTitle)\"", category: .webView, level: .debug, sessionId: sessionId)
 
+        let blankPageSettings = AutomationSettings()
         if let initialScreenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, BlankScreenshotDetector.isBlank(initialScreenshot) {
-            check.logs.append(PPSRLogEntry(message: "BLANK PAGE after load — starting multi-step recovery...", level: .warning))
-            logger.log("BLANK PAGE detected after load for \(check.card.displayNumber) — initiating recovery", category: .screenshot, level: .error, sessionId: sessionId)
+            check.logs.append(PPSRLogEntry(message: "BLANK PAGE after load — waiting up to \(blankPageSettings.blankPageTimeoutSeconds)s for content...", level: .warning))
+            logger.log("BLANK PAGE detected after load for \(check.card.displayNumber) — polling for \(blankPageSettings.blankPageTimeoutSeconds)s", category: .screenshot, level: .warning, sessionId: sessionId)
 
-            let settings = AutomationSettings()
-            let recoveryResult = await BlankPageRecoveryService.shared.attemptRecoveryForPPSRSession(
+            let appeared = await BlankPageRecoveryService.shared.waitForNonBlankPPSRSession(
                 session: session,
-                settings: settings,
+                timeoutSeconds: blankPageSettings.blankPageTimeoutSeconds,
                 sessionId: sessionId,
                 onLog: { [weak self] msg, level in
                     check.logs.append(PPSRLogEntry(message: msg, level: level))
                     self?.onLog?(msg, level)
                 }
             )
+            if appeared {
+                check.logs.append(PPSRLogEntry(message: "Page content appeared within blank page timeout", level: .success))
+            } else {
+                check.logs.append(PPSRLogEntry(message: "BLANK PAGE TIMEOUT — starting multi-step recovery...", level: .warning))
+                logger.log("BLANK PAGE TIMEOUT for \(check.card.displayNumber) — initiating recovery", category: .screenshot, level: .error, sessionId: sessionId)
 
-            if !recoveryResult.recovered {
-                failCheck(check, message: "Blank page — recovery failed: \(recoveryResult.detail)")
-                await captureScreenshotForCheck(session: session, check: check, step: "blank_page_load", note: "BLANK PAGE — recovery failed after \(recoveryResult.attemptsUsed) steps", autoResult: .unknown)
-                onBlankScreenshot?()
-                onUnusualFailure?("Blank page for \(check.card.displayNumber) — all recovery steps failed")
-                return .connectionFailure
+                let recoveryResult = await BlankPageRecoveryService.shared.attemptRecoveryForPPSRSession(
+                    session: session,
+                    settings: blankPageSettings,
+                    sessionId: sessionId,
+                    onLog: { [weak self] msg, level in
+                        check.logs.append(PPSRLogEntry(message: msg, level: level))
+                        self?.onLog?(msg, level)
+                    }
+                )
+
+                if !recoveryResult.recovered {
+                    failCheck(check, message: "Blank page — recovery failed: \(recoveryResult.detail)")
+                    await captureScreenshotForCheck(session: session, check: check, step: "blank_page_load", note: "BLANK PAGE — recovery failed after \(recoveryResult.attemptsUsed) steps", autoResult: .unknown)
+                    onBlankScreenshot?()
+                    onUnusualFailure?("Blank page for \(check.card.displayNumber) — all recovery steps failed")
+                    return .connectionFailure
+                }
+                check.logs.append(PPSRLogEntry(message: "BLANK PAGE RECOVERED via \(recoveryResult.stepUsed?.rawValue ?? "unknown"): \(recoveryResult.detail)", level: .success))
+                logger.log("BLANK PAGE RECOVERED for \(check.card.displayNumber) via \(recoveryResult.stepUsed?.rawValue ?? "unknown")", category: .automation, level: .success, sessionId: sessionId)
             }
-            check.logs.append(PPSRLogEntry(message: "BLANK PAGE RECOVERED via \(recoveryResult.stepUsed?.rawValue ?? "unknown"): \(recoveryResult.detail)", level: .success))
-            logger.log("BLANK PAGE RECOVERED for \(check.card.displayNumber) via \(recoveryResult.stepUsed?.rawValue ?? "unknown")", category: .automation, level: .success, sessionId: sessionId)
         }
 
         logger.startTimer(key: "\(sessionId)_appready")
@@ -310,28 +321,43 @@ class PPSRAutomationEngine {
         try? await Task.sleep(for: .seconds(1))
 
         if let postSubmitScreenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, BlankScreenshotDetector.isBlank(postSubmitScreenshot) {
-            check.logs.append(PPSRLogEntry(message: "BLANK SCREENSHOT after submit — starting recovery...", level: .warning))
-            logger.log("BLANK SCREENSHOT after submit for \(check.card.displayNumber) — initiating recovery", category: .screenshot, level: .error, sessionId: sessionId)
+            check.logs.append(PPSRLogEntry(message: "BLANK SCREENSHOT after submit — waiting up to \(blankPageSettings.blankPageTimeoutSeconds)s...", level: .warning))
+            logger.log("BLANK SCREENSHOT after submit for \(check.card.displayNumber) — polling for \(blankPageSettings.blankPageTimeoutSeconds)s", category: .screenshot, level: .warning, sessionId: sessionId)
 
-            let postSettings = AutomationSettings()
-            let postRecovery = await BlankPageRecoveryService.shared.attemptRecoveryForPPSRSession(
+            let postAppeared = await BlankPageRecoveryService.shared.waitForNonBlankPPSRSession(
                 session: session,
-                settings: postSettings,
+                timeoutSeconds: blankPageSettings.blankPageTimeoutSeconds,
                 sessionId: sessionId,
                 onLog: { [weak self] msg, level in
                     check.logs.append(PPSRLogEntry(message: msg, level: level))
                     self?.onLog?(msg, level)
                 }
             )
+            if postAppeared {
+                check.logs.append(PPSRLogEntry(message: "Post-submit content appeared within blank page timeout", level: .success))
+            } else {
+                check.logs.append(PPSRLogEntry(message: "BLANK PAGE TIMEOUT after submit — starting recovery...", level: .warning))
+                logger.log("BLANK PAGE TIMEOUT after submit for \(check.card.displayNumber) — initiating recovery", category: .screenshot, level: .error, sessionId: sessionId)
 
-            if !postRecovery.recovered {
-                failCheck(check, message: "Blank screenshot after submit — recovery failed: \(postRecovery.detail)")
-                await captureScreenshotForCheck(session: session, check: check, step: "blank_post_submit", note: "BLANK PAGE after submit — recovery failed", autoResult: .unknown)
-                onBlankScreenshot?()
-                onUnusualFailure?("Blank screenshot after submit for \(check.card.displayNumber) — recovery failed")
-                return .connectionFailure
+                let postRecovery = await BlankPageRecoveryService.shared.attemptRecoveryForPPSRSession(
+                    session: session,
+                    settings: blankPageSettings,
+                    sessionId: sessionId,
+                    onLog: { [weak self] msg, level in
+                        check.logs.append(PPSRLogEntry(message: msg, level: level))
+                        self?.onLog?(msg, level)
+                    }
+                )
+
+                if !postRecovery.recovered {
+                    failCheck(check, message: "Blank screenshot after submit — recovery failed: \(postRecovery.detail)")
+                    await captureScreenshotForCheck(session: session, check: check, step: "blank_post_submit", note: "BLANK PAGE after submit — recovery failed", autoResult: .unknown)
+                    onBlankScreenshot?()
+                    onUnusualFailure?("Blank screenshot after submit for \(check.card.displayNumber) — recovery failed")
+                    return .connectionFailure
+                }
+                check.logs.append(PPSRLogEntry(message: "BLANK PAGE RECOVERED after submit via \(postRecovery.stepUsed?.rawValue ?? "unknown")", level: .success))
             }
-            check.logs.append(PPSRLogEntry(message: "BLANK PAGE RECOVERED after submit via \(postRecovery.stepUsed?.rawValue ?? "unknown")", level: .success))
         }
 
         var pageContent = await session.getPageContent()

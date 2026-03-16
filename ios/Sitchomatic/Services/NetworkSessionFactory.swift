@@ -371,6 +371,19 @@ class NetworkSessionFactory {
         return config
     }
 
+    func appWideConfig(for target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {
+        let deviceProxy = DeviceProxyService.shared
+        if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
+            logger.log("NetworkFactory: appWideConfig → united IP \(config.label) for \(target.rawValue)", category: .network, level: .debug)
+            return config
+        }
+        if let perSessionConfig = deviceProxy.effectiveProxyConfig, localProxy.isRunning {
+            logger.log("NetworkFactory: appWideConfig → per-session tunnel 127.0.0.1:\(perSessionConfig.port) for \(target.rawValue)", category: .vpn, level: .debug)
+            return .socks5(perSessionConfig)
+        }
+        return nextConfig(for: target)
+    }
+
     func resetRotationIndexes() {
         joeWGIndex = 0
         ignitionWGIndex = 0

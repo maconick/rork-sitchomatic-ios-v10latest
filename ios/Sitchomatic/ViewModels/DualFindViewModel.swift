@@ -586,7 +586,7 @@ class DualFindViewModel {
 
     private func createPersistentWebSession(site: LoginTargetSite, sessionIndex: Int) -> LoginSiteWebSession {
         let proxyTarget: ProxyRotationService.ProxyTarget = site == .joefortune ? .joe : .ignition
-        let netConfig = networkFactory.nextConfig(for: proxyTarget)
+        let netConfig = networkFactory.appWideConfig(for: proxyTarget)
 
         urlRotation.isIgnitionMode = (site == .ignition)
         let targetURL = urlRotation.nextURL() ?? site.url

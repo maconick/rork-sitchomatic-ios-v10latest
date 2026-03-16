@@ -316,12 +316,7 @@ class PPSRAutomationViewModel {
 
         let session = LoginWebSession()
         session.stealthEnabled = stealthEnabled
-        let deviceProxy = DeviceProxyService.shared
-        if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
-            session.networkConfig = config
-        } else {
-            session.networkConfig = NetworkSessionFactory.shared.nextConfig(for: .ppsr)
-        }
+        session.networkConfig = NetworkSessionFactory.shared.appWideConfig(for: .ppsr)
         session.setUp()
         defer { session.tearDown() }
 

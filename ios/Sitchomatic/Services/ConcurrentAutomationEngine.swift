@@ -451,7 +451,7 @@ class ConcurrentAutomationEngine {
         consecutiveConnectionFailures = 0
 
         let stealthOn = engine.stealthEnabled
-        let netConfig = networkFactory.nextConfig(for: proxyTarget)
+        let netConfig = networkFactory.appWideConfig(for: proxyTarget)
         WebViewPool.shared.preWarm(count: min(maxConcurrency, 3), stealthEnabled: stealthOn, networkConfig: netConfig, target: proxyTarget)
 
         let proxyOK = await performProxyPreCheck(batchId: batchId)

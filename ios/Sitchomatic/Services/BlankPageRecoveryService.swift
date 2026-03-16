@@ -23,6 +23,60 @@ class BlankPageRecoveryService {
         let attemptsUsed: Int
     }
 
+    func waitForNonBlankLoginSession(
+        session: LoginSiteWebSession,
+        timeoutSeconds: Int = 20,
+        sessionId: String,
+        onLog: ((String, PPSRLogEntry.Level) -> Void)?
+    ) async -> Bool {
+        let start = Date()
+        let maxWait = TimeInterval(timeoutSeconds)
+        var checkCount = 0
+        let pollIntervalMs = 2000
+
+        while Date().timeIntervalSince(start) < maxWait {
+            checkCount += 1
+            if let screenshot = await session.captureScreenshot(), !BlankScreenshotDetector.isBlank(screenshot) {
+                logger.log("BlankPageTimeout: page appeared after \(checkCount) checks (\(String(format: "%.1f", Date().timeIntervalSince(start)))s)", category: .automation, level: .success, sessionId: sessionId)
+                return true
+            }
+            let elapsed = Int(Date().timeIntervalSince(start))
+            onLog?("Blank page timeout: still blank after \(elapsed)s (check \(checkCount))...", .info)
+            try? await Task.sleep(for: .milliseconds(pollIntervalMs))
+        }
+
+        logger.log("BlankPageTimeout: page still blank after \(timeoutSeconds)s (\(checkCount) checks)", category: .automation, level: .error, sessionId: sessionId)
+        onLog?("BLANK PAGE TIMEOUT: page remained blank for \(timeoutSeconds)s", .error)
+        return false
+    }
+
+    func waitForNonBlankPPSRSession(
+        session: LoginWebSession,
+        timeoutSeconds: Int = 20,
+        sessionId: String,
+        onLog: ((String, PPSRLogEntry.Level) -> Void)?
+    ) async -> Bool {
+        let start = Date()
+        let maxWait = TimeInterval(timeoutSeconds)
+        var checkCount = 0
+        let pollIntervalMs = 2000
+
+        while Date().timeIntervalSince(start) < maxWait {
+            checkCount += 1
+            if let screenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, !BlankScreenshotDetector.isBlank(screenshot) {
+                logger.log("BlankPageTimeout(PPSR): page appeared after \(checkCount) checks (\(String(format: "%.1f", Date().timeIntervalSince(start)))s)", category: .automation, level: .success, sessionId: sessionId)
+                return true
+            }
+            let elapsed = Int(Date().timeIntervalSince(start))
+            onLog?("Blank page timeout: still blank after \(elapsed)s (check \(checkCount))...", .info)
+            try? await Task.sleep(for: .milliseconds(pollIntervalMs))
+        }
+
+        logger.log("BlankPageTimeout(PPSR): page still blank after \(timeoutSeconds)s (\(checkCount) checks)", category: .automation, level: .error, sessionId: sessionId)
+        onLog?("BLANK PAGE TIMEOUT: page remained blank for \(timeoutSeconds)s", .error)
+        return false
+    }
+
     func attemptRecoveryForLoginSession(
         session: LoginSiteWebSession,
         settings: AutomationSettings,
@@ -336,7 +390,7 @@ class BlankPageRecoveryService {
         logger.log("BlankPageRecovery: performing full session reset", category: .automation, level: .info, sessionId: sessionId)
 
         let networkFactory = NetworkSessionFactory.shared
-        let newConfig = networkFactory.nextConfig(for: session.proxyTarget)
+        let newConfig = networkFactory.appWideConfig(for: session.proxyTarget)
         session.networkConfig = newConfig
 
         session.tearDown(wipeAll: true)
@@ -442,7 +496,7 @@ class BlankPageRecoveryService {
         logger.log("BlankPageRecovery(PPSR): performing full session reset", category: .automation, level: .info, sessionId: sessionId)
 
         let networkFactory = NetworkSessionFactory.shared
-        let newConfig = networkFactory.nextConfig(for: .ppsr)
+        let newConfig = networkFactory.appWideConfig(for: .ppsr)
         session.networkConfig = newConfig
 
         session.tearDown()

@@ -113,7 +113,7 @@ class LoginAutomationEngine {
         var interactionActions: [InteractionAction] = []
         _ = Date()
 
-        let netConfig = networkConfigOverride ?? networkFactory.nextConfig(for: proxyTarget)
+        let netConfig = networkConfigOverride ?? networkFactory.appWideConfig(for: proxyTarget)
         logger.log("Network config: \(netConfig.label) for target \(proxyTarget.rawValue)\(networkConfigOverride != nil ? " (override)" : "")", category: .network, level: .info, sessionId: sessionId)
         attempt.logs.append(PPSRLogEntry(message: "Network: \(netConfig.label)\(networkConfigOverride != nil ? " (override)" : "")", level: .info))
 
@@ -616,31 +616,49 @@ class LoginAutomationEngine {
         logger.log("Page title: \"\(pageTitle)\"", category: .webView, level: .debug, sessionId: sessionId)
 
         if let initialScreenshot = await session.captureScreenshot(), BlankScreenshotDetector.isBlank(initialScreenshot) {
-            attempt.logs.append(PPSRLogEntry(message: "BLANK PAGE after load — starting multi-step recovery...", level: .warning))
-            logger.log("BLANK PAGE detected after load for \(attempt.credential.username) on \(session.targetURL.absoluteString) — initiating recovery", category: .screenshot, level: .error, sessionId: sessionId)
+            attempt.logs.append(PPSRLogEntry(message: "BLANK PAGE after load — waiting up to \(automationSettings.blankPageTimeoutSeconds)s for content...", level: .warning))
+            logger.log("BLANK PAGE detected after load for \(attempt.credential.username) — polling for \(automationSettings.blankPageTimeoutSeconds)s", category: .screenshot, level: .warning, sessionId: sessionId)
 
-            let recoveryResult = await BlankPageRecoveryService.shared.attemptRecoveryForLoginSession(
+            let appeared = await BlankPageRecoveryService.shared.waitForNonBlankLoginSession(
                 session: session,
-                settings: automationSettings,
-                proxyTarget: proxyTarget,
+                timeoutSeconds: automationSettings.blankPageTimeoutSeconds,
                 sessionId: sessionId,
                 onLog: { [weak self] msg, level in
                     attempt.logs.append(PPSRLogEntry(message: msg, level: level))
                     self?.onLog?(msg, level)
                 }
             )
-
-            if !recoveryResult.recovered {
-                await captureDebugScreenshot(session: session, attempt: attempt, step: "blank_page_load", note: "BLANK PAGE — recovery failed after \(recoveryResult.attemptsUsed) steps: \(recoveryResult.detail)", autoResult: .unknown)
-                attempt.status = .failed
-                attempt.errorMessage = "Blank page — recovery failed: \(recoveryResult.detail)"
-                attempt.completedAt = Date()
-                onBlankScreenshot?(session.targetURL.absoluteString)
-                onUnusualFailure?("Blank page for \(attempt.credential.username) — all recovery steps failed")
-                return .connectionFailure
+            if appeared {
+                attempt.logs.append(PPSRLogEntry(message: "Page content appeared within blank page timeout", level: .success))
+            } else {
+                attempt.logs.append(PPSRLogEntry(message: "BLANK PAGE TIMEOUT — starting multi-step recovery...", level: .warning))
+                logger.log("BLANK PAGE TIMEOUT for \(attempt.credential.username) on \(session.targetURL.absoluteString) — initiating recovery", category: .screenshot, level: .error, sessionId: sessionId)
             }
-            attempt.logs.append(PPSRLogEntry(message: "BLANK PAGE RECOVERED via \(recoveryResult.stepUsed?.rawValue ?? "unknown"): \(recoveryResult.detail)", level: .success))
-            logger.log("BLANK PAGE RECOVERED for \(attempt.credential.username) via \(recoveryResult.stepUsed?.rawValue ?? "unknown")", category: .automation, level: .success, sessionId: sessionId)
+
+            if !appeared {
+                let recoveryResult = await BlankPageRecoveryService.shared.attemptRecoveryForLoginSession(
+                    session: session,
+                    settings: automationSettings,
+                    proxyTarget: proxyTarget,
+                    sessionId: sessionId,
+                    onLog: { [weak self] msg, level in
+                        attempt.logs.append(PPSRLogEntry(message: msg, level: level))
+                        self?.onLog?(msg, level)
+                    }
+                )
+
+                if !recoveryResult.recovered {
+                    await captureDebugScreenshot(session: session, attempt: attempt, step: "blank_page_load", note: "BLANK PAGE — recovery failed after \(recoveryResult.attemptsUsed) steps: \(recoveryResult.detail)", autoResult: .unknown)
+                    attempt.status = .failed
+                    attempt.errorMessage = "Blank page — recovery failed: \(recoveryResult.detail)"
+                    attempt.completedAt = Date()
+                    onBlankScreenshot?(session.targetURL.absoluteString)
+                    onUnusualFailure?("Blank page for \(attempt.credential.username) — all recovery steps failed")
+                    return .connectionFailure
+                }
+                attempt.logs.append(PPSRLogEntry(message: "BLANK PAGE RECOVERED via \(recoveryResult.stepUsed?.rawValue ?? "unknown"): \(recoveryResult.detail)", level: .success))
+                logger.log("BLANK PAGE RECOVERED for \(attempt.credential.username) via \(recoveryResult.stepUsed?.rawValue ?? "unknown")", category: .automation, level: .success, sessionId: sessionId)
+            }
         }
 
         logger.startTimer(key: "\(sessionId)_cookies")

@@ -420,9 +420,8 @@ struct FingerprintTestView: View {
         wkConfig.userContentController.add(handler, name: "fpResult")
         messageHandlers[session.id] = handler
 
-        if deviceProxy.isEnabled, let config = deviceProxy.activeConfig {
-            networkFactory.configureWKWebView(config: wkConfig, networkConfig: config, target: .joe)
-        }
+        let appWideNet = networkFactory.appWideConfig(for: .joe)
+        networkFactory.configureWKWebView(config: wkConfig, networkConfig: appWideNet, target: .joe)
 
         let webView = WKWebView(
             frame: CGRect(origin: .zero, size: CGSize(width: profile.viewport.width, height: profile.viewport.height)),
