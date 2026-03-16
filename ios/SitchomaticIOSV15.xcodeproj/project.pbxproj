@@ -100,9 +100,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		105FC5792E9EAD3100EA8BCF /* Sitchomatic */ = {
+		105FC5792E9EAD3100EA8BCF /* SitchomaticIOSV15 */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 105FC59D2E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "Sitchomatic" */;
+			buildConfigurationList = 105FC59D2E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticIOSV15" */;
 			buildPhases = (
 				105FC5762E9EAD3100EA8BCF /* Sources */,
 				105FC5772E9EAD3100EA8BCF /* Frameworks */,
@@ -115,17 +115,17 @@
 			fileSystemSynchronizedGroups = (
 				105FC57C2E9EAD3100EA8BCF /* Sitchomatic */,
 			);
-			name = Sitchomatic;
+			name = SitchomaticIOSV15;
 			packageProductDependencies = (
 				XXEE1CB1627E13D5F0A46EXX /* CoreXLSX */,
 			);
-			productName = Sitchomatic;
+			productName = SitchomaticIOSV15;
 			productReference = 105FC57A2E9EAD3100EA8BCF /* Sitchomatic.app */;
 			productType = "com.apple.product-type.application";
 		};
-		105FC5882E9EAD3200EA8BCF /* SitchomaticTests */ = {
+		105FC5882E9EAD3200EA8BCF /* SitchomaticIOSV15 */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 105FC5A02E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticTests" */;
+			buildConfigurationList = 105FC5A02E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticIOSV15" */;
 			buildPhases = (
 				105FC5852E9EAD3200EA8BCF /* Sources */,
 				105FC5862E9EAD3200EA8BCF /* Frameworks */,
@@ -139,16 +139,16 @@
 			fileSystemSynchronizedGroups = (
 				105FC58C2E9EAD3200EA8BCF /* SitchomaticTests */,
 			);
-			name = SitchomaticTests;
+			name = SitchomaticIOSV15;
 			packageProductDependencies = (
 			);
-			productName = SitchomaticTests;
+			productName = SitchomaticIOSV15;
 			productReference = 105FC5892E9EAD3200EA8BCF /* SitchomaticTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		105FC5922E9EAD3200EA8BCF /* SitchomaticUITests */ = {
+		105FC5922E9EAD3200EA8BCF /* SitchomaticIOSV15 */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 105FC5A32E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticUITests" */;
+			buildConfigurationList = 105FC5A32E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticIOSV15" */;
 			buildPhases = (
 				105FC58F2E9EAD3200EA8BCF /* Sources */,
 				105FC5902E9EAD3200EA8BCF /* Frameworks */,
@@ -162,10 +162,10 @@
 			fileSystemSynchronizedGroups = (
 				105FC5962E9EAD3200EA8BCF /* SitchomaticUITests */,
 			);
-			name = SitchomaticUITests;
+			name = SitchomaticIOSV15;
 			packageProductDependencies = (
 			);
-			productName = SitchomaticUITests;
+			productName = SitchomaticIOSV15;
 			productReference = 105FC5932E9EAD3200EA8BCF /* SitchomaticUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
@@ -192,7 +192,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 105FC5752E9EAD3100EA8BCF /* Build configuration list for PBXProject "Sitchomatic" */;
+			buildConfigurationList = 105FC5752E9EAD3100EA8BCF /* Build configuration list for PBXProject "SitchomaticIOSV15" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -206,9 +206,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				105FC5792E9EAD3100EA8BCF /* Sitchomatic */,
-				105FC5882E9EAD3200EA8BCF /* SitchomaticTests */,
-				105FC5922E9EAD3200EA8BCF /* SitchomaticUITests */,
+				105FC5792E9EAD3100EA8BCF /* SitchomaticIOSV15 */,
+				105FC5882E9EAD3200EA8BCF /* SitchomaticIOSV15 */,
+				105FC5922E9EAD3200EA8BCF /* SitchomaticIOSV15 */,
 			);
 			packageReferences = (
 				XX461D6B922D577012C142XX /* XCRemoteSwiftPackageReference "CoreXLSX" */,
@@ -267,12 +267,12 @@
 /* Begin PBXTargetDependency section */
 		105FC58B2E9EAD3200EA8BCF /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 105FC5792E9EAD3100EA8BCF /* Sitchomatic */;
+			target = 105FC5792E9EAD3100EA8BCF /* SitchomaticIOSV15 */;
 			targetProxy = 105FC58A2E9EAD3200EA8BCF /* PBXContainerItemProxy */;
 		};
 		105FC5952E9EAD3200EA8BCF /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 105FC5792E9EAD3100EA8BCF /* Sitchomatic */;
+			target = 105FC5792E9EAD3100EA8BCF /* SitchomaticIOSV15 */;
 			targetProxy = 105FC5942E9EAD3200EA8BCF /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -421,7 +421,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = app.rork.ve5l1conjgc135kle8kuj;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rork.v15sitch;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -455,7 +455,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = app.rork.ve5l1conjgc135kle8kuj;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rork.v15sitch;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -477,7 +477,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = app.rork.ve5l1conjgc135kle8kuj.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rork.v15sitch.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -499,7 +499,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = app.rork.ve5l1conjgc135kle8kuj.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rork.v15sitch.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -519,7 +519,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = app.rork.ve5l1conjgc135kle8kuj.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rork.v15sitch.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -539,7 +539,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = app.rork.ve5l1conjgc135kle8kuj.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rork.v15sitch.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -554,7 +554,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		105FC5752E9EAD3100EA8BCF /* Build configuration list for PBXProject "Sitchomatic" */ = {
+		105FC5752E9EAD3100EA8BCF /* Build configuration list for PBXProject "SitchomaticIOSV15" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				105FC59B2E9EAD3200EA8BCF /* Debug */,
@@ -563,7 +563,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		105FC59D2E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "Sitchomatic" */ = {
+		105FC59D2E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticIOSV15" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				105FC59E2E9EAD3200EA8BCF /* Debug */,
@@ -572,7 +572,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		105FC5A02E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticTests" */ = {
+		105FC5A02E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticIOSV15" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				105FC5A12E9EAD3200EA8BCF /* Debug */,
@@ -581,7 +581,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		105FC5A32E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticUITests" */ = {
+		105FC5A32E9EAD3200EA8BCF /* Build configuration list for PBXNativeTarget "SitchomaticIOSV15" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				105FC5A42E9EAD3200EA8BCF /* Debug */,
