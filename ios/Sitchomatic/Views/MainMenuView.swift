@@ -5,6 +5,7 @@ struct MainMenuView: View {
     let requiresProfileSelection: Bool
     @State private var animateIn: Bool = false
     @State private var nordService = NordVPNService.shared
+    private let proxyService = ProxyRotationService.shared
 
     init(activeMode: Binding<ActiveAppMode?>, requiresProfileSelection: Bool = false) {
         _activeMode = activeMode
@@ -56,7 +57,7 @@ struct MainMenuView: View {
 
                     HStack(spacing: 0) {
                         settingsAndTestingZone(geo: geo)
-                        proxyManagerZone(geo: geo)
+                        connectionModeZone(geo: geo)
                     }
                     .frame(maxHeight: .infinity)
 
@@ -536,61 +537,66 @@ struct MainMenuView: View {
         .sensoryFeedback(.impact(weight: .heavy), trigger: activeMode == .testDebug)
     }
 
-    private func proxyManagerZone(geo: GeometryProxy) -> some View {
-        Button {
-            guard canEnterModes else { return }
-            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
-                activeMode = .proxyManager
-            }
-        } label: {
-            ZStack {
-                LinearGradient(
-                    colors: [Color(red: 0.0, green: 0.2, blue: 0.25).opacity(0.5), Color.teal.opacity(0.25)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
+    private func connectionModeZone(geo: GeometryProxy) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.0, green: 0.2, blue: 0.25).opacity(0.5), connectionModeColor.opacity(0.25)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
 
-                VStack(alignment: .trailing, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "server.rack")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.teal)
-                        Image(systemName: "arrow.triangle.branch")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.cyan.opacity(0.7))
+            VStack(alignment: .trailing, spacing: 6) {
+                Image(systemName: proxyService.unifiedConnectionMode.icon)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(connectionModeColor)
+                    .shadow(color: connectionModeColor.opacity(0.6), radius: 8)
+
+                Text("CONNECTION\nMODE")
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.trailing)
+                    .lineSpacing(2)
+                    .shadow(color: .black.opacity(0.6), radius: 4)
+
+                Menu {
+                    ForEach(ConnectionMode.allCases, id: \.self) { mode in
+                        Button {
+                            proxyService.setUnifiedConnectionMode(mode)
+                        } label: {
+                            Label(mode.label, systemImage: mode.icon)
+                        }
                     }
-                    .shadow(color: .teal.opacity(0.5), radius: 8)
-
-                    Text("PROXY\nMANAGER")
-                        .font(.system(size: 13, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.trailing)
-                        .lineSpacing(2)
-                        .shadow(color: .black.opacity(0.6), radius: 4)
-
-                    Text("Sets · Import · Route")
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.teal.opacity(0.7))
-
-                    HStack(spacing: 3) {
-                        Text("OPEN")
-                            .font(.system(size: 8, weight: .heavy, design: .monospaced))
-                            .foregroundStyle(.teal.opacity(0.6))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 7, weight: .heavy))
-                            .foregroundStyle(.teal.opacity(0.4))
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(proxyService.unifiedConnectionMode.label.uppercased())
+                            .font(.system(size: 10, weight: .black, design: .monospaced))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8, weight: .heavy))
                     }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(connectionModeColor.opacity(0.5))
+                    .clipShape(Capsule())
                 }
-                .padding(.trailing, 16)
-                .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .contentShape(Rectangle())
+            .padding(.trailing, 16)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .buttonStyle(.plain)
-        .opacity(animateIn ? (canEnterModes ? 1 : 0.35) : 0)
+        .opacity(animateIn ? 1 : 0)
         .offset(x: animateIn ? 0 : 30)
-        .allowsHitTesting(canEnterModes)
-        .sensoryFeedback(.impact(weight: .medium), trigger: activeMode == .proxyManager)
+        .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.unifiedConnectionMode)
+    }
+
+    private var connectionModeColor: Color {
+        switch proxyService.unifiedConnectionMode {
+        case .proxy: .blue
+        case .openvpn: .indigo
+        case .wireguard: .purple
+        case .dns: .cyan
+        case .nodeMaven: .teal
+        case .hybrid: .mint
+        }
     }
 
     private var profileSwitcher: some View {

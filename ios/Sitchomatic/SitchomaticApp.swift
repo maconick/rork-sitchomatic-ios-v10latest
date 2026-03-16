@@ -239,7 +239,11 @@ struct SitchomaticApp: App {
         case .settingsAndTesting:
             SettingsAndTestingView()
         case .proxyManager:
-            ProxyManagerView()
+            NavigationStack {
+                ProxyManagerView()
+            }
+            .withMainMenuButton()
+            .preferredColorScheme(.dark)
         case .testDebug:
             TestDebugContainerView()
         default:

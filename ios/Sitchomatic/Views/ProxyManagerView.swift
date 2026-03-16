@@ -7,38 +7,34 @@ struct ProxyManagerView: View {
     @State private var newSetType: ProxySetType = .socks5
 
     var body: some View {
-        NavigationStack {
-            List {
-                overviewSection
-                if vm.canUseOnePerSet {
-                    sessionRoutingSection
-                }
-                proxySetsSection
-                if !vm.proxySets.isEmpty {
-                    quickStatsSection
-                }
+        List {
+            overviewSection
+            if vm.canUseOnePerSet {
+                sessionRoutingSection
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Proxy Manager")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        newSetName = ""
-                        newSetType = .socks5
-                        showNewSetSheet = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(.teal)
-                    }
-                }
-            }
-            .sheet(isPresented: $showNewSetSheet) {
-                newSetSheetContent
+            proxySetsSection
+            if !vm.proxySets.isEmpty {
+                quickStatsSection
             }
         }
-        .withMainMenuButton()
-        .preferredColorScheme(.dark)
+        .listStyle(.insetGrouped)
+        .navigationTitle("Proxy Manager")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    newSetName = ""
+                    newSetType = .socks5
+                    showNewSetSheet = true
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.teal)
+                }
+            }
+        }
+        .sheet(isPresented: $showNewSetSheet) {
+            newSetSheetContent
+        }
     }
 
     private var overviewSection: some View {

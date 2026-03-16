@@ -33,7 +33,7 @@ struct DeviceNetworkSettingsView: View {
             if deviceProxy.isEnabled {
                 unitedIPOptionsSection
             }
-            connectionModeSection
+            proxyManagerLinkSection
             if deviceProxy.shouldShowWireProxySection {
                 wireProxyServerSection
             }
@@ -605,55 +605,40 @@ struct DeviceNetworkSettingsView: View {
         return String(format: "%.2f GB", Double(bytes) / (1024 * 1024 * 1024))
     }
 
-    // MARK: - Connection Mode
+    // MARK: - Proxy Manager Link
 
-    private var connectionModeSection: some View {
+    private var proxyManagerLinkSection: some View {
         Section {
-            Picker(selection: Binding(
-                get: { proxyService.unifiedConnectionMode },
-                set: { proxyService.setUnifiedConnectionMode($0) }
-            )) {
-                ForEach(ConnectionMode.allCases, id: \.self) { mode in
-                    Label(mode.label, systemImage: mode.icon).tag(mode)
-                }
+            NavigationLink {
+                ProxyManagerView()
             } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "network.badge.shield.half.filled").foregroundStyle(.blue)
-                    Text("Connection Mode")
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.teal.opacity(0.12))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: "server.rack")
+                            .font(.body)
+                            .foregroundStyle(.teal)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Proxy Manager").font(.subheadline.bold())
+                        Text("Sets, import, routing & config management")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    let vm = ProxyManagerViewModel()
+                    Text("\(vm.proxySets.count) sets")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.teal)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.teal.opacity(0.12)).clipShape(Capsule())
                 }
-            }
-            .pickerStyle(.menu)
-            .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.unifiedConnectionMode)
-
-            HStack(spacing: 10) {
-                Image(systemName: proxyService.unifiedConnectionMode.icon)
-                    .foregroundStyle(modeColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Active Mode").font(.subheadline.bold())
-                    Text("All targets use \(proxyService.unifiedConnectionMode.label)")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(proxyService.unifiedConnectionMode.label)
-                    .font(.system(.caption2, design: .monospaced, weight: .bold))
-                    .foregroundStyle(modeColor)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(modeColor.opacity(0.12)).clipShape(Capsule())
             }
         } header: {
-            HStack {
-                Image(systemName: "network.badge.shield.half.filled")
-                Text("Connection Mode")
-                Spacer()
-                Text(proxyService.unifiedConnectionMode.label)
-                    .font(.system(.caption2, design: .monospaced, weight: .bold))
-                    .foregroundStyle(modeColor)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(modeColor.opacity(0.12))
-                    .clipShape(Capsule())
-            }
+            Label("Proxy Manager", systemImage: "server.rack")
         } footer: {
-            Text("Switching modes applies globally to Joe Fortune, Ignition, and PPSR.")
+            Text("Manage proxy sets, import configs, and configure session routing.")
         }
     }
 

@@ -2,9 +2,11 @@ import SwiftUI
 
 struct LoginMoreMenuView: View {
     let vm: LoginViewModel
+    private let proxyService = ProxyRotationService.shared
 
     var body: some View {
         List {
+            connectionModeSection
             aiInsightsSection
             automationToolsSection
             urlsAndEndpointSection
@@ -284,6 +286,67 @@ struct LoginMoreMenuView: View {
             Label("Global", systemImage: "globe")
         } footer: {
             Text("Device-wide settings, testing tools, diagnostics, and data management.")
+        }
+    }
+
+    private var connectionModeSection: some View {
+        Section {
+            Picker(selection: Binding(
+                get: { proxyService.unifiedConnectionMode },
+                set: { proxyService.setUnifiedConnectionMode($0) }
+            )) {
+                ForEach(ConnectionMode.allCases, id: \.self) { mode in
+                    Label(mode.label, systemImage: mode.icon).tag(mode)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "network.badge.shield.half.filled").foregroundStyle(.blue)
+                    Text("Connection Mode")
+                }
+            }
+            .pickerStyle(.menu)
+            .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.unifiedConnectionMode)
+
+            HStack(spacing: 10) {
+                Image(systemName: proxyService.unifiedConnectionMode.icon)
+                    .foregroundStyle(connectionModeColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Active Mode").font(.subheadline.bold())
+                    Text("All targets use \(proxyService.unifiedConnectionMode.label)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(proxyService.unifiedConnectionMode.label)
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(connectionModeColor)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(connectionModeColor.opacity(0.12)).clipShape(Capsule())
+            }
+        } header: {
+            HStack {
+                Image(systemName: "network.badge.shield.half.filled")
+                Text("Connection Mode")
+                Spacer()
+                Text(proxyService.unifiedConnectionMode.label)
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(connectionModeColor)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(connectionModeColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        } footer: {
+            Text("Switching modes applies globally to Joe Fortune, Ignition, and PPSR.")
+        }
+    }
+
+    private var connectionModeColor: Color {
+        switch proxyService.unifiedConnectionMode {
+        case .proxy: .blue
+        case .openvpn: .indigo
+        case .wireguard: .purple
+        case .dns: .cyan
+        case .nodeMaven: .teal
+        case .hybrid: .mint
         }
     }
 
