@@ -209,7 +209,7 @@ class ConfidenceResultEngine {
 
         let successMarkers = ["balance", "wallet", "my account", "logout", "dashboard"]
         let incorrectMarkers = ["incorrect password", "invalid credentials", "wrong password", "invalid email or password", "login failed", "authentication failed", "no account found", "account not found"]
-        let disabledMarkers = ["account has been disabled", "account has been suspended", "permanently banned", "has been blocked", "account is closed", "self-excluded"]
+        let disabledMarkers = ["account has been disabled", "account is disabled", "your account has been disabled", "your account is disabled", "account has been suspended", "permanently banned", "has been blocked", "account is closed", "self-excluded"]
         let tempMarkers = ["temporarily", "too many attempts", "try again later", "temporarily locked", "temporarily disabled"]
 
         for marker in successMarkers {
@@ -224,6 +224,12 @@ class ConfidenceResultEngine {
             }
         }
 
+        let instantPermDisabled = ["account has been disabled", "account is disabled", "your account has been disabled", "your account is disabled"]
+        for marker in instantPermDisabled {
+            if content.contains(marker) {
+                return SignalContribution(source: "DISABLED_TEXT", weight: weight, rawScore: 1.0, weightedScore: weight * 1.0, detail: "100% perm disabled '\(marker)'")
+            }
+        }
         for marker in disabledMarkers {
             if content.contains(marker) {
                 return SignalContribution(source: "DISABLED_TEXT", weight: weight, rawScore: 0.9, weightedScore: weight * 0.9, detail: "disabled marker '\(marker)'")

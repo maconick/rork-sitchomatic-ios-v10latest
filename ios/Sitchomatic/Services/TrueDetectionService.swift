@@ -245,6 +245,26 @@ class TrueDetectionService {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
 
+        let humanTapJS = """
+        (function() {
+            var el = document.querySelector('\(escapedSelector)');
+            if (!el) return 'NOT_FOUND';
+            el.scrollIntoView({behavior: 'instant', block: 'center'});
+            var rect = el.getBoundingClientRect();
+            var cx = rect.left + rect.width / 2 + (Math.random() * 8 - 4);
+            var cy = rect.top + rect.height / 2 + (Math.random() * 8 - 4);
+            el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch',button:0,buttons:1}));
+            el.dispatchEvent(new TouchEvent('touchstart', {bubbles:true,cancelable:true,view:window}));
+            el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch',button:0}));
+            el.dispatchEvent(new TouchEvent('touchend', {bubbles:true,cancelable:true,view:window}));
+            el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+            return 'TAPPED';
+        })();
+        """
+        let tapResult = await session.executeJS(humanTapJS)
+        logger.log("TrueDetection: human tap on \(fieldName) via \(selector) \u{2192} \(tapResult ?? "nil")", category: .automation, level: .trace, sessionId: sessionId)
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 80...220)))
+
         let js = """
         (function() {
             var el = document.querySelector('\(escapedSelector)');

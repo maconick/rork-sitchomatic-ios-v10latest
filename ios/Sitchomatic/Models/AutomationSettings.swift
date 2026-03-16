@@ -73,7 +73,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     // MARK: - Post-Submit Evaluation
     var redirectDetection: Bool = true
-    var errorBannerDetection: Bool = true
+    var errorBannerDetection: Bool = false
     var contentChangeDetection: Bool = true
     var evaluationStrictness: EvaluationStrictness = .strict
     var capturePageContent: Bool = true
@@ -272,8 +272,8 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var handlePasswordManagers: Bool = true
 
     // MARK: - Viewport & Window
-    var viewportWidth: Int = 1280
-    var viewportHeight: Int = 800
+    var viewportWidth: Int = 390
+    var viewportHeight: Int = 844
     var useWebViewPoolFingerprints: Bool = true
     var randomizeViewportSize: Bool = false
     var viewportSizeVariancePx: Int = 50

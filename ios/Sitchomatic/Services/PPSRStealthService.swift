@@ -89,12 +89,12 @@ class PPSRStealthService {
             isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
             connectionDownlink: 20.0, connectionRtt: 50
         ),
-        // 5: iPad Pro 11" M2 — iPadOS 18.4, M2 (8-core, 8GB), 834x1194 @2x
+        // 5: iPhone 14 Plus — iOS 18.4, A15 Bionic (6-core, 6GB), 428x926 @3x
         SessionProfile(
-            userAgent: "Mozilla/5.0 (iPad; CPU OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1",
-            viewport: (834, 1194), language: "en-AU", platform: "iPad",
-            cores: 8, memory: 8, tzOffset: -600, tzName: "Australia/Sydney",
-            seed: 3293047185, colorDepth: 32, pixelRatio: 2.0, maxTouchPoints: 5,
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1",
+            viewport: (428, 926), language: "en-AU", platform: "iPhone",
+            cores: 6, memory: 6, tzOffset: -600, tzName: "Australia/Sydney",
+            seed: 3293047185, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
             isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
             connectionDownlink: 25.0, connectionRtt: 30
         ),
@@ -107,23 +107,23 @@ class PPSRStealthService {
             isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
             connectionDownlink: 10.0, connectionRtt: 75
         ),
-        // 7: MacBook Air M1 — macOS Sonoma 14.7, M1 (8-core, 8GB), 1440x900 @2x
+        // 7: iPhone 15 Pro — iOS 18.1, A17 Pro (6-core, 8GB), 393x852 @3x
         SessionProfile(
-            userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
-            viewport: (1440, 900), language: "en-AU", platform: "MacIntel",
-            cores: 8, memory: 8, tzOffset: -600, tzName: "Australia/Sydney",
-            seed: 2472059316, colorDepth: 30, pixelRatio: 2.0, maxTouchPoints: 0,
-            isMobile: false, webglVendor: "Apple Inc.", webglRenderer: "Apple M1",
-            connectionDownlink: 80.0, connectionRtt: 20
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+            viewport: (393, 852), language: "en-AU", platform: "iPhone",
+            cores: 6, memory: 8, tzOffset: -600, tzName: "Australia/Sydney",
+            seed: 2472059316, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 15.0, connectionRtt: 50
         ),
-        // 8: MacBook Pro M2 — macOS Ventura 13.6, M2 (8-core, 16GB), 1512x982 @2x
+        // 8: iPhone 16 — iOS 18.3, A18 (6-core, 8GB), 393x852 @3x
         SessionProfile(
-            userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
-            viewport: (1512, 982), language: "en-US", platform: "MacIntel",
-            cores: 8, memory: 16, tzOffset: 0, tzName: "Europe/London",
-            seed: 2561038274, colorDepth: 30, pixelRatio: 2.0, maxTouchPoints: 0,
-            isMobile: false, webglVendor: "Apple Inc.", webglRenderer: "Apple M2",
-            connectionDownlink: 100.0, connectionRtt: 20
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1",
+            viewport: (393, 852), language: "en-US", platform: "iPhone",
+            cores: 6, memory: 8, tzOffset: 0, tzName: "Europe/London",
+            seed: 2561038274, colorDepth: 32, pixelRatio: 3.0, maxTouchPoints: 5,
+            isMobile: true, webglVendor: "Apple Inc.", webglRenderer: "Apple GPU",
+            connectionDownlink: 12.0, connectionRtt: 60
         ),
         // 9: iPhone 12 — iOS 17.4, A14 Bionic (6-core, 4GB), 390x844 @3x
         SessionProfile(

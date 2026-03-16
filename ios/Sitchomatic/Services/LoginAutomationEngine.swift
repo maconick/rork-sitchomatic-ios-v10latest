@@ -746,6 +746,9 @@ class LoginAutomationEngine {
 
             let selectedPattern: LoginFormPattern
             if cycle == 1 {
+                let colourReadiness = await waitForPageReadyByColour(session: session, sessionId: sessionId)
+                attempt.logs.append(PPSRLogEntry(message: "Colour readiness: settled=\(colourReadiness.settled) in \(colourReadiness.durationMs)ms — \(colourReadiness.detail)", level: colourReadiness.settled ? .success : .warning))
+
                 let learnedBest = humanEngine.selectBestPattern(for: targetURLString)
                 if automationSettings.trueDetectionEnabled && automationSettings.trueDetectionPriority {
                     selectedPattern = .trueDetection
@@ -1266,9 +1269,10 @@ class LoginAutomationEngine {
         }
 
         let strongDisabledTerms: [(String, Int)] = [
-            ("account has been disabled", 60), ("account has been suspended", 60),
+            ("account has been disabled", 200), ("account has been suspended", 60),
             ("account has been blocked", 60), ("account has been deactivated", 60),
-            ("your account has been disabled", 65), ("your account is disabled", 60),
+            ("your account has been disabled", 200), ("your account is disabled", 200),
+            ("account is disabled", 200),
             ("has been disabled", 55), ("has been suspended", 55),
             ("has been blocked", 55), ("has been deactivated", 55),
             ("your account is locked", 55), ("account is restricted", 50),
@@ -1540,6 +1544,108 @@ class LoginAutomationEngine {
 
         logger.log("Vision click login button: no button found via OCR", category: .automation, level: .warning, sessionId: sessionId)
         return false
+    }
+
+    private func waitForPageReadyByColour(session: LoginSiteWebSession, sessionId: String) async -> (settled: Bool, durationMs: Int, detail: String) {
+        let start = Date()
+        let maxWaitMs = 15000
+        var lastBgColor = ""
+        var lastOpacity = -1.0
+        var stableCount = 0
+        let requiredStableChecks = 3
+
+        let colourCheckJS = """
+        (function() {
+            var loginTerms = ['log in','login','sign in','signin'];
+            var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"], #login-submit');
+            var btn = document.querySelector('#login-submit');
+            if (!btn) {
+                for (var i = 0; i < btns.length; i++) {
+                    var text = (btns[i].textContent || btns[i].value || '').replace(/[\\s]+/g,' ').toLowerCase().trim();
+                    if (text.length > 50) continue;
+                    for (var t = 0; t < loginTerms.length; t++) {
+                        if (text === loginTerms[t] || (text.indexOf(loginTerms[t]) !== -1 && text.length < 25)) { btn = btns[i]; break; }
+                    }
+                    if (btn) break;
+                }
+            }
+            if (!btn) btn = document.querySelector('button[type="submit"]') || document.querySelector('input[type="submit"]');
+            if (!btn) return JSON.stringify({found: false});
+            var style = window.getComputedStyle(btn);
+            var bodyStyle = window.getComputedStyle(document.body);
+            var spinners = document.querySelectorAll('.spinner, .loading, [class*="spinner"], [class*="loading"], [class*="loader"]');
+            var hasSpinner = false;
+            for (var s = 0; s < spinners.length; s++) {
+                if (spinners[s].offsetParent !== null) { hasSpinner = true; break; }
+            }
+            var overlays = document.querySelectorAll('.overlay, .modal-backdrop, [class*="overlay"]');
+            var hasOverlay = false;
+            for (var o = 0; o < overlays.length; o++) {
+                if (overlays[o].offsetParent !== null && window.getComputedStyle(overlays[o]).opacity !== '0') { hasOverlay = true; break; }
+            }
+            return JSON.stringify({
+                found: true,
+                bgColor: style.backgroundColor,
+                opacity: parseFloat(style.opacity),
+                disabled: btn.disabled || false,
+                pointerEvents: style.pointerEvents,
+                cursor: style.cursor,
+                bodyBg: bodyStyle.backgroundColor,
+                hasSpinner: hasSpinner,
+                hasOverlay: hasOverlay,
+                readyState: document.readyState
+            });
+        })();
+        """
+
+        while true {
+            let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
+            if elapsedMs >= maxWaitMs {
+                logger.log("ColourReadiness: TIMEOUT after \(elapsedMs)ms — proceeding", category: .automation, level: .warning, sessionId: sessionId)
+                return (false, elapsedMs, "Timeout after \(elapsedMs)ms — page may not be fully settled")
+            }
+
+            guard let raw = await session.executeJS(colourCheckJS),
+                  let data = raw.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let found = json["found"] as? Bool, found else {
+                try? await Task.sleep(for: .milliseconds(500))
+                continue
+            }
+
+            let bgColor = json["bgColor"] as? String ?? ""
+            let opacity = json["opacity"] as? Double ?? 1.0
+            let disabled = json["disabled"] as? Bool ?? false
+            let pointerEvents = json["pointerEvents"] as? String ?? "auto"
+            let cursor = json["cursor"] as? String ?? ""
+            let hasSpinner = json["hasSpinner"] as? Bool ?? false
+            let hasOverlay = json["hasOverlay"] as? Bool ?? false
+            let readyState = json["readyState"] as? String ?? ""
+
+            if hasSpinner || hasOverlay || readyState != "complete" || disabled || pointerEvents == "none" || cursor == "wait" || cursor == "progress" || opacity < 0.7 {
+                stableCount = 0
+                lastBgColor = bgColor
+                lastOpacity = opacity
+                try? await Task.sleep(for: .milliseconds(400))
+                continue
+            }
+
+            if bgColor == lastBgColor && abs(opacity - lastOpacity) < 0.05 {
+                stableCount += 1
+            } else {
+                stableCount = 1
+            }
+            lastBgColor = bgColor
+            lastOpacity = opacity
+
+            if stableCount >= requiredStableChecks {
+                let finalMs = Int(Date().timeIntervalSince(start) * 1000)
+                logger.log("ColourReadiness: page SETTLED in \(finalMs)ms — button bg=\(bgColor) opacity=\(String(format: "%.2f", opacity))", category: .automation, level: .success, sessionId: sessionId)
+                return (true, finalMs, "Button colour stable (bg=\(bgColor) opacity=\(String(format: "%.2f", opacity))) after \(stableCount) consecutive checks")
+            }
+
+            try? await Task.sleep(for: .milliseconds(400))
+        }
     }
 
     private func visionVerifyPostLogin(session: LoginSiteWebSession, sessionId: String) async -> (welcomeFound: Bool, errorFound: Bool, context: String?) {

@@ -174,6 +174,26 @@ class HumanInteractionEngine {
         logger.log("TrueDetection Pattern: hard pause \(postDOMDelay)ms (AI-optimized)", category: .automation, level: .trace, sessionId: sessionId)
         try? await Task.sleep(for: .milliseconds(postDOMDelay))
 
+        let emailTapJS = """
+        (function() {
+            var el = document.querySelector('#email');
+            if (!el) return 'NOT_FOUND';
+            el.scrollIntoView({behavior: 'instant', block: 'center'});
+            var rect = el.getBoundingClientRect();
+            var cx = rect.left + rect.width / 2 + (Math.random() * 8 - 4);
+            var cy = rect.top + rect.height / 2 + (Math.random() * 8 - 4);
+            el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch',button:0,buttons:1}));
+            el.dispatchEvent(new TouchEvent('touchstart', {bubbles:true,cancelable:true,view:window}));
+            el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch',button:0}));
+            el.dispatchEvent(new TouchEvent('touchend', {bubbles:true,cancelable:true,view:window}));
+            el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+            return 'TAPPED';
+        })();
+        """
+        let emailTapResult = await executeJS(emailTapJS)
+        logger.log("TrueDetection: human tap on #email → \(emailTapResult ?? "nil")", category: .automation, level: .trace, sessionId: sessionId)
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 80...220)))
+
         let escapedUser = username.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
         let emailJS = """
         (function() {
@@ -197,6 +217,26 @@ class HumanInteractionEngine {
 
         if !result.usernameFilled { return result }
         try? await Task.sleep(for: .milliseconds(aiOptimizedDelay(category: .interFieldPause, fallbackMin: 300, fallbackMax: 600)))
+
+        let passTapJS = """
+        (function() {
+            var el = document.querySelector('#login-password');
+            if (!el) return 'NOT_FOUND';
+            el.scrollIntoView({behavior: 'instant', block: 'center'});
+            var rect = el.getBoundingClientRect();
+            var cx = rect.left + rect.width / 2 + (Math.random() * 8 - 4);
+            var cy = rect.top + rect.height / 2 + (Math.random() * 8 - 4);
+            el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch',button:0,buttons:1}));
+            el.dispatchEvent(new TouchEvent('touchstart', {bubbles:true,cancelable:true,view:window}));
+            el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch',button:0}));
+            el.dispatchEvent(new TouchEvent('touchend', {bubbles:true,cancelable:true,view:window}));
+            el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+            return 'TAPPED';
+        })();
+        """
+        let passTapResult = await executeJS(passTapJS)
+        logger.log("TrueDetection: human tap on #login-password → \(passTapResult ?? "nil")", category: .automation, level: .trace, sessionId: sessionId)
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 80...220)))
 
         let escapedPass = password.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
         let passJS = """
