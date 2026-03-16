@@ -290,7 +290,7 @@ class VisionMLService {
     func detectSuccessIndicators(in image: UIImage) async -> (welcomeFound: Bool, errorFound: Bool, context: String?) {
         let allText = await recognizeAllText(in: image)
 
-        let successTerms = ["welcome", "dashboard", "my account", "balance", "deposit", "logout", "log out"]
+        let successTerms = ["dashboard", "my account", "balance", "deposit", "logout", "log out"]
         let errorTerms = ["incorrect", "invalid", "error", "failed", "wrong", "disabled", "blocked", "suspended", "locked"]
 
         var welcomeFound = false

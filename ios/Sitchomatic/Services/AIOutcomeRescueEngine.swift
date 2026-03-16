@@ -230,7 +230,7 @@ class AIOutcomeRescueEngine {
         }
 
         if !ocrLower.isEmpty {
-            let ocrSuccessTerms = ["balance", "wallet", "my account", "logout", "welcome"]
+            let ocrSuccessTerms = ["balance", "wallet", "my account", "logout"]
             for term in ocrSuccessTerms {
                 if ocrLower.contains(term) && !signals.contains("success_marker_\(term)") {
                     successScore += 0.15

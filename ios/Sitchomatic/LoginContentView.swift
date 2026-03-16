@@ -53,24 +53,9 @@ struct LoginContentView: View {
                 .badge(ReviewQueueService.shared.pendingCount)
             }
 
-            Tab("Evidence", systemImage: "archivebox.fill") {
-                NavigationStack {
-                    EvidenceBundleListView()
-                }
-                .withMainMenuButton()
-                .badge(EvidenceBundleService.shared.bundles.filter { !$0.isExported }.count)
-            }
-
             Tab("Sessions", systemImage: "rectangle.stack") {
                 NavigationStack {
                     LoginSessionMonitorContentView(vm: vm)
-                }
-                .withMainMenuButton()
-            }
-
-            Tab("Groups", systemImage: "folder.fill") {
-                NavigationStack {
-                    CredentialGroupsView(vm: vm)
                 }
                 .withMainMenuButton()
             }

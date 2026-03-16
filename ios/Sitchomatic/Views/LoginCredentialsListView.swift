@@ -66,6 +66,13 @@ struct LoginCredentialsListView: View {
         .searchable(text: $searchText, prompt: "Search credentials...")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    CredentialGroupsView(vm: vm)
+                } label: {
+                    Image(systemName: "folder.fill")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 ViewModeToggle(mode: $viewMode, accentColor: .green)
             }
             ToolbarItem(placement: .topBarTrailing) {

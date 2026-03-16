@@ -208,7 +208,7 @@ class OnDeviceAIService {
         let lower = text.lowercased()
         let contentLower = pageContent.lowercased()
 
-        let success = lower.contains("successful") || lower.contains("\"loginsuccessful\": true") || contentLower.contains("welcome")
+        let success = lower.contains("successful") || lower.contains("\"loginsuccessful\": true")
         let hasError = lower.contains("error") || contentLower.contains("incorrect") || contentLower.contains("invalid")
         let disabledPhrases = [
             "disabled", "blocked", "suspended", "banned", "locked",

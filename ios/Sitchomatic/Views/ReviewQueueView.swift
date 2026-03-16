@@ -50,6 +50,14 @@ struct ReviewQueueView: View {
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    EvidenceBundleListView()
+                } label: {
+                    Image(systemName: "archivebox.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Expire Old Items", systemImage: "clock.badge.xmark") {
                         vm.expireOld()

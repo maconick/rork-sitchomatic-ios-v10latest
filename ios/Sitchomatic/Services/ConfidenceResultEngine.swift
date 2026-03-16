@@ -304,7 +304,7 @@ class ConfidenceResultEngine {
 
         let allText = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
 
-        let successOCR = ["balance", "wallet", "my account", "logout", "welcome"]
+        let successOCR = ["balance", "wallet", "my account", "logout"]
         for term in successOCR {
             if allText.contains(term) {
                 return SignalContribution(source: "SUCCESS_OCR", weight: weight, rawScore: 0.9, weightedScore: weight * 0.9, detail: "success OCR '\(term)'")

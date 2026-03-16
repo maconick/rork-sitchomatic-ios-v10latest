@@ -1532,7 +1532,7 @@ class LoginSiteWebSession: NSObject {
             let bodyText = await executeJS("document.body ? document.body.innerText.substring(0, 500) : ''") ?? ""
             if bodyText != originalBody && bodyText.count > 30 {
                 let bodyLower = bodyText.lowercased()
-                let indicators = ["welcome", "dashboard", "account", "balance", "deposit",
+                let indicators = ["dashboard", "account", "balance", "deposit",
                                   "incorrect", "invalid", "wrong", "disabled", "blocked",
                                   "blacklist", "locked", "error", "failed", "try again"]
                 for indicator in indicators {

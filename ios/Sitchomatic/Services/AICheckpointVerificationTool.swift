@@ -194,7 +194,7 @@ class AICheckpointVerificationTool {
 
     private func detectState(combined: String, url: String, signals: inout [String]) -> CheckpointState {
         let loginKeywords = ["log in", "login", "sign in", "username", "email address", "password"]
-        let dashboardKeywords = ["welcome", "dashboard", "my account", "balance", "deposit", "lobby", "home"]
+        let dashboardKeywords = ["dashboard", "my account", "balance", "deposit", "lobby", "home"]
         let challengeKeywords = ["captcha", "challenge", "verify you are human", "cloudflare", "just a moment"]
         let errorKeywords = ["error", "incorrect", "invalid", "wrong password", "access denied", "something went wrong"]
         let blankIndicators = combined.trimmingCharacters(in: .whitespacesAndNewlines).count < 20
