@@ -24,9 +24,12 @@ class HostCircuitBreakerService {
 
     nonisolated enum BreakerStatus: String, Sendable {
         case closed
+        case softBreak
         case open
         case halfOpen
     }
+
+    private let softBreakThreshold: Int = 4
 
     private struct CircuitState {
         var status: BreakerStatus = .closed
@@ -37,14 +40,13 @@ class HostCircuitBreakerService {
         var lastFailureType: FailureType?
         var consecutiveTrips: Int = 0
         var effectiveCooldown: TimeInterval = 30
+        var softBreakAt: Date?
 
         var isTripped: Bool {
             switch status {
             case .open:
                 return true
-            case .halfOpen:
-                return false
-            case .closed:
+            case .halfOpen, .closed, .softBreak:
                 return false
             }
         }
@@ -59,6 +61,32 @@ class HostCircuitBreakerService {
         case generic
     }
 
+    func isSoftBreak(host: String, path: String? = nil) -> Bool {
+        let key = circuitKey(host: host, path: path)
+        return hostStates[key]?.status == .softBreak
+    }
+
+    func applySoftBreak(host: String, path: String? = nil) {
+        let key = circuitKey(host: host, path: path)
+        var state = hostStates[key] ?? CircuitState()
+        if state.status == .closed {
+            state.status = .softBreak
+            state.softBreakAt = Date()
+            hostStates[key] = state
+            logger.log("CircuitBreaker: \(key) → SOFT BREAK (50% traffic reduction)", category: .network, level: .warning)
+        }
+    }
+
+    func liftSoftBreak(host: String, path: String? = nil) {
+        let key = circuitKey(host: host, path: path)
+        guard var state = hostStates[key], state.status == .softBreak else { return }
+        state.status = .closed
+        state.softBreakAt = nil
+        state.weightedFailureScore = max(0, state.weightedFailureScore - 2)
+        hostStates[key] = state
+        logger.log("CircuitBreaker: \(key) SOFT BREAK → CLOSED", category: .network, level: .success)
+    }
+
     func shouldAllow(host: String, path: String? = nil) -> Bool {
         let key = circuitKey(host: host, path: path)
         guard var state = hostStates[key] else { return true }
@@ -66,6 +94,8 @@ class HostCircuitBreakerService {
         switch state.status {
         case .closed:
             return true
+        case .softBreak:
+            return Bool.random()
         case .open:
             if let opened = state.openedAt, Date().timeIntervalSince(opened) >= state.effectiveCooldown {
                 state.status = .halfOpen
@@ -108,6 +138,12 @@ class HostCircuitBreakerService {
             state.halfOpenProbes = 0
             state.effectiveCooldown = computeCooldown(for: type, consecutiveTrips: state.consecutiveTrips)
             logger.log("CircuitBreaker: \(key) HALF-OPEN → OPEN (probe failed: \(type.rawValue)) cooldown=\(Int(state.effectiveCooldown))s (trip #\(state.consecutiveTrips))", category: .network, level: .warning)
+        } else if state.weightedFailureScore >= softBreakThreshold && state.status == .closed {
+            state.status = .softBreak
+            state.softBreakAt = Date()
+            hostStates[key] = state
+            logger.log("CircuitBreaker: \(key) → SOFT BREAK — weighted score \(state.weightedFailureScore), reducing traffic 50%", category: .network, level: .warning)
+            return
         } else if state.weightedFailureScore >= failureThreshold * 2 {
             state.consecutiveTrips += 1
             state.status = .open
@@ -156,7 +192,7 @@ class HostCircuitBreakerService {
 
     func allOpenCircuits() -> [(key: String, failureCount: Int, remainingSeconds: Int, lastFailure: String)] {
         hostStates.compactMap { key, state in
-            guard state.status == .open || state.status == .halfOpen else { return nil }
+            guard state.status == .open || state.status == .halfOpen || state.status == .softBreak else { return nil }
             let remaining = state.openedAt.map { Int(max(0, state.effectiveCooldown - Date().timeIntervalSince($0))) } ?? 0
             return (key, state.failureCount, remaining, state.lastFailureType?.rawValue ?? "unknown")
         }.sorted { $0.remainingSeconds > $1.remainingSeconds }

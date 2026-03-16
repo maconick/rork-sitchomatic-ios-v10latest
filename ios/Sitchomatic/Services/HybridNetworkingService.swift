@@ -8,6 +8,8 @@ class HybridNetworkingService {
     private let proxyService = ProxyRotationService.shared
     private let aiStrategy = AIProxyStrategyService.shared
     private let intel = NordServerIntelligence.shared
+    private let predictiveRoute = AIPredictiveRouteService.shared
+    private let anomalyForecasting = AIAnomalyForecastingService.shared
     private let logger = DebugLogger.shared
 
     private var sessionIndex: Int = 0
@@ -114,7 +116,7 @@ class HybridNetworkingService {
         return configs
     }
 
-    func recordOutcome(method: HybridMethod, success: Bool, latencyMs: Int, hostname: String? = nil) {
+    func recordOutcome(method: HybridMethod, success: Bool, latencyMs: Int, hostname: String? = nil, region: String = "auto", wasBlocked: Bool = false, wasTimeout: Bool = false) {
         var stat = methodStats[method] ?? MethodStat()
         stat.attempts += 1
         if success { stat.successes += 1 } else { stat.failures += 1 }
@@ -133,6 +135,25 @@ class HybridNetworkingService {
             } else {
                 intel.recordFailure(hostname: host)
             }
+
+            predictiveRoute.recordOutcome(
+                host: host,
+                method: method,
+                region: region,
+                success: success,
+                latencyMs: latencyMs,
+                wasBlocked: wasBlocked,
+                wasTimeout: wasTimeout
+            )
+
+            let forecastKey = host
+            anomalyForecasting.recordLatency(key: forecastKey, latencyMs: latencyMs)
+            if success {
+                anomalyForecasting.recordSuccess(key: forecastKey)
+            } else {
+                anomalyForecasting.recordError(key: forecastKey, isRateLimit: wasBlocked)
+            }
+            anomalyForecasting.recordRegionOutcome(region: region, host: host, success: success)
         }
 
         if stat.failures >= 3 && stat.successRate < 0.2 {
@@ -171,17 +192,32 @@ class HybridNetworkingService {
 
         available.append(.httpsDOH)
 
-        let ranked = available.sorted { a, b in
-            let scoreA = methodHealthScores[a] ?? 0.5
-            let scoreB = methodHealthScores[b] ?? 0.5
-            if abs(scoreA - scoreB) < 0.05 {
-                return a.priority < b.priority
+        let host = hostForTarget(target)
+        let degraded = predictiveRoute.degradedMethods(for: host)
+        let filtered = available.filter { !degraded.contains($0) || available.count <= 1 }
+        let effective = filtered.isEmpty ? available : filtered
+
+        let ranked = predictiveRoute.rankedMethods(for: host, available: effective)
+
+        let finalRanked: [HybridMethod]
+        if ranked == effective {
+            finalRanked = effective.sorted { a, b in
+                let scoreA = methodHealthScores[a] ?? 0.5
+                let scoreB = methodHealthScores[b] ?? 0.5
+                if abs(scoreA - scoreB) < 0.05 {
+                    return a.priority < b.priority
+                }
+                return scoreA > scoreB
             }
-            return scoreA > scoreB
+        } else {
+            finalRanked = ranked
         }
 
-        logger.log("Hybrid: \(ranked.count) methods available — \(ranked.map(\.rawValue).joined(separator: ", "))", category: .network, level: .debug)
-        return ranked
+        if !degraded.isEmpty {
+            logger.log("Hybrid: degraded methods excluded: \(degraded.map(\.rawValue).joined(separator: ", "))", category: .network, level: .warning)
+        }
+        logger.log("Hybrid: \(finalRanked.count) methods available — \(finalRanked.map(\.rawValue).joined(separator: ", "))", category: .network, level: .debug)
+        return finalRanked
     }
 
     private func resolveConfig(for method: HybridMethod, target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {

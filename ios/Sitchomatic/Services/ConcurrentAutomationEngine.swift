@@ -122,6 +122,7 @@ class ConcurrentAutomationEngine {
     private let urlCooldown = URLCooldownService.shared
     private let throttler = AutomationThrottler(maxConcurrency: 5)
     private let circuitBreaker = HostCircuitBreakerService.shared
+    private let anomalyForecasting = AIAnomalyForecastingService.shared
     private let urlQualityScoring = URLQualityScoringService.shared
     private let aiCredentialPriority = AICredentialPriorityScoringService.shared
     private let proxyQualityDecay = ProxyQualityDecayService.shared
@@ -309,12 +310,20 @@ class ConcurrentAutomationEngine {
                 try? await Task.sleep(for: .seconds(throttleCheck.waitSeconds))
             }
 
+            let anomalyThrottle = anomalyForecasting.shouldThrottleRequests(key: "ppsr_batch")
+            if anomalyThrottle.shouldThrottle {
+                logger.log("ConcurrentEngine: anomaly forecasting throttle \(anomalyThrottle.delayMs)ms", category: .automation, level: .warning)
+                try? await Task.sleep(for: .milliseconds(anomalyThrottle.delayMs))
+            }
+
             if coordinator.adaptiveConcurrency && processed > 3 {
                 let recentOutcomes = batchResults.map { (cardId: $0.0, outcome: $0.1, latencyMs: $0.2) }
                 let analytics = coordinator.computeBatchAnalytics(outcomes: recentOutcomes)
-                if analytics.suggestedConcurrency != maxConcurrency {
-                    await throttler.updateMaxConcurrency(analytics.suggestedConcurrency)
-                    logger.log("ConcurrentEngine: adaptive concurrency → \(analytics.suggestedConcurrency)", category: .automation, level: .info)
+                let anomalyConcurrency = anomalyForecasting.recommendedConcurrency(key: "ppsr_batch", currentMax: analytics.suggestedConcurrency)
+                let finalConcurrency = min(analytics.suggestedConcurrency, anomalyConcurrency)
+                if finalConcurrency != maxConcurrency {
+                    await throttler.updateMaxConcurrency(finalConcurrency)
+                    logger.log("ConcurrentEngine: adaptive concurrency → \(finalConcurrency) (anomaly: \(anomalyConcurrency))", category: .automation, level: .info)
                 }
             }
 
@@ -685,11 +694,39 @@ class ConcurrentAutomationEngine {
                 rateLimitSignalCount += batchResults.filter({ $0.1 == .redBannerError || $0.1 == .smsDetected }).count
             }
 
+            for (_, outcome, latency, _) in batchResults {
+                let forecastKey = "login_\(proxyTarget.rawValue)"
+                anomalyForecasting.recordLatency(key: forecastKey, latencyMs: latency)
+                if outcome == .success {
+                    anomalyForecasting.recordSuccess(key: forecastKey)
+                } else {
+                    let isRL = outcome == .redBannerError || outcome == .smsDetected
+                    anomalyForecasting.recordError(key: forecastKey, isRateLimit: isRL)
+                }
+            }
+
+            let loginForecast = anomalyForecasting.forecast(key: "login_\(proxyTarget.rawValue)")
+            if loginForecast.softBreakRecommended {
+                for url in healthyURLs {
+                    if let host = url.host {
+                        circuitBreaker.applySoftBreak(host: host)
+                    }
+                }
+            }
+            if let reduction = loginForecast.concurrencyReduction, reduction > 0 {
+                let newMax = max(1, maxConcurrency - reduction)
+                await throttler.updateMaxConcurrency(newMax)
+                logger.log("ConcurrentEngine: anomaly forecast reducing concurrency to \(newMax)", category: .automation, level: .warning)
+            }
+
             if batchEnd < attempts.count && !cancelFlag {
+                let anomalyThrottle = anomalyForecasting.shouldThrottleRequests(key: "login_\(proxyTarget.rawValue)")
                 let batchSuccessRate = batchResults.isEmpty ? 0.5 : Double(batchResults.filter { $0.1 == .success }.count) / Double(batchResults.count)
                 let rateLimitMultiplier = rateLimitSignalCount > 3 ? 2.5 : (rateLimitSignalCount > 0 ? 1.5 : 1.0)
                 let cooldown: Int
-                if batchSuccessRate > 0.8 {
+                if anomalyThrottle.shouldThrottle {
+                    cooldown = anomalyThrottle.delayMs
+                } else if batchSuccessRate > 0.8 {
                     cooldown = Int(Double(Int.random(in: 250...600)) * rateLimitMultiplier)
                 } else if batchSuccessRate < 0.3 {
                     cooldown = Int(Double(Int.random(in: 1500...3000)) * rateLimitMultiplier)
