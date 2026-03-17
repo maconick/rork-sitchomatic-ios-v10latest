@@ -5,9 +5,10 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var trueDetectionEnabled: Bool = true
     var trueDetectionPriority: Bool = true
     var trueDetectionHardPauseMs: Int = 4500
-    var trueDetectionTripleClickCount: Int = 3
+    var trueDetectionTripleClickCount: Int = 4
     var trueDetectionTripleClickDelayMs: Int = 1600
     var trueDetectionMaxAttempts: Int = 4
+    var trueDetectionAlwaysForceEnabled: Bool = true
     var trueDetectionPostClickWaitMs: Int = 3250
     var trueDetectionCooldownMinutes: Int = 15
     var trueDetectionEmailSelector: String = "#email"

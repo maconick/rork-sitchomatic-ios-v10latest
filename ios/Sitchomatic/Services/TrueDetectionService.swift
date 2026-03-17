@@ -36,7 +36,7 @@ class TrueDetectionService {
     nonisolated struct TrueDetectionConfig: Sendable {
         var hardPauseMs: Int = 4000
         var tripleClickDelayMs: Int = 1100
-        var tripleClickCount: Int = 3
+        var tripleClickCount: Int = 4
         var maxAttempts: Int = 4
         var postClickWaitMs: Int = 2500
         var cooldownMinutes: Int = 15

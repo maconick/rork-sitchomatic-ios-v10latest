@@ -118,7 +118,7 @@ class DisabledCheckService {
             try? await Task.sleep(for: .milliseconds(Int.random(in: 200...500)))
 
             var submitSucceeded = false
-            for submitAttempt in 1...3 {
+            for submitAttempt in 1...4 {
                 let submitResult = await session.clickForgotPasswordSubmit()
                 if submitResult.success {
                     submitSucceeded = true

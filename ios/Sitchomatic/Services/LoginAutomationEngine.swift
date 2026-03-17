@@ -902,14 +902,14 @@ class LoginAutomationEngine {
                 }
 
                 if !legacySubmitOK {
-                    for submitAttempt in 1...3 {
+                    for submitAttempt in 1...4 {
                         let clickResult = await session.clickLoginButton()
                         if clickResult.success {
                             attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) legacy click attempt \(submitAttempt): \(clickResult.detail)", level: .info))
                             legacySubmitOK = true
                             break
                         }
-                        if submitAttempt < 3 {
+                        if submitAttempt < 4 {
                             try? await Task.sleep(for: .seconds(Double(submitAttempt)))
                         }
                     }

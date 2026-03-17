@@ -265,7 +265,7 @@ class HumanInteractionEngine {
         try? await Task.sleep(for: .milliseconds(aiOptimizedDelay(category: .preSubmitWait, fallbackMin: 300, fallbackMax: 600)))
 
         logger.log("TrueDetection: starting triple-click on #login-submit", category: .automation, level: .info, sessionId: sessionId)
-        for i in 0..<3 {
+        for i in 0..<4 {
             let clickJS = """
             (function() {
                 var btn = document.querySelector('#login-submit');
@@ -284,11 +284,11 @@ class HumanInteractionEngine {
             })();
             """
             let clickResult = await executeJS(clickJS)
-            logger.log("TrueDetection: triple-click \(i + 1)/3 → \(clickResult ?? "nil")", category: .automation, level: .trace, sessionId: sessionId)
+            logger.log("TrueDetection: triple-click \(i + 1)/4 → \(clickResult ?? "nil")", category: .automation, level: .trace, sessionId: sessionId)
             if clickResult == "NOT_FOUND" && i == 0 {
                 return result
             }
-            if i < 2 {
+            if i < 3 {
                 try? await Task.sleep(for: .milliseconds(1100))
             }
         }

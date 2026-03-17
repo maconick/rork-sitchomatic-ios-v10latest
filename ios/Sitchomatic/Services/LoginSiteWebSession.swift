@@ -479,7 +479,7 @@ class LoginSiteWebSession: NSObject {
         return (false, "TRUE DETECTION: Password fill failed on #login-password — \(result ?? "nil")")
     }
 
-    func trueDetectionTripleClickSubmit(clickCount: Int = 3, delayMs: Int = 1100) async -> (success: Bool, detail: String) {
+    func trueDetectionTripleClickSubmit(clickCount: Int = 4, delayMs: Int = 1100) async -> (success: Bool, detail: String) {
         let checkJS = """
         (function() {
             var btn = document.querySelector('#login-submit');

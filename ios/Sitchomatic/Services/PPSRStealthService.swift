@@ -365,18 +365,60 @@ class PPSRStealthService {
                 }
             }
 
-            // === NAVIGATOR SPOOFING (value descriptors — no detectable getters) ===
-            defineVal(navigator, 'webdriver', false);
-            \(opts.languageSpoof ? "defineVal(navigator, 'language', '\(p.language)');" : "")
-            \(opts.languageSpoof ? "defineVal(navigator, 'languages', Object.freeze(['\(p.language)', 'en']));" : "")
-            defineVal(navigator, 'platform', '\(p.platform)');
-            defineVal(navigator, 'hardwareConcurrency', \(p.cores));
-            defineVal(navigator, 'deviceMemory', \(p.memory));
-            defineVal(navigator, 'maxTouchPoints', \(p.maxTouchPoints));
-            defineVal(navigator, 'vendor', 'Apple Computer, Inc.');
-            defineVal(navigator, 'productSub', '20030107');
-            defineVal(navigator, 'doNotTrack', null);
-            try { defineVal(navigator, 'appVersion', navigator.userAgent.replace('Mozilla/', '')); } catch(e) {}
+            function defineProtoGetter(proto, prop, val) {
+                try {
+                    var origDesc = Object.getOwnPropertyDescriptor(proto, prop);
+                    if (origDesc && origDesc.get) {
+                        var fakeGet = function() { return val; };
+                        Object.defineProperty(fakeGet, 'name', { value: 'get ' + prop, configurable: true });
+                        Object.defineProperty(proto, prop, {
+                            get: fakeGet,
+                            set: origDesc.set,
+                            configurable: true,
+                            enumerable: origDesc.enumerable
+                        });
+                        return fakeGet;
+                    } else {
+                        defineVal(proto, prop, val);
+                        return null;
+                    }
+                } catch(e) {
+                    defineVal(proto, prop, val);
+                    return null;
+                }
+            }
+
+            // === NAVIGATOR SPOOFING (prototype-level getter overrides — matches real browser descriptor shape) ===
+            var protoGetters = [];
+            try {
+                var navProto = Object.getPrototypeOf(navigator);
+                var g;
+                g = defineProtoGetter(navProto, 'webdriver', false); if (g) protoGetters.push(g);
+                \(opts.languageSpoof ? "g = defineProtoGetter(navProto, 'language', '\(p.language)'); if (g) protoGetters.push(g);" : "")
+                \(opts.languageSpoof ? "g = defineProtoGetter(navProto, 'languages', Object.freeze(['\(p.language)', 'en'])); if (g) protoGetters.push(g);" : "")
+                g = defineProtoGetter(navProto, 'platform', '\(p.platform)'); if (g) protoGetters.push(g);
+                g = defineProtoGetter(navProto, 'hardwareConcurrency', \(p.cores)); if (g) protoGetters.push(g);
+                g = defineProtoGetter(navProto, 'deviceMemory', \(p.memory)); if (g) protoGetters.push(g);
+                g = defineProtoGetter(navProto, 'maxTouchPoints', \(p.maxTouchPoints)); if (g) protoGetters.push(g);
+                g = defineProtoGetter(navProto, 'vendor', 'Apple Computer, Inc.'); if (g) protoGetters.push(g);
+                g = defineProtoGetter(navProto, 'productSub', '20030107'); if (g) protoGetters.push(g);
+                g = defineProtoGetter(navProto, 'doNotTrack', null); if (g) protoGetters.push(g);
+                try { g = defineProtoGetter(navProto, 'appVersion', navigator.userAgent.replace('Mozilla/', '')); if (g) protoGetters.push(g); } catch(e) {}
+            } catch(e) {
+                defineVal(navigator, 'webdriver', false);
+                \(opts.languageSpoof ? "defineVal(navigator, 'language', '\(p.language)');" : "")
+                \(opts.languageSpoof ? "defineVal(navigator, 'languages', Object.freeze(['\(p.language)', 'en']));" : "")
+                defineVal(navigator, 'platform', '\(p.platform)');
+                defineVal(navigator, 'hardwareConcurrency', \(p.cores));
+                defineVal(navigator, 'deviceMemory', \(p.memory));
+                defineVal(navigator, 'maxTouchPoints', \(p.maxTouchPoints));
+                defineVal(navigator, 'vendor', 'Apple Computer, Inc.');
+                defineVal(navigator, 'productSub', '20030107');
+                defineVal(navigator, 'doNotTrack', null);
+                try { defineVal(navigator, 'appVersion', navigator.userAgent.replace('Mozilla/', '')); } catch(e) {}
+            }
+
+            try { delete navigator.webdriver; } catch(e) {}
 
             // === CONNECTION API ===
             try {
@@ -616,6 +658,7 @@ class PPSRStealthService {
                     return nativeToString.call(this);
                 };
                 markNative(Function.prototype.toString);
+                for (var pi = 0; pi < protoGetters.length; pi++) { markNative(protoGetters[pi]); }
                 markNative(Permissions.prototype.query);
                 \(opts.timezoneSpoof ? "markNative(Date.prototype.getTimezoneOffset);" : "")
                 \(opts.timezoneSpoof ? "try { markNative(Intl.DateTimeFormat.prototype.resolvedOptions); } catch(e) {}" : "")
@@ -660,16 +703,37 @@ class PPSRStealthService {
             try {
                 var origContentWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
                 if (origContentWindow && origContentWindow.get) {
-                    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-                        get: function() {
-                            var w = origContentWindow.get.call(this);
-                            if (w) {
-                                try { defineVal(w.navigator, 'webdriver', false); } catch(e) {}
+                    var patchedCWGet = function() {
+                        var w = origContentWindow.get.call(this);
+                        if (w) {
+                            try {
+                                var np = Object.getPrototypeOf(w.navigator);
+                                defineProtoGetter(np, 'webdriver', false);
+                            } catch(e) {
+                                try { defineVal(w.navigator, 'webdriver', false); } catch(e2) {}
                             }
-                            return w;
                         }
+                        return w;
+                    };
+                    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+                        get: patchedCWGet,
+                        configurable: true
                     });
+                    markNative(patchedCWGet);
                 }
+            } catch(e) {}
+
+            // === OBJECT.getOwnPropertyDescriptor SHIELD ===
+            try {
+                var origGOPD = Object.getOwnPropertyDescriptor;
+                var shieldedProps = new Set(['webdriver','language','languages','platform','hardwareConcurrency','deviceMemory','maxTouchPoints','vendor','productSub','doNotTrack','appVersion']);
+                Object.getOwnPropertyDescriptor = function(obj, prop) {
+                    if (obj === navigator && shieldedProps.has(prop)) {
+                        return undefined;
+                    }
+                    return origGOPD.call(this, obj, prop);
+                };
+                markNative(Object.getOwnPropertyDescriptor);
             } catch(e) {}
 
         })();
