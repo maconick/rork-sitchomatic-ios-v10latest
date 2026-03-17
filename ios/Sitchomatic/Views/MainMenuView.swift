@@ -207,43 +207,35 @@ struct MainMenuView: View {
                 activeMode = .ppsr
             }
         } label: {
-            ZStack {
+            ZStack(alignment: .leading) {
                 LinearGradient(
-                    colors: [.blue.opacity(0.05), .cyan.opacity(0.2)],
-                    startPoint: .top,
-                    endPoint: .bottom
+                    colors: [.cyan.opacity(0.2), .blue.opacity(0.05)],
+                    startPoint: .leading,
+                    endPoint: .trailing
                 )
 
-                HStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Image(systemName: "car.side.fill")
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundStyle(.cyan)
-                            .shadow(color: .cyan.opacity(0.5), radius: 8)
+                HStack(spacing: 14) {
+                    Image(systemName: "car.side.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.cyan)
+                        .shadow(color: .cyan.opacity(0.5), radius: 8)
 
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("PPSR")
-                            .font(.system(size: 18, weight: .black, design: .monospaced))
+                            .font(.system(size: 20, weight: .black, design: .monospaced))
                             .foregroundStyle(.white)
                             .shadow(color: .black.opacity(0.6), radius: 4)
 
+                        Text("CHECK")
+                            .font(.system(size: 20, weight: .black, design: .monospaced))
+                            .foregroundStyle(.cyan)
+                            .shadow(color: .cyan.opacity(0.4), radius: 4)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("VIN & Card Testing")
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.cyan.opacity(0.7))
-                    }
-                    .padding(.leading, 20)
-
-                    Spacer()
-
-                    VStack(alignment: .trailing, spacing: 6) {
-                        Image(systemName: "checkmark.shield.fill")
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundStyle(.cyan)
-                            .shadow(color: .cyan.opacity(0.5), radius: 8)
-
-                        Text("CHECK")
-                            .font(.system(size: 18, weight: .black, design: .monospaced))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.6), radius: 4)
 
                         HStack(spacing: 3) {
                             Text("ENTER")
@@ -254,8 +246,8 @@ struct MainMenuView: View {
                                 .foregroundStyle(.cyan.opacity(0.4))
                         }
                     }
-                    .padding(.trailing, 20)
                 }
+                .padding(.leading, 20)
             }
             .contentShape(Rectangle())
         }

@@ -18,6 +18,7 @@ struct SavedCredentialsView: View {
     @State private var selectedCSVMapping: PPSRCard.CSVColumnMapping = .auto
     @State private var isSelecting: Bool = false
     @State private var selectedCardIds: Set<String> = []
+    @State private var showRemoveSelectedConfirm: Bool = false
 
     private var filteredCards: [PPSRCard] {
         var result = vm.cards.filter { $0.status != .dead }
@@ -97,6 +98,15 @@ struct SavedCredentialsView: View {
             }
         }
         .sheet(isPresented: $showImportSheet) { importSheet }
+        .alert("Remove \(selectedCardIds.count) Card\(selectedCardIds.count == 1 ? "" : "s")?", isPresented: $showRemoveSelectedConfirm) {
+            Button("Remove", role: .destructive) {
+                vm.deleteCards(withIds: selectedCardIds)
+                withAnimation(.snappy) { isSelecting = false; selectedCardIds.removeAll() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently remove the selected cards. This cannot be undone.")
+        }
     }
 
     private var selectionBar: some View {
@@ -127,13 +137,28 @@ struct SavedCredentialsView: View {
 
                 if !selectedCardIds.isEmpty {
                     Button {
+                        showRemoveSelectedConfirm = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash.fill").font(.caption)
+                            Text("Remove \(selectedCardIds.count)")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Color.red)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                    }
+                    .sensoryFeedback(.warning, trigger: showRemoveSelectedConfirm)
+
+                    Button {
                         let cards = vm.cards.filter { selectedCardIds.contains($0.id) }
                         vm.testSelectedCards(cards)
                         withAnimation(.snappy) { isSelecting = false; selectedCardIds.removeAll() }
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "play.fill").font(.caption)
-                            Text("Test \(selectedCardIds.count) Card\(selectedCardIds.count == 1 ? "" : "s")")
+                            Text("Test \(selectedCardIds.count)")
                                 .font(.subheadline.weight(.semibold))
                         }
                         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -142,7 +167,6 @@ struct SavedCredentialsView: View {
                         .clipShape(Capsule())
                     }
                     .disabled(vm.isRunning)
-                    .sensoryFeedback(.impact(weight: .heavy), trigger: vm.isRunning)
                 }
             }
         }

@@ -530,6 +530,13 @@ class PPSRAutomationViewModel {
         persistCards()
     }
 
+    func deleteCards(withIds ids: Set<String>) {
+        let count = ids.count
+        cards.removeAll { ids.contains($0.id) }
+        log("Removed \(count) selected card(s)")
+        persistCards()
+    }
+
     func restoreCard(_ card: PPSRCard) {
         card.status = .untested
         log("Restored \(card.brand.rawValue) \(card.number) to untested")
