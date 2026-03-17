@@ -23,6 +23,34 @@ class BlankPageRecoveryService {
         let attemptsUsed: Int
     }
 
+    private func cancellationSafeSleep(milliseconds ms: Int) async {
+        let start = Date()
+        let target = TimeInterval(ms) / 1000.0
+        while Date().timeIntervalSince(start) < target {
+            let remaining = target - Date().timeIntervalSince(start)
+            let chunk = min(remaining, 0.5)
+            guard chunk > 0 else { break }
+            do {
+                try await Task.sleep(for: .seconds(chunk))
+            } catch {
+                let elapsed = Date().timeIntervalSince(start)
+                if elapsed < target {
+                    let spinEnd = start.addingTimeInterval(target)
+                    while Date() < spinEnd {
+                        try? await Task.sleep(for: .milliseconds(50))
+                        if Date().timeIntervalSince(start) >= target { break }
+                        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                    }
+                }
+                return
+            }
+        }
+    }
+
+    private func cancellationSafeSleepSeconds(_ seconds: Int) async {
+        await cancellationSafeSleep(milliseconds: seconds * 1000)
+    }
+
     func waitForNonBlankLoginSession(
         session: LoginSiteWebSession,
         timeoutSeconds: Int = 20,
@@ -42,7 +70,7 @@ class BlankPageRecoveryService {
             }
             let elapsed = Int(Date().timeIntervalSince(start))
             onLog?("Blank page timeout: still blank after \(elapsed)s (check \(checkCount))...", .info)
-            try? await Task.sleep(for: .milliseconds(pollIntervalMs))
+            await cancellationSafeSleep(milliseconds: pollIntervalMs)
         }
 
         logger.log("BlankPageTimeout: page still blank after \(timeoutSeconds)s (\(checkCount) checks)", category: .automation, level: .error, sessionId: sessionId)
@@ -69,7 +97,7 @@ class BlankPageRecoveryService {
             }
             let elapsed = Int(Date().timeIntervalSince(start))
             onLog?("Blank page timeout: still blank after \(elapsed)s (check \(checkCount))...", .info)
-            try? await Task.sleep(for: .milliseconds(pollIntervalMs))
+            await cancellationSafeSleep(milliseconds: pollIntervalMs)
         }
 
         logger.log("BlankPageTimeout(PPSR): page still blank after \(timeoutSeconds)s (\(checkCount) checks)", category: .automation, level: .error, sessionId: sessionId)
@@ -99,8 +127,19 @@ class BlankPageRecoveryService {
         var attemptCount = 0
 
         for step in steps {
+            if Task.isCancelled {
+                logger.log("BlankPageRecovery: task cancelled — aborting recovery chain at step \(attemptCount)", category: .automation, level: .warning, sessionId: sessionId)
+                onLog?("Recovery cancelled by parent task", .warning)
+                return RecoveryResult(recovered: false, stepUsed: nil, detail: "Cancelled by parent task", attemptsUsed: attemptCount)
+            }
+
             attemptCount += 1
             if attemptCount > settings.blankPageMaxFallbackAttempts { break }
+
+            if attemptCount > 1 {
+                logger.log("BlankPageRecovery: cooldown before step \(attemptCount)", category: .automation, level: .debug, sessionId: sessionId)
+                await cancellationSafeSleepSeconds(2)
+            }
 
             logger.log("BlankPageRecovery: step \(attemptCount)/\(steps.count) — \(step.rawValue)", category: .automation, level: .info, sessionId: sessionId)
             onLog?("Recovery step \(attemptCount): \(step.rawValue)...", .info)
@@ -195,8 +234,17 @@ class BlankPageRecoveryService {
         var attemptCount = 0
 
         for step in steps {
+            if Task.isCancelled {
+                logger.log("BlankPageRecovery(PPSR): task cancelled — aborting", category: .automation, level: .warning, sessionId: sessionId)
+                return RecoveryResult(recovered: false, stepUsed: nil, detail: "Cancelled by parent task", attemptsUsed: attemptCount)
+            }
+
             attemptCount += 1
             if attemptCount > settings.blankPageMaxFallbackAttempts { break }
+
+            if attemptCount > 1 {
+                await cancellationSafeSleepSeconds(2)
+            }
 
             logger.log("BlankPageRecovery(PPSR): step \(attemptCount)/\(steps.count) — \(step.rawValue)", category: .automation, level: .info, sessionId: sessionId)
             onLog?("Recovery step \(attemptCount): \(step.rawValue)...", .info)
@@ -283,9 +331,11 @@ class BlankPageRecoveryService {
         let start = Date()
         let maxWait = TimeInterval(totalWaitSeconds)
         var checkCount = 0
+        let safeInterval = max(recheckIntervalMs, 500)
 
         while Date().timeIntervalSince(start) < maxWait {
-            try? await Task.sleep(for: .milliseconds(recheckIntervalMs))
+            if Task.isCancelled { return false }
+            await cancellationSafeSleep(milliseconds: safeInterval)
             checkCount += 1
 
             if let screenshot = await session.captureScreenshot(), !BlankScreenshotDetector.isBlank(screenshot) {
@@ -323,7 +373,7 @@ class BlankPageRecoveryService {
         let loaded = await session.loadPage(timeout: settings.pageLoadTimeout)
         guard loaded else { return false }
 
-        try? await Task.sleep(for: .seconds(2))
+        await cancellationSafeSleepSeconds(3)
 
         if let screenshot = await session.captureScreenshot(), !BlankScreenshotDetector.isBlank(screenshot) {
             return true
@@ -345,7 +395,7 @@ class BlankPageRecoveryService {
         let loaded = await session.loadPage(timeout: settings.pageLoadTimeout)
         guard loaded else { return false }
 
-        try? await Task.sleep(for: .seconds(2))
+        await cancellationSafeSleepSeconds(3)
 
         if let screenshot = await session.captureScreenshot(), !BlankScreenshotDetector.isBlank(screenshot) {
             return true
@@ -372,7 +422,7 @@ class BlankPageRecoveryService {
         let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
-        try? await Task.sleep(for: .seconds(2))
+        await cancellationSafeSleepSeconds(3)
 
         if let screenshot = await session.captureScreenshot(), !BlankScreenshotDetector.isBlank(screenshot) {
             return true
@@ -386,6 +436,11 @@ class BlankPageRecoveryService {
         sessionId: String,
         onLog: ((String, PPSRLogEntry.Level) -> Void)?
     ) async -> Bool {
+        if Task.isCancelled {
+            logger.log("BlankPageRecovery: skipping full session reset — task cancelled", category: .automation, level: .warning, sessionId: sessionId)
+            return false
+        }
+
         onLog?("Full session reset: tearing down and rebuilding WebView + network...", .info)
         logger.log("BlankPageRecovery: performing full session reset", category: .automation, level: .info, sessionId: sessionId)
 
@@ -394,15 +449,20 @@ class BlankPageRecoveryService {
         session.networkConfig = newConfig
 
         session.tearDown(wipeAll: true)
+
+        await cancellationSafeSleepSeconds(1)
+
         session.stealthEnabled = true
         session.setUp(wipeAll: true)
+
+        await cancellationSafeSleep(milliseconds: 500)
 
         onLog?("Session rebuilt with network: \(newConfig.label)", .info)
 
         let loaded = await session.loadPage(timeout: settings.pageLoadTimeout)
         guard loaded else { return false }
 
-        try? await Task.sleep(for: .seconds(3))
+        await cancellationSafeSleepSeconds(4)
 
         if let screenshot = await session.captureScreenshot(), !BlankScreenshotDetector.isBlank(screenshot) {
             return true
@@ -422,9 +482,11 @@ class BlankPageRecoveryService {
         let start = Date()
         let maxWait = TimeInterval(totalWaitSeconds)
         var checkCount = 0
+        let safeInterval = max(recheckIntervalMs, 500)
 
         while Date().timeIntervalSince(start) < maxWait {
-            try? await Task.sleep(for: .milliseconds(recheckIntervalMs))
+            if Task.isCancelled { return false }
+            await cancellationSafeSleep(milliseconds: safeInterval)
             checkCount += 1
 
             if let screenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, !BlankScreenshotDetector.isBlank(screenshot) {
@@ -453,7 +515,7 @@ class BlankPageRecoveryService {
         let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
-        try? await Task.sleep(for: .seconds(2))
+        await cancellationSafeSleepSeconds(3)
 
         if let screenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, !BlankScreenshotDetector.isBlank(screenshot) {
             return true
@@ -478,7 +540,7 @@ class BlankPageRecoveryService {
         let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
-        try? await Task.sleep(for: .seconds(2))
+        await cancellationSafeSleepSeconds(3)
 
         if let screenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, !BlankScreenshotDetector.isBlank(screenshot) {
             return true
@@ -492,6 +554,11 @@ class BlankPageRecoveryService {
         sessionId: String,
         onLog: ((String, PPSRLogEntry.Level) -> Void)?
     ) async -> Bool {
+        if Task.isCancelled {
+            logger.log("BlankPageRecovery(PPSR): skipping full session reset — task cancelled", category: .automation, level: .warning, sessionId: sessionId)
+            return false
+        }
+
         onLog?("Full session reset: tearing down and rebuilding WebView...", .info)
         logger.log("BlankPageRecovery(PPSR): performing full session reset", category: .automation, level: .info, sessionId: sessionId)
 
@@ -500,15 +567,20 @@ class BlankPageRecoveryService {
         session.networkConfig = newConfig
 
         session.tearDown()
+
+        await cancellationSafeSleepSeconds(1)
+
         session.stealthEnabled = true
         session.setUp()
+
+        await cancellationSafeSleep(milliseconds: 500)
 
         onLog?("Session rebuilt with network: \(newConfig.label)", .info)
 
         let loaded = await session.loadPage(timeout: AutomationSettings.minimumTimeoutSeconds)
         guard loaded else { return false }
 
-        try? await Task.sleep(for: .seconds(3))
+        await cancellationSafeSleepSeconds(4)
 
         if let screenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, !BlankScreenshotDetector.isBlank(screenshot) {
             return true
