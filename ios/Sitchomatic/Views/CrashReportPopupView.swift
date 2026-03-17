@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct CrashReportPopupView: View {
-    let report: CrashProtectionService.CrashReport
+    let report: CrashReport
     let onDismiss: () -> Void
     let onSend: (String) -> Void
 

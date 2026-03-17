@@ -11,7 +11,7 @@ struct SitchomaticApp: App {
     @State private var hasEverOpenedIgnition: Bool = false
     @State private var hasEverOpenedPPSR: Bool = false
     @State private var showCrashReport: Bool = false
-    @State private var pendingCrashReport: CrashProtectionService.CrashReport?
+    @State private var pendingCrashReport: CrashReport?
 
     private var activeMode: ActiveAppMode? {
         ActiveAppMode(rawValue: activeModeRaw)
