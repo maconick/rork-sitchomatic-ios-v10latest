@@ -21,6 +21,27 @@ final class CrashProtectionService {
     private let stateFile = "crash_protection_state.json"
     private let crashReportFile = "crash_report_pending.json"
 
+    // MARK: - Cleanup Escalation
+
+    private struct CleanupTier {
+        let logLimit: Int
+        let drainPreWarmed: Bool
+        let trimAttempts: Bool
+        let aggressiveCleanup: Bool
+        let screenshotCacheLimits: (memory: Int, disk: Int)?
+        let clearScreenshots: Bool
+        let killBatches: Bool
+        let purgeURLCache: Bool
+        let invalidateSessions: Bool
+    }
+
+    private let escalation: [MemoryMonitor.MemoryLevel: CleanupTier] = [
+        .soft: CleanupTier(logLimit: 2500, drainPreWarmed: true, trimAttempts: false, aggressiveCleanup: false, screenshotCacheLimits: nil, clearScreenshots: false, killBatches: false, purgeURLCache: false, invalidateSessions: false),
+        .high: CleanupTier(logLimit: 1500, drainPreWarmed: true, trimAttempts: true, aggressiveCleanup: false, screenshotCacheLimits: nil, clearScreenshots: false, killBatches: false, purgeURLCache: false, invalidateSessions: false),
+        .critical: CleanupTier(logLimit: 800, drainPreWarmed: false, trimAttempts: true, aggressiveCleanup: true, screenshotCacheLimits: (memory: 10, disk: 200), clearScreenshots: false, killBatches: false, purgeURLCache: false, invalidateSessions: false),
+        .emergency: CleanupTier(logLimit: 300, drainPreWarmed: false, trimAttempts: true, aggressiveCleanup: true, screenshotCacheLimits: (memory: 5, disk: 100), clearScreenshots: true, killBatches: true, purgeURLCache: true, invalidateSessions: true),
+    ]
+
     // MARK: - Public API
 
     func register() {
@@ -82,102 +103,114 @@ final class CrashProtectionService {
                 message: "Memory growing at \(Int(ratePerMin))MB/min. Batches will be stopped to prevent crash."
             )
             if usedMB > memoryMonitor.thresholds.criticalMB {
-                performEmergencyCleanup(usedMB: usedMB)
+                executeCleanup(level: .emergency, usedMB: usedMB)
                 return
             }
         }
 
         if memoryMonitor.preemptiveThrottleActive {
             logger.log("CrashProtection: RUNAWAY GROWTH — \(String(format: "%.0f", memoryMonitor.growthRateMBPerSecond))MB/s detected at \(usedMB)MB — preemptive throttle active", category: .system, level: .critical)
-            performAggressiveCleanup()
+            executeCleanup(level: .critical, usedMB: usedMB)
         }
 
         switch level {
         case .emergency:
             logger.log("CrashProtection: EMERGENCY memory (\(usedMB)MB, growth=\(growth)MB/s) — killing active batches (consecutive critical: \(memoryMonitor.consecutiveCriticalChecks))", category: .system, level: .critical)
-            performEmergencyCleanup(usedMB: usedMB)
+            executeCleanup(level: .emergency, usedMB: usedMB)
         case .critical:
             logger.log("CrashProtection: CRITICAL memory (\(usedMB)MB, growth=\(growth)MB/s) — aggressive cleanup (consecutive: \(memoryMonitor.consecutiveCriticalChecks))", category: .system, level: .critical)
-            performAggressiveCleanup()
+            executeCleanup(level: .critical, usedMB: usedMB)
             if memoryMonitor.shouldEscalateToCritical {
                 logger.log("CrashProtection: \(memoryMonitor.consecutiveCriticalChecks) consecutive critical checks — escalating to emergency", category: .system, level: .critical)
-                performEmergencyCleanup(usedMB: usedMB)
+                executeCleanup(level: .emergency, usedMB: usedMB)
             }
         case .high:
             logger.log("CrashProtection: High memory (\(usedMB)MB) — soft cleanup", category: .system, level: .warning)
-            performSoftCleanup()
+            executeCleanup(level: .high, usedMB: usedMB)
         case .soft:
-            performPreemptiveCleanup()
+            executeCleanup(level: .soft, usedMB: usedMB)
         case .normal:
             break
         }
     }
 
-    // MARK: - Cleanup Tiers
+    // MARK: - Data-Driven Cleanup Execution
 
-    private func performPreemptiveCleanup() {
-        DebugLogger.shared.trimEntries(to: 2500)
-        WebViewPool.shared.drainPreWarmed()
+    private func executeCleanup(level: MemoryMonitor.MemoryLevel, usedMB: Int) {
+        guard let tier = escalation[level] else { return }
+
+        DebugLogger.shared.trimEntries(to: tier.logLimit)
+
+        if tier.aggressiveCleanup {
+            DebugLogger.shared.handleMemoryPressure()
+        }
+
+        if tier.drainPreWarmed {
+            WebViewPool.shared.drainPreWarmed()
+        } else if tier.aggressiveCleanup {
+            WebViewPool.shared.handleMemoryPressure()
+        }
+
+        if let limits = tier.screenshotCacheLimits {
+            ScreenshotCacheService.shared.setMaxCacheCounts(memory: limits.memory, disk: limits.disk)
+        }
+        if tier.clearScreenshots {
+            ScreenshotCacheService.shared.clearAll()
+        }
+
+        if tier.aggressiveCleanup {
+            LoginViewModel.shared.handleMemoryPressure()
+            PPSRAutomationViewModel.shared.handleMemoryPressure()
+        }
+        if tier.trimAttempts {
+            LoginViewModel.shared.trimAttemptsIfNeeded()
+            PPSRAutomationViewModel.shared.trimChecksIfNeeded()
+        }
+        if tier.clearScreenshots {
+            LoginViewModel.shared.clearDebugScreenshots()
+        }
+        if tier.killBatches {
+            if LoginViewModel.shared.isRunning {
+                logger.log("CrashProtection: EMERGENCY — force-stopping login batch (memory: \(usedMB)MB, kill #\(emergencyBatchKillCount))", category: .system, level: .critical)
+                LoginViewModel.shared.emergencyStop()
+            }
+            if PPSRAutomationViewModel.shared.isRunning {
+                logger.log("CrashProtection: EMERGENCY — force-stopping PPSR batch (memory: \(usedMB)MB)", category: .system, level: .critical)
+                PPSRAutomationViewModel.shared.emergencyStop()
+            }
+        }
+
+        if tier.killBatches {
+            emergencyBatchKillCount += 1
+            lastEmergencyCleanup = checkDeathSpiralPersistence(usedMB: usedMB)
+            DeadSessionDetector.shared.stopAllWatchdogs()
+        }
+
+        if tier.purgeURLCache {
+            URLCache.shared.removeAllCachedResponses()
+            URLCache.shared.memoryCapacity = 0
+        }
+
+        if tier.invalidateSessions {
+            NetworkResilienceService.shared.invalidateSharedSessions()
+        }
+
+        if level == .emergency {
+            let afterMB = currentMemoryUsageMB()
+            logger.log("CrashProtection: emergency cleanup freed ~\(usedMB - afterMB)MB (now \(afterMB)MB)", category: .system, level: .critical)
+        }
     }
 
-    private func performSoftCleanup() {
-        DebugLogger.shared.trimEntries(to: 1500)
-        WebViewPool.shared.drainPreWarmed()
-        LoginViewModel.shared.trimAttemptsIfNeeded()
-        PPSRAutomationViewModel.shared.trimChecksIfNeeded()
-    }
-
-    private func performAggressiveCleanup() {
-        DebugLogger.shared.trimEntries(to: 800)
-        DebugLogger.shared.handleMemoryPressure()
-        WebViewPool.shared.handleMemoryPressure()
-        ScreenshotCacheService.shared.setMaxCacheCounts(memory: 10, disk: 200)
-        LoginViewModel.shared.handleMemoryPressure()
-        LoginViewModel.shared.trimAttemptsIfNeeded()
-        PPSRAutomationViewModel.shared.handleMemoryPressure()
-        PPSRAutomationViewModel.shared.trimChecksIfNeeded()
-    }
-
-    private func performEmergencyCleanup(usedMB: Int) {
+    private func checkDeathSpiralPersistence(usedMB: Int) -> Date {
         let now = Date()
         let timeSinceLast = now.timeIntervalSince(lastEmergencyCleanup)
-        lastEmergencyCleanup = now
-        emergencyBatchKillCount += 1
-
-        DebugLogger.shared.trimEntries(to: 300)
-        DebugLogger.shared.handleMemoryPressure()
-        WebViewPool.shared.emergencyPurgeAll()
-        ScreenshotCacheService.shared.setMaxCacheCounts(memory: 5, disk: 100)
-        ScreenshotCacheService.shared.clearAll()
-        LoginViewModel.shared.handleMemoryPressure()
-        LoginViewModel.shared.clearDebugScreenshots()
-        LoginViewModel.shared.trimAttemptsIfNeeded()
-        PPSRAutomationViewModel.shared.handleMemoryPressure()
-        PPSRAutomationViewModel.shared.trimChecksIfNeeded()
-
-        if LoginViewModel.shared.isRunning {
-            logger.log("CrashProtection: EMERGENCY — force-stopping login batch (memory: \(usedMB)MB, kill #\(emergencyBatchKillCount))", category: .system, level: .critical)
-            LoginViewModel.shared.emergencyStop()
-        }
-        if PPSRAutomationViewModel.shared.isRunning {
-            logger.log("CrashProtection: EMERGENCY — force-stopping PPSR batch (memory: \(usedMB)MB)", category: .system, level: .critical)
-            PPSRAutomationViewModel.shared.emergencyStop()
-        }
-
-        DeadSessionDetector.shared.stopAllWatchdogs()
-        URLCache.shared.removeAllCachedResponses()
-        URLCache.shared.memoryCapacity = 0
-        NetworkResilienceService.shared.invalidateSharedSessions()
-
         if timeSinceLast < 60 {
             logger.log("CrashProtection: TWO emergency cleanups within \(Int(timeSinceLast))s — app may be in memory death spiral", category: .system, level: .critical)
             PersistentFileStorageService.shared.forceSave()
             LoginViewModel.shared.persistCredentialsNow()
             PPSRAutomationViewModel.shared.persistCardsNow()
         }
-
-        let afterMB = currentMemoryUsageMB()
-        logger.log("CrashProtection: emergency cleanup freed ~\(usedMB - afterMB)MB (now \(afterMB)MB)", category: .system, level: .critical)
+        return now
     }
 
     // MARK: - Continuous Log Flush
@@ -195,8 +228,7 @@ final class CrashProtectionService {
     }
 
     private func persistPreCrashDiagnostics() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        guard let diagURL = docs?.appendingPathComponent("pre_crash_diagnostics.txt") else { return }
+        guard let diagURL = documentsURL("pre_crash_diagnostics.txt") else { return }
         let memMB = currentMemoryUsageMB()
         let growth = String(format: "%.1f", memoryMonitor.growthRateMBPerSecond)
         let diag = """
@@ -274,15 +306,12 @@ final class CrashProtectionService {
     // MARK: - Crash Report Recovery
 
     func checkForPreviousCrash() -> String? {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        guard let crashLog = docs?.appendingPathComponent("last_crash.log"),
+        guard let crashLog = documentsURL("last_crash.log"),
               let data = try? Data(contentsOf: crashLog) else { return nil }
         let crashInfo = String(data: data, encoding: .utf8)
 
-        let diagURL = docs?.appendingPathComponent("pre_crash_diagnostics.txt")
-        let diagnosticLog = diagURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "No pre-crash diagnostics"
-        let persistedLog = docs?.appendingPathComponent("debug_log_latest.txt")
-        let savedLog = persistedLog.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+        let diagnosticLog = documentsURL("pre_crash_diagnostics.txt").flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "No pre-crash diagnostics"
+        let savedLog = documentsURL("debug_log_latest.txt").flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
 
         let screenshotKeys = loadRecentScreenshotKeys()
 
@@ -293,7 +322,7 @@ final class CrashProtectionService {
             sessionCrashLog.append((Date(), crashInfo.components(separatedBy: " ").first ?? "UNKNOWN", mb))
             persistState()
 
-            let (signal, crashMemMB, crashTimestamp) = loadCrashState(from: docs)
+            let (signal, crashMemMB, crashTimestamp) = loadCrashState()
 
             let report = CrashReport(
                 signal: signal, memoryMB: crashMemMB, timestamp: crashTimestamp,
@@ -306,32 +335,34 @@ final class CrashProtectionService {
             )
             lastCrashReport = report
             if let encoded = try? JSONEncoder().encode(report),
-               let reportURL = docs?.appendingPathComponent(crashReportFile) {
+               let reportURL = documentsURL(crashReportFile) {
                 try? encoded.write(to: reportURL, options: .atomic)
             }
         }
 
         try? FileManager.default.removeItem(at: crashLog)
-        if let diagURL { try? FileManager.default.removeItem(at: diagURL) }
+        if let diagURL = documentsURL("pre_crash_diagnostics.txt") { try? FileManager.default.removeItem(at: diagURL) }
         return crashInfo
     }
 
     func loadPendingCrashReport() -> CrashReport? {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        guard let reportURL = docs?.appendingPathComponent(crashReportFile),
+        guard let reportURL = documentsURL(crashReportFile),
               let data = try? Data(contentsOf: reportURL) else { return nil }
         return try? JSONDecoder().decode(CrashReport.self, from: data)
     }
 
     func clearPendingCrashReport() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        if let reportURL = docs?.appendingPathComponent(crashReportFile) {
+        if let reportURL = documentsURL(crashReportFile) {
             try? FileManager.default.removeItem(at: reportURL)
         }
         lastCrashReport = nil
     }
 
     // MARK: - Persistence Helpers
+
+    private func documentsURL(_ filename: String) -> URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent(filename)
+    }
 
     private func loadRecentScreenshotKeys() -> [String] {
         let screenshotDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("ScreenshotCache", isDirectory: true)
@@ -347,8 +378,8 @@ final class CrashProtectionService {
             .map { $0.deletingPathExtension().lastPathComponent }
     }
 
-    private func loadCrashState(from docs: URL?) -> (String, Int, TimeInterval) {
-        guard let stateURL = docs?.appendingPathComponent(stateFile),
+    private func loadCrashState() -> (String, Int, TimeInterval) {
+        guard let stateURL = documentsURL(stateFile),
               let stateData = try? Data(contentsOf: stateURL),
               let json = try? JSONSerialization.jsonObject(with: stateData) as? [String: Any] else {
             return ("UNKNOWN", 0, Date().timeIntervalSince1970)
@@ -361,15 +392,13 @@ final class CrashProtectionService {
     }
 
     private func persistState() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        guard let stateURL = docs?.appendingPathComponent(stateFile) else { return }
+        guard let stateURL = documentsURL(stateFile) else { return }
         let json = "{\"crashCount\":\(crashCount),\"emergencyKills\":\(emergencyBatchKillCount),\"lastCrashTimestamp\":\(lastCrashRecoveryTime.timeIntervalSince1970)}"
         try? json.data(using: .utf8)?.write(to: stateURL, options: .atomic)
     }
 
     private func restoreState() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        guard let stateURL = docs?.appendingPathComponent(stateFile),
+        guard let stateURL = documentsURL(stateFile),
               let data = try? Data(contentsOf: stateURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if let count = json["crashCount"] as? Int { crashCount = count }

@@ -110,6 +110,39 @@ nonisolated enum DebugLogLevel: String, CaseIterable, Sendable, Comparable, Coda
     }
 }
 
+nonisolated struct ErrorHealingEvent: Identifiable, Sendable {
+    let id: UUID = UUID()
+    let timestamp: Date
+    let category: DebugLogCategory
+    let originalError: String
+    let healingAction: String
+    let succeeded: Bool
+    let attemptNumber: Int
+    let durationMs: Int?
+}
+
+nonisolated struct RetryState: Sendable {
+    var attempts: Int = 0
+    var maxAttempts: Int = 3
+    var lastAttempt: Date?
+    var lastError: String?
+    var backoffMs: Int = 1000
+    var isExhausted: Bool { attempts >= maxAttempts }
+
+    mutating func recordAttempt(error: String?) {
+        attempts += 1
+        lastAttempt = Date()
+        lastError = error
+        backoffMs = min(backoffMs * 2, 30000)
+    }
+
+    mutating func reset() {
+        attempts = 0
+        lastError = nil
+        backoffMs = 1000
+    }
+}
+
 nonisolated struct DebugLogEntry: Identifiable, Sendable, Codable {
     let id: UUID
     let timestamp: Date

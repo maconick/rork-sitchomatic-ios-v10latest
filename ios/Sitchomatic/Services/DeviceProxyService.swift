@@ -18,13 +18,16 @@ class DeviceProxyService {
 
     let configResolver = ProxyConfigResolver()
     private(set) var perSessionManager: PerSessionTunnelManager!
+    private(set) var rotationManager: ProxyRotationManager!
+
+    private let settingsKey = "device_proxy_settings_v2"
 
     var localProxyEnabled: Bool = true {
         didSet {
             persistSettings()
             if isEnabled {
                 localProxyEnabled ? localProxy.start() : localProxy.stop()
-                syncLocalProxyUpstream()
+                rotationManager.syncLocalProxyUpstream(localProxyEnabled: localProxyEnabled)
             }
         }
     }
@@ -67,21 +70,10 @@ class DeviceProxyService {
         didSet { persistSettings(); healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation }
     }
 
-    var activeConfig: ActiveNetworkConfig?
-    var activeEndpointLabel: String?
-    var activeConnectionType: String = "None"
-    var activeSince: Date?
-    var isActive: Bool = false
-    var isRotating: Bool = false
-    var rotationLog: [RotationLogEntry] = []
-    var nextRotationDate: Date?
-    private(set) var failoverCount: Int = 0
-
-    private var rotationTimer: Timer?
-    private let settingsKey = "device_proxy_settings_v2"
-
     init() {
-        perSessionManager = PerSessionTunnelManager(configResolver: configResolver)
+        let resolver = configResolver
+        perSessionManager = PerSessionTunnelManager(configResolver: resolver)
+        rotationManager = ProxyRotationManager(configResolver: resolver)
         loadSettings()
         healthMonitor.autoFailoverEnabled = autoFailoverEnabled
         healthMonitor.checkIntervalSeconds = healthCheckInterval
@@ -93,10 +85,24 @@ class DeviceProxyService {
         }
     }
 
-    // MARK: - Computed Properties
+    // MARK: - Computed — State Passthrough
 
     var isEnabled: Bool { ipRoutingMode == .appWideUnited }
     var isVPNActive: Bool { false }
+
+    var activeConfig: ActiveNetworkConfig? { rotationManager.activeConfig }
+    var activeEndpointLabel: String? { rotationManager.activeEndpointLabel }
+    var activeConnectionType: String { rotationManager.activeConnectionType }
+    var activeSince: Date? { rotationManager.activeSince }
+    var isActive: Bool { rotationManager.isActive }
+    var isRotating: Bool { rotationManager.isRotating }
+    var rotationLog: [RotationLogEntry] { rotationManager.rotationLog }
+    var nextRotationDate: Date? { rotationManager.nextRotationDate }
+    var failoverCount: Int { rotationManager.failoverCount }
+    var secondsUntilRotation: Int? { rotationManager.secondsUntilRotation }
+    var rotationCountdownLabel: String { rotationManager.rotationCountdownLabel }
+
+    // MARK: - Computed — Tunnel Visibility
 
     var isWireProxyCompatibleMode: Bool { proxyService.unifiedConnectionMode == .wireguard }
     var isOpenVPNProxyCompatibleMode: Bool { proxyService.unifiedConnectionMode == .openvpn }
@@ -128,6 +134,8 @@ class DeviceProxyService {
         return perSessionManager.openVPNActive
     }
 
+    // MARK: - Computed — Per-Session Passthrough
+
     var perSessionWireProxyActive: Bool { perSessionManager.wireProxyActive }
     var perSessionWireProxyStarting: Bool { perSessionManager.wireProxyStarting }
     var perSessionOpenVPNActive: Bool { perSessionManager.openVPNActive }
@@ -143,16 +151,6 @@ class DeviceProxyService {
     var openVPNActiveConfigLabel: String? {
         if isEnabled, case .openVPNProxy(let ovpn) = activeConfig { return ovpn.serverName }
         return perSessionManager.openVPNConfigLabel
-    }
-
-    var secondsUntilRotation: Int? {
-        guard let next = nextRotationDate else { return nil }
-        return max(0, Int(next.timeIntervalSinceNow))
-    }
-
-    var rotationCountdownLabel: String {
-        guard let seconds = secondsUntilRotation else { return "--:--" }
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     var effectiveProxyConfig: ProxyConfig? {
@@ -182,13 +180,14 @@ class DeviceProxyService {
     func cancel() {}
 
     func rotateNow(reason: String = "Manual") {
-        performRotation(reason: reason)
+        rotationManager.performRotation(reason: reason, rotationInterval: rotationInterval)
+        rotationManager.syncLocalProxyUpstream(localProxyEnabled: localProxyEnabled)
     }
 
     func notifyBatchStart() {
         if isEnabled {
             if rotateOnBatchStart || rotationInterval == .everyBatch {
-                performRotation(reason: "Batch Start")
+                rotateNow(reason: "Batch Start")
             }
             return
         }
@@ -211,7 +210,7 @@ class DeviceProxyService {
 
     func notifyFingerprintDetected() {
         guard isEnabled, rotateOnFingerprintDetection else { return }
-        performRotation(reason: "Fingerprint Detected")
+        rotateNow(reason: "Fingerprint Detected")
     }
 
     func handleUnifiedConnectionModeChange() {
@@ -225,8 +224,10 @@ class DeviceProxyService {
             localProxy.enableOpenVPNProxyMode(false)
             perSessionManager.stopOpenVPN()
         }
-        isEnabled ? performRotation(reason: "Connection Mode Changed") : activatePerSessionMode()
+        isEnabled ? rotateNow(reason: "Connection Mode Changed") : activatePerSessionMode()
     }
+
+    // MARK: - Tunnel Management
 
     func reconnectWireProxy() {
         if !isEnabled && perSessionManager.wireProxyActive {
@@ -240,7 +241,7 @@ class DeviceProxyService {
         wireProxyBridge.stop()
         localProxy.enableWireProxyMode(false)
         logger.log("DeviceProxy: WireProxy reconnect requested", category: .vpn, level: .info)
-        syncWireProxyTunnel()
+        rotationManager.syncWireProxyTunnel()
     }
 
     func stopWireProxy() {
@@ -263,7 +264,7 @@ class DeviceProxyService {
         localProxy.enableOpenVPNProxyMode(false)
         logger.log("DeviceProxy: OpenVPN reconnect requested", category: .vpn, level: .info)
         if case .openVPNProxy(let ovpn) = activeConfig {
-            syncOpenVPNProxyBridge(ovpn)
+            rotationManager.syncOpenVPNProxyBridge(ovpn)
         }
     }
 
@@ -300,45 +301,17 @@ class DeviceProxyService {
             return
         }
         guard canManageWireProxyTunnel else { return }
-        wireProxyBridge.stop()
-        localProxy.enableWireProxyMode(false)
-        let config = configResolver.resolveNextConfig()
-        activeConfig = config
-        activeSince = Date()
-        if case .wireGuardDNS(let wg) = config {
-            activeEndpointLabel = "WG: \(wg.fileName)"
-            activeConnectionType = "WireGuard"
-            Task {
-                await wireProxyBridge.start(with: wg)
-                if wireProxyBridge.isActive {
-                    localProxy.enableWireProxyMode(true)
-                    logger.log("DeviceProxy: WireProxy rotated to \(wg.serverName)", category: .vpn, level: .success)
-                } else {
-                    localProxy.enableWireProxyMode(false)
-                    logger.log("DeviceProxy: WireProxy rotation failed for \(wg.serverName)", category: .vpn, level: .error)
-                }
-            }
-        } else {
-            activeEndpointLabel = config.label
-            activeConnectionType = "Direct"
-            logger.log("DeviceProxy: WireProxy rotation landed on non-WG config, tunnel stopped", category: .vpn, level: .warning)
-        }
+        rotationManager.rotateWireProxyConfig()
     }
 
     func handleProfileSwitch() {
         perSessionManager.resetAll()
         localProxy.updateUpstream(nil)
         intel.clearAll()
-        activeConfig = nil
-        activeEndpointLabel = nil
-        activeConnectionType = "None"
-        activeSince = nil
-        isActive = false
-        configResolver.resetIndexes()
-        rotationLog.removeAll()
+        rotationManager.resetState()
 
         if ipRoutingMode == .appWideUnited {
-            performRotation(reason: "Profile Switch")
+            rotateNow(reason: "Profile Switch")
         } else {
             activatePerSessionMode()
         }
@@ -346,13 +319,13 @@ class DeviceProxyService {
         logger.log("DeviceProxy: profile switched to \(profile.rawValue) — tunnel stopped, state reset, configs reloaded", category: .network, level: .success)
     }
 
-    // MARK: - Unified Mode
+    // MARK: - Mode Activation
 
     private func activateUnifiedMode() {
         if localProxyEnabled { localProxy.start() }
         resilience.resetBackoff()
         intel.startMonitoring()
-        performRotation(reason: "Activated")
+        rotateNow(reason: "Activated")
         restartRotationTimer()
 
         localProxy.startHealthMonitoring { [weak self] in
@@ -367,18 +340,9 @@ class DeviceProxyService {
     }
 
     private func deactivateUnifiedMode() {
-        rotationTimer?.invalidate()
-        rotationTimer = nil
-        nextRotationDate = nil
-        activeConfig = nil
-        activeEndpointLabel = nil
-        activeConnectionType = "None"
-        activeSince = nil
-        isActive = false
-        wireProxyBridge.stop()
-        ovpnBridge.stop()
-        localProxy.enableWireProxyMode(false)
-        localProxy.enableOpenVPNProxyMode(false)
+        rotationManager.invalidateTimer()
+        rotationManager.resetState()
+        rotationManager.stopActiveTunnels()
         localProxy.stop()
         intel.stopMonitoring()
         resilience.stopVerificationLoop()
@@ -403,208 +367,19 @@ class DeviceProxyService {
         }
     }
 
-    // MARK: - Rotation
-
-    private func performRotation(reason: String) {
-        isRotating = true
-        let previousLabel = activeEndpointLabel ?? "None"
-
-        if wireProxyBridge.isActive {
-            wireProxyBridge.stop()
-            localProxy.enableWireProxyMode(false)
-        }
-        if ovpnBridge.isActive {
-            ovpnBridge.stop()
-            localProxy.enableOpenVPNProxyMode(false)
-        }
-
-        let config = configResolver.resolveNextConfig()
-        activeConfig = config
-        activeSince = Date()
-        isActive = true
-
-        switch config {
-        case .wireGuardDNS(let wg):
-            activeEndpointLabel = "WG: \(wg.fileName)"; activeConnectionType = "WireGuard"
-        case .openVPNProxy(let ovpn):
-            activeEndpointLabel = "OVPN: \(ovpn.fileName)"; activeConnectionType = "OpenVPN"
-        case .socks5(let proxy):
-            activeEndpointLabel = "SOCKS5: \(proxy.displayString)"; activeConnectionType = "SOCKS5"
-        case .direct:
-            activeEndpointLabel = "Direct"; activeConnectionType = "Direct"
-        }
-
-        rotationLog.insert(RotationLogEntry(fromLabel: previousLabel, toLabel: activeEndpointLabel ?? "Unknown", reason: reason), at: 0)
-        if rotationLog.count > 20 { rotationLog = Array(rotationLog.prefix(20)) }
-        if let interval = rotationInterval.seconds { nextRotationDate = Date().addingTimeInterval(interval) }
-
-        syncLocalProxyUpstream()
-        resilience.resetBackoff()
-
-        if case .socks5(let proxy) = config {
-            resilience.startVerificationLoop(expectedProxy: proxy)
-            connectionPool.prewarmConnections(count: 2, upstream: proxy)
-        } else {
-            resilience.stopVerificationLoop()
-        }
-
-        isRotating = false
-        logger.log("DeviceProxy: rotated to \(activeEndpointLabel ?? "Unknown") (reason: \(reason))", category: .network, level: .info)
-    }
+    // MARK: - Failover & Timer
 
     private func handleUpstreamFailover() {
-        guard isEnabled, autoFailoverEnabled else { return }
-        if resilience.shouldThrottleFailover() {
-            logger.log("DeviceProxy: FAILOVER throttled — backoff \(String(format: "%.1f", resilience.failoverBackoffSeconds))s remaining", category: .proxy, level: .warning)
-            return
-        }
-        let backoffDelay = resilience.calculateBackoffDelay()
-        failoverCount += 1
-        logger.log("DeviceProxy: FAILOVER triggered (count: \(failoverCount), backoff: \(String(format: "%.1f", backoffDelay))s) - upstream dead, rotating to next", category: .proxy, level: .error)
-        Task {
-            try? await Task.sleep(for: .seconds(backoffDelay))
-            self.performRotation(reason: "Failover (upstream dead, attempt \(self.failoverCount))")
+        guard isEnabled else { return }
+        rotationManager.handleFailover(autoFailoverEnabled: autoFailoverEnabled) { [weak self] reason in
+            self?.rotateNow(reason: reason)
         }
     }
 
     private func restartRotationTimer() {
-        rotationTimer?.invalidate()
-        rotationTimer = nil
-        nextRotationDate = nil
-        guard ipRoutingMode == .appWideUnited, let interval = rotationInterval.seconds else { return }
-        nextRotationDate = Date().addingTimeInterval(interval)
-        rotationTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.performRotation(reason: "Timer (\(self?.rotationInterval.label ?? ""))")
-            }
+        rotationManager.restartRotationTimer(ipRoutingMode: ipRoutingMode, rotationInterval: rotationInterval) { [weak self] reason in
+            self?.rotateNow(reason: reason)
         }
-    }
-
-    // MARK: - Upstream Sync
-
-    private func syncLocalProxyUpstream() {
-        guard localProxyEnabled else { localProxy.updateUpstream(nil); return }
-        switch activeConfig {
-        case .socks5(let proxy):
-            localProxy.enableWireProxyMode(false)
-            localProxy.enableOpenVPNProxyMode(false)
-            localProxy.updateUpstream(proxy)
-        case .wireGuardDNS:
-            localProxy.enableOpenVPNProxyMode(false)
-            guard isWireProxyCompatibleMode else {
-                wireProxyBridge.stop()
-                localProxy.enableWireProxyMode(false)
-                localProxy.updateUpstream(nil)
-                return
-            }
-            syncWireProxyTunnel()
-        case .openVPNProxy(let ovpn):
-            localProxy.enableWireProxyMode(false)
-            syncOpenVPNProxyBridge(ovpn)
-        default:
-            localProxy.enableWireProxyMode(false)
-            localProxy.enableOpenVPNProxyMode(false)
-            localProxy.updateUpstream(nil)
-        }
-    }
-
-    private func syncWireProxyTunnel() {
-        guard isWireProxyCompatibleMode, localProxyEnabled,
-              case .wireGuardDNS(let wg) = activeConfig else {
-            wireProxyBridge.stop()
-            localProxy.enableWireProxyMode(false)
-            return
-        }
-        if wireProxyBridge.isActive { wireProxyBridge.stop() }
-        Task {
-            await wireProxyBridge.start(with: wg)
-            if wireProxyBridge.isActive {
-                localProxy.enableWireProxyMode(true)
-                logger.log("DeviceProxy: WireProxy tunnel active for \(wg.serverName)", category: .vpn, level: .success)
-            } else {
-                localProxy.enableWireProxyMode(false)
-                logger.log("DeviceProxy: WireProxy tunnel failed for \(wg.serverName) — retrying with next config", category: .vpn, level: .error)
-                await retryWireProxyWithNextConfig(failedServer: wg.serverName)
-            }
-        }
-    }
-
-    private func retryWireProxyWithNextConfig(failedServer: String) async {
-        let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
-        let candidates = configResolver.collectUniqueWG(targets: targets).filter { $0.serverName != failedServer }
-        guard !candidates.isEmpty else {
-            logger.log("DeviceProxy: no alternative WG configs for retry", category: .vpn, level: .error)
-            return
-        }
-        let maxRetries = min(candidates.count, 4)
-        for attempt in 0..<maxRetries {
-            let nextWG = candidates[attempt % candidates.count]
-            activeConfig = .wireGuardDNS(nextWG)
-            activeEndpointLabel = "WG: \(nextWG.fileName)"
-            activeConnectionType = "WireGuard"
-            wireProxyBridge.stop()
-            try? await Task.sleep(for: .seconds(Double(attempt) * 0.5 + 0.5))
-            await wireProxyBridge.start(with: nextWG)
-            if wireProxyBridge.isActive {
-                configResolver.advanceWGIndex(by: attempt + 1)
-                localProxy.enableWireProxyMode(true)
-                logger.log("DeviceProxy: WireProxy retry succeeded with \(nextWG.serverName) on attempt \(attempt + 1)/\(maxRetries)", category: .vpn, level: .success)
-                return
-            }
-            logger.log("DeviceProxy: WireProxy retry attempt \(attempt + 1)/\(maxRetries) failed for \(nextWG.serverName)", category: .vpn, level: .warning)
-        }
-        configResolver.advanceWGIndex(by: maxRetries)
-        localProxy.enableWireProxyMode(false)
-        logger.log("DeviceProxy: WireProxy all \(maxRetries) retry attempts exhausted", category: .vpn, level: .error)
-    }
-
-    private func syncOpenVPNProxyBridge(_ config: OpenVPNConfig) {
-        guard localProxyEnabled else {
-            ovpnBridge.stop()
-            localProxy.enableOpenVPNProxyMode(false)
-            return
-        }
-        if ovpnBridge.isActive { ovpnBridge.stop() }
-        Task {
-            await ovpnBridge.start(with: config)
-            if ovpnBridge.isActive {
-                localProxy.enableOpenVPNProxyMode(true)
-                logger.log("DeviceProxy: OpenVPN bridge active → \(ovpnBridge.activeProxyLabel ?? "unknown") for \(config.serverName), handler mode enabled", category: .vpn, level: .success)
-            } else {
-                localProxy.enableOpenVPNProxyMode(false)
-                logger.log("DeviceProxy: OpenVPN bridge failed for \(config.serverName) — retrying with next config", category: .vpn, level: .error)
-                await retryOpenVPNBridgeWithNextConfig(failedServer: config.serverName)
-            }
-        }
-    }
-
-    private func retryOpenVPNBridgeWithNextConfig(failedServer: String) async {
-        let targets: [ProxyRotationService.ProxyTarget] = [.joe, .ignition, .ppsr]
-        let candidates = configResolver.collectUniqueOVPN(targets: targets).filter { $0.serverName != failedServer }
-        guard !candidates.isEmpty else {
-            logger.log("DeviceProxy: no alternative OVPN configs for retry", category: .vpn, level: .error)
-            return
-        }
-        let maxRetries = min(candidates.count, 4)
-        for attempt in 0..<maxRetries {
-            let nextOVPN = candidates[attempt % candidates.count]
-            activeConfig = .openVPNProxy(nextOVPN)
-            activeEndpointLabel = "OVPN: \(nextOVPN.fileName)"
-            activeConnectionType = "OpenVPN"
-            ovpnBridge.stop()
-            try? await Task.sleep(for: .seconds(Double(attempt) * 0.5 + 0.5))
-            await ovpnBridge.start(with: nextOVPN)
-            if ovpnBridge.isActive {
-                configResolver.advanceOVPNIndex(by: attempt + 1)
-                localProxy.enableOpenVPNProxyMode(true)
-                logger.log("DeviceProxy: OpenVPN bridge retry succeeded with \(nextOVPN.serverName) on attempt \(attempt + 1)/\(maxRetries)", category: .vpn, level: .success)
-                return
-            }
-            logger.log("DeviceProxy: OpenVPN bridge retry attempt \(attempt + 1)/\(maxRetries) failed for \(nextOVPN.serverName)", category: .vpn, level: .warning)
-        }
-        configResolver.advanceOVPNIndex(by: maxRetries)
-        localProxy.enableOpenVPNProxyMode(false)
-        logger.log("DeviceProxy: OpenVPN bridge all \(maxRetries) retry attempts exhausted", category: .vpn, level: .error)
     }
 
     // MARK: - Persistence

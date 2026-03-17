@@ -8,15 +8,13 @@ class DebugLogger {
 
     let didChange = PassthroughSubject<Void, Never>()
     let persistence = LogPersistenceService()
+    private let sessionTracker = LogSessionTracker()
 
     private(set) var entries: [DebugLogEntry] = []
     var maxEntries: Int = 3000
     var minimumLevel: DebugLogLevel = .trace
     var enabledCategories: Set<DebugLogCategory> = Set(DebugLogCategory.allCases)
     var isRecording: Bool = true
-
-    private var sessionTimers: [String: Date] = [:]
-    private var stepTimers: [String: Date] = [:]
 
     private(set) var errorHealingLog: [ErrorHealingEvent] = []
     private(set) var retryTracker: [String: RetryState] = [:]
@@ -30,39 +28,6 @@ class DebugLogger {
     private(set) var cachedErrorCount: Int = 0
     private(set) var cachedWarningCount: Int = 0
     private(set) var cachedCriticalCount: Int = 0
-
-    struct ErrorHealingEvent: Identifiable {
-        let id: UUID = UUID()
-        let timestamp: Date
-        let category: DebugLogCategory
-        let originalError: String
-        let healingAction: String
-        let succeeded: Bool
-        let attemptNumber: Int
-        let durationMs: Int?
-    }
-
-    struct RetryState {
-        var attempts: Int = 0
-        var maxAttempts: Int = 3
-        var lastAttempt: Date?
-        var lastError: String?
-        var backoffMs: Int = 1000
-        var isExhausted: Bool { attempts >= maxAttempts }
-
-        mutating func recordAttempt(error: String?) {
-            attempts += 1
-            lastAttempt = Date()
-            lastError = error
-            backoffMs = min(backoffMs * 2, 30000)
-        }
-
-        mutating func reset() {
-            attempts = 0
-            lastError = nil
-            backoffMs = 1000
-        }
-    }
 
     init() {
         startAutoPersist()
@@ -179,22 +144,18 @@ class DebugLogger {
         return state.isExhausted ? (false, 0) : (true, state.backoffMs)
     }
 
-    // MARK: - Session & Timer
+    // MARK: - Session & Timer (delegated)
 
-    func startTimer(key: String) { stepTimers[key] = Date() }
-
-    func stopTimer(key: String) -> Int? {
-        guard let start = stepTimers.removeValue(forKey: key) else { return nil }
-        return Int(Date().timeIntervalSince(start) * 1000)
-    }
+    func startTimer(key: String) { sessionTracker.startTimer(key: key) }
+    func stopTimer(key: String) -> Int? { sessionTracker.stopTimer(key: key) }
 
     func startSession(_ sessionId: String, category: DebugLogCategory, message: String) {
-        sessionTimers[sessionId] = Date()
+        sessionTracker.startSession(sessionId)
         log(message, category: category, level: .info, sessionId: sessionId)
     }
 
     func endSession(_ sessionId: String, category: DebugLogCategory, message: String, level: DebugLogLevel = .info) {
-        let durationMs = sessionTimers.removeValue(forKey: sessionId).map { Int(Date().timeIntervalSince($0) * 1000) }
+        let durationMs = sessionTracker.endSession(sessionId)
         log(message, category: category, level: level, sessionId: sessionId, durationMs: durationMs)
     }
 
@@ -206,8 +167,7 @@ class DebugLogger {
 
     func clearAll() {
         entries.removeAll()
-        sessionTimers.removeAll()
-        stepTimers.removeAll()
+        sessionTracker.reset()
         errorHealingLog.removeAll()
         retryTracker.removeAll()
         cachedErrorCount = 0; cachedWarningCount = 0; cachedCriticalCount = 0
