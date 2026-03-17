@@ -23,42 +23,10 @@ nonisolated struct OpenVPNBridgeStats: Sendable {
     var activeEndpointIndex: Int = 0
     var poolRotations: Int = 0
     var intelServerLoad: Int = -1
-}
-
-nonisolated struct SOCKS5EndpointSlot: Sendable {
-    let proxy: ProxyConfig
-    let hostname: String
-    let source: String
-    let resolvedAt: Date
-    let serverLoad: Int
-    var consecutiveFailures: Int = 0
-    var lastValidatedAt: Date?
-    var totalServed: Int = 0
-    var avgLatencyMs: Int = 0
-
-    var isHealthy: Bool {
-        consecutiveFailures < 3
-    }
-
-    var healthScore: Double {
-        if !isHealthy { return 0 }
-        let failScore = max(0, 1.0 - Double(consecutiveFailures) / 3.0) * 0.4
-        let loadScore = serverLoad >= 0 ? max(0, 1.0 - Double(serverLoad) / 100.0) * 0.3 : 0.15
-        let latencyScore = avgLatencyMs > 0 ? max(0, 1.0 - Double(avgLatencyMs) / 8000.0) * 0.2 : 0.1
-        let freshness: Double
-        if let last = lastValidatedAt {
-            freshness = max(0, 1.0 - Date().timeIntervalSince(last) / 600.0) * 0.1
-        } else {
-            freshness = 0.05
-        }
-        return failScore + loadScore + latencyScore + freshness
-    }
-}
-
-nonisolated struct SOCKS5RegionCacheEntry: Sendable {
-    let proxy: ProxyConfig
-    let resolvedAt: Date
-    let source: String
+    var tcpSessionsCreated: Int = 0
+    var tcpSessionsActive: Int = 0
+    var dnsQueriesTotal: Int = 0
+    var apiReconnects: Int = 0
 }
 
 @Observable
@@ -72,27 +40,27 @@ class OpenVPNProxyBridge {
     private(set) var connectedSince: Date?
     private(set) var activeConfig: OpenVPNConfig?
     private(set) var activeSOCKS5Proxy: ProxyConfig?
+    private(set) var activeWGConfig: WireGuardConfig?
 
-    private(set) var endpointPool: [SOCKS5EndpointSlot] = []
-    private var nextPoolIndex: Int = 0
-
+    private let wgSession = WireGuardSession()
+    private let tcpManager = TCPSessionManager()
+    private let dnsResolver = TunnelDNSResolver()
     private let logger = DebugLogger.shared
     private let intel = NordServerIntelligence.shared
+
+    private var localIP: UInt32 = 0
+    private var activeCountryId: Int?
+    private var tunnelConnections: [UUID: OpenVPNTunnelConnection] = [:]
     private var healthCheckTimer: Timer?
-    private let healthCheckInterval: TimeInterval = 15
+    private let healthCheckInterval: TimeInterval = 12
     private var reconnectAttempts: Int = 0
     private let maxReconnectAttempts: Int = 5
     private var isReconnecting: Bool = false
 
-    private let socks5Port: Int = 1080
-    private let regionCacheTTL: TimeInterval = 300
-    private var regionCache: [String: SOCKS5RegionCacheEntry] = [:]
-    private let targetPoolSize = 3
-
     var isActive: Bool { status == .established }
 
     var activeEndpointCount: Int {
-        endpointPool.filter(\.isHealthy).count
+        isActive ? 1 : 0
     }
 
     // MARK: - Start
@@ -101,134 +69,76 @@ class OpenVPNProxyBridge {
         guard status == .stopped || status == .failed else { return }
 
         activeConfig = config
+        activeCountryId = config.nordCountryId
         status = .connecting
         lastError = nil
         reconnectAttempts = 0
-        endpointPool.removeAll()
-        nextPoolIndex = 0
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
-        if let countryId = config.nordCountryId {
-            let resolved = await intel.resolveMultipleSOCKS5(forCountryId: countryId, count: targetPoolSize)
-            if !resolved.isEmpty {
-                let latencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
-                for entry in resolved {
-                    let slot = SOCKS5EndpointSlot(
-                        proxy: entry.proxy,
-                        hostname: entry.hostname,
-                        source: entry.source,
-                        resolvedAt: Date(),
-                        serverLoad: intel.serverHealth(hostname: entry.hostname)?.load ?? -1,
-                        lastValidatedAt: Date()
-                    )
-                    endpointPool.append(slot)
-                }
-
-                activeSOCKS5Proxy = endpointPool[0].proxy
-                status = .established
-                connectedSince = Date()
-                stats.handshakeLatencyMs = latencyMs
-                stats.lastValidatedAt = Date()
-                stats.consecutiveFailures = 0
-                stats.resolutionSource = endpointPool.map(\.source).joined(separator: " | ")
-                stats.endpointPoolSize = endpointPool.count
-                stats.intelServerLoad = endpointPool[0].serverLoad
-                startHealthCheck()
-                intel.startMonitoring()
-                logger.log("OpenVPNBridge: ESTABLISHED pool of \(endpointPool.count) endpoints via NordIntel (\(latencyMs)ms) — \(endpointPool.map { "\($0.hostname):\($0.serverLoad)%" }.joined(separator: ", "))", category: .vpn, level: .success)
-                return
-            }
+        guard let wgConfig = await resolveWireGuardConfig(for: config) else {
+            status = .failed
+            lastError = "Could not resolve WireGuard server for \(config.serverName)"
+            logger.log("OpenVPNBridge: FAILED — no WireGuard server found for country \(config.nordCountryCode ?? "unknown")", category: .vpn, level: .error)
+            return
         }
 
-        if let resolved = await resolveSOCKS5Endpoint(for: config) {
-            let latencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
-            let slot = SOCKS5EndpointSlot(
-                proxy: resolved.proxy,
-                hostname: resolved.proxy.host,
-                source: resolved.source,
-                resolvedAt: Date(),
-                serverLoad: -1,
-                lastValidatedAt: Date()
-            )
-            endpointPool.append(slot)
-            activeSOCKS5Proxy = resolved.proxy
+        activeWGConfig = wgConfig
+        let success = await startWireGuardTunnel(wgConfig)
+        let latencyMs = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+
+        if success {
             status = .established
             connectedSince = Date()
             stats.handshakeLatencyMs = latencyMs
             stats.lastValidatedAt = Date()
             stats.consecutiveFailures = 0
-            stats.resolutionSource = resolved.source
+            stats.resolutionSource = "WG-tunnel(\(wgConfig.serverName))"
             stats.endpointPoolSize = 1
+            stats.intelServerLoad = intel.serverHealth(hostname: wgConfig.endpointHost)?.load ?? -1
+            dnsResolver.startBackgroundRefresh()
+            intel.recordSuccess(hostname: wgConfig.endpointHost, latencyMs: latencyMs)
+            intel.startMonitoring()
             startHealthCheck()
-            logger.log("OpenVPNBridge: ESTABLISHED (single) via \(resolved.source) → \(resolved.proxy.host):\(resolved.proxy.port) (\(latencyMs)ms)", category: .vpn, level: .success)
-            return
+            logger.log("OpenVPNBridge: ESTABLISHED via WG tunnel → \(wgConfig.peerEndpoint) for OVPN region \(config.serverName) (\(latencyMs)ms)", category: .vpn, level: .success)
+        } else {
+            if reconnectAttempts < maxReconnectAttempts {
+                logger.log("OpenVPNBridge: initial tunnel failed for \(wgConfig.serverName) — trying alternate server", category: .vpn, level: .warning)
+                intel.recordFailure(hostname: wgConfig.endpointHost)
+                await retryWithAlternateServer(config: config)
+            } else {
+                status = .failed
+                lastError = wgSession.lastError ?? "WireGuard tunnel handshake timeout"
+                logger.log("OpenVPNBridge: FAILED — \(lastError!)", category: .vpn, level: .error)
+            }
         }
-
-        status = .failed
-        lastError = "All SOCKS5 resolution strategies exhausted for \(config.fileName)"
-        logger.log("OpenVPNBridge: FAILED — \(lastError!)", category: .vpn, level: .error)
     }
 
     // MARK: - Stop
 
     func stop() {
         stopHealthCheck()
+        dnsResolver.stopBackgroundRefresh()
+
+        for conn in tunnelConnections.values {
+            conn.cancel()
+        }
+        tunnelConnections.removeAll()
+
+        tcpManager.shutdown()
+        dnsResolver.clearCache()
+        wgSession.disconnect()
+
         status = .stopped
         connectedSince = nil
         activeConfig = nil
+        activeWGConfig = nil
         activeSOCKS5Proxy = nil
-        lastError = nil
+        activeCountryId = nil
+        localIP = 0
         isReconnecting = false
-        endpointPool.removeAll()
-        nextPoolIndex = 0
         stats = OpenVPNBridgeStats()
         logger.log("OpenVPNBridge: stopped", category: .vpn, level: .info)
-    }
-
-    // MARK: - Pool Round-Robin
-
-    func nextEndpoint() -> ProxyConfig? {
-        let healthy = endpointPool.enumerated().filter { $0.element.isHealthy }
-        guard !healthy.isEmpty else { return activeSOCKS5Proxy }
-
-        let sorted = healthy.sorted { $0.element.healthScore > $1.element.healthScore }
-        let pick = sorted[nextPoolIndex % sorted.count]
-        nextPoolIndex += 1
-
-        activeSOCKS5Proxy = pick.element.proxy
-        stats.activeEndpointIndex = pick.offset
-        stats.poolRotations += 1
-        stats.intelServerLoad = pick.element.serverLoad
-
-        return pick.element.proxy
-    }
-
-    func recordEndpointServed(proxy: ProxyConfig) {
-        if let idx = endpointPool.firstIndex(where: { $0.proxy.host == proxy.host && $0.proxy.port == proxy.port }) {
-            endpointPool[idx].totalServed += 1
-            endpointPool[idx].consecutiveFailures = 0
-            endpointPool[idx].lastValidatedAt = Date()
-            intel.recordSuccess(hostname: endpointPool[idx].hostname, latencyMs: endpointPool[idx].avgLatencyMs)
-        }
-        stats.connectionsServed += 1
-    }
-
-    func recordEndpointFailed(proxy: ProxyConfig) {
-        if let idx = endpointPool.firstIndex(where: { $0.proxy.host == proxy.host && $0.proxy.port == proxy.port }) {
-            endpointPool[idx].consecutiveFailures += 1
-            intel.recordFailure(hostname: endpointPool[idx].hostname)
-
-            if !endpointPool[idx].isHealthy {
-                logger.log("OpenVPNBridge: endpoint \(endpointPool[idx].hostname) unhealthy after \(endpointPool[idx].consecutiveFailures) failures — pool has \(activeEndpointCount) healthy remaining", category: .vpn, level: .warning)
-
-                if activeEndpointCount == 0 {
-                    Task { await replenishPool() }
-                }
-            }
-        }
-        stats.connectionsFailed += 1
-        stats.consecutiveFailures += 1
     }
 
     // MARK: - Reconnect
@@ -241,8 +151,13 @@ class OpenVPNProxyBridge {
         let preservedStats = stats
         logger.log("OpenVPNBridge: reconnecting with preserved stats", category: .vpn, level: .warning)
 
-        stop()
-        stats = preservedStats
+        for conn in tunnelConnections.values {
+            conn.cancel()
+        }
+        tunnelConnections.removeAll()
+        tcpManager.shutdown()
+        dnsResolver.stopBackgroundRefresh()
+        wgSession.disconnect()
 
         let jitter = Double.random(in: 0...1.0)
         let backoffDelay = min(Double(reconnectAttempts + 1) * 1.5 + jitter, 10.0)
@@ -251,8 +166,28 @@ class OpenVPNProxyBridge {
         reconnectAttempts += 1
         isReconnecting = false
 
-        if let regionKey = config.nordCountryCode {
-            regionCache.removeValue(forKey: regionKey)
+        if let countryId = activeCountryId, reconnectAttempts >= 1 {
+            let failedHost = activeWGConfig?.endpointHost ?? ""
+            if let freshServer = await intel.bestWireGuardServer(forCountryId: countryId, excluding: [failedHost]),
+               let freshConfig = intel.generateWireGuardConfig(from: freshServer) {
+                stats = preservedStats
+                stats.apiReconnects += 1
+                logger.log("OpenVPNBridge: NordIntel found fresh server \(freshServer.hostname) (load: \(freshServer.load)%) — replacing \(failedHost)", category: .vpn, level: .info)
+                activeWGConfig = freshConfig
+                let success = await startWireGuardTunnel(freshConfig)
+                if success {
+                    status = .established
+                    stats.lastValidatedAt = Date()
+                    stats.consecutiveFailures = 0
+                    stats.resolutionSource = "WG-tunnel(\(freshServer.hostname), load:\(freshServer.load)%)"
+                    stats.intelServerLoad = freshServer.load
+                    dnsResolver.startBackgroundRefresh()
+                    intel.recordSuccess(hostname: freshServer.hostname, latencyMs: 0)
+                    startHealthCheck()
+                    logger.log("OpenVPNBridge: reconnect SUCCEEDED via \(freshServer.hostname)", category: .vpn, level: .success)
+                    return
+                }
+            }
         }
 
         await start(with: config)
@@ -262,138 +197,235 @@ class OpenVPNProxyBridge {
         }
     }
 
-    // MARK: - Pool Replenishment
-
-    private func replenishPool() async {
-        guard let config = activeConfig, let countryId = config.nordCountryId else { return }
-
-        let existing = Set(endpointPool.map(\.hostname))
-        logger.log("OpenVPNBridge: replenishing pool — \(activeEndpointCount) healthy of \(endpointPool.count), excluding \(existing.count) known", category: .vpn, level: .info)
-
-        let needed = targetPoolSize - activeEndpointCount
-        guard needed > 0 else { return }
-
-        let resolved = await intel.resolveMultipleSOCKS5(forCountryId: countryId, count: needed)
-        for entry in resolved where !existing.contains(entry.hostname) {
-            let slot = SOCKS5EndpointSlot(
-                proxy: entry.proxy,
-                hostname: entry.hostname,
-                source: entry.source,
-                resolvedAt: Date(),
-                serverLoad: intel.serverHealth(hostname: entry.hostname)?.load ?? -1,
-                lastValidatedAt: Date()
-            )
-            endpointPool.append(slot)
-        }
-
-        endpointPool.removeAll(where: { !$0.isHealthy && Date().timeIntervalSince($0.resolvedAt) > 120 })
-
-        stats.endpointPoolSize = endpointPool.count
-
-        if let best = endpointPool.filter(\.isHealthy).max(by: { $0.healthScore < $1.healthScore }) {
-            activeSOCKS5Proxy = best.proxy
-            stats.intelServerLoad = best.serverLoad
-        }
-
-        logger.log("OpenVPNBridge: pool replenished — now \(endpointPool.count) endpoints (\(activeEndpointCount) healthy)", category: .vpn, level: .success)
+    func invalidateRegionCache() {
+        logger.log("OpenVPNBridge: region cache cleared (no-op with WG tunnel mode)", category: .vpn, level: .debug)
     }
 
-    // MARK: - Stats Recording (legacy compat)
+    // MARK: - Connection Handling
 
-    func recordConnectionServed() {
+    func handleSOCKS5Connection(
+        id: UUID,
+        clientConnection: NWConnection,
+        targetHost: String,
+        targetPort: UInt16,
+        queue: DispatchQueue,
+        server: LocalProxyServer
+    ) {
+        guard status == .established else {
+            logger.log("OpenVPNBridge: rejecting connection — tunnel not established", category: .vpn, level: .warning)
+            return
+        }
+
         stats.connectionsServed += 1
+
+        let tunnelConn = OpenVPNTunnelConnection(
+            id: id,
+            clientConnection: clientConnection,
+            targetHost: targetHost,
+            targetPort: targetPort,
+            queue: queue,
+            server: server,
+            bridge: self
+        )
+
+        tunnelConnections[id] = tunnelConn
+        tunnelConn.start()
     }
 
-    func recordConnectionFailed() {
-        stats.connectionsFailed += 1
-        stats.consecutiveFailures += 1
+    func createTCPSession(destinationIP: UInt32, destinationPort: UInt16) -> TCPSession {
+        stats.tcpSessionsCreated += 1
+        stats.tcpSessionsActive = tcpManager.activeSessionCount + 1
+        return tcpManager.createSession(destinationIP: destinationIP, destinationPort: destinationPort)
     }
 
-    func recordBytes(up: UInt64, down: UInt64) {
-        stats.bytesUpstream += up
-        stats.bytesDownstream += down
+    func initiateConnection(_ session: TCPSession) {
+        tcpManager.initiateConnection(session)
     }
 
-    // MARK: - Endpoint Resolution (fallback when NordIntel unavailable)
+    func sendData(_ session: TCPSession, data: Data) {
+        stats.bytesUpstream += UInt64(data.count)
+        tcpManager.sendData(session, data: data)
+    }
 
-    private func resolveSOCKS5Endpoint(for config: OpenVPNConfig) async -> (proxy: ProxyConfig, source: String)? {
+    func closeSession(_ session: TCPSession) {
+        tcpManager.closeSession(session)
+        stats.tcpSessionsActive = tcpManager.activeSessionCount
+    }
+
+    func resetSession(_ session: TCPSession) {
+        tcpManager.sendReset(session)
+        stats.tcpSessionsActive = tcpManager.activeSessionCount
+    }
+
+    func resolveHostname(_ hostname: String) async -> UInt32? {
+        stats.dnsQueriesTotal += 1
+        return await dnsResolver.resolve(hostname)
+    }
+
+    func connectionFinished(id: UUID, hadError: Bool) {
+        tunnelConnections.removeValue(forKey: id)
+        if hadError {
+            stats.connectionsFailed += 1
+        }
+        stats.tcpSessionsActive = tcpManager.activeSessionCount
+    }
+
+    // MARK: - Legacy Compat (used by callers that haven't been updated)
+
+    func nextEndpoint() -> ProxyConfig? { nil }
+    func recordEndpointServed(proxy: ProxyConfig) { stats.connectionsServed += 1 }
+    func recordEndpointFailed(proxy: ProxyConfig) { stats.connectionsFailed += 1; stats.consecutiveFailures += 1 }
+    func recordConnectionServed() { stats.connectionsServed += 1 }
+    func recordConnectionFailed() { stats.connectionsFailed += 1; stats.consecutiveFailures += 1 }
+    func recordBytes(up: UInt64, down: UInt64) { stats.bytesUpstream += up; stats.bytesDownstream += down }
+
+    // MARK: - WireGuard Tunnel Setup
+
+    private func startWireGuardTunnel(_ config: WireGuardConfig) async -> Bool {
+        let address = config.interfaceAddress.split(separator: "/").first.map(String.init) ?? config.interfaceAddress
+        guard let ip = IPv4Packet.ipFromString(address) else {
+            lastError = "Invalid interface address: \(config.interfaceAddress)"
+            return false
+        }
+        localIP = ip
+
+        tcpManager.configure(localIP: localIP)
+        tcpManager.sendPacketHandler = { [weak self] packet in
+            self?.wgSession.sendPacket(packet)
+        }
+
+        let dnsServer = config.interfaceDNS.split(separator: ",").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "1.1.1.1"
+        dnsResolver.configure(dnsServer: dnsServer, sourceIP: localIP)
+        dnsResolver.sendPacketHandler = { [weak self] packet in
+            self?.wgSession.sendPacket(packet)
+        }
+
+        wgSession.onPacketReceived = { [weak self] ipData in
+            self?.handleTunnelPacket(ipData)
+        }
+
+        let configured = wgSession.configure(
+            privateKey: config.interfacePrivateKey,
+            peerPublicKey: config.peerPublicKey,
+            preSharedKey: config.peerPreSharedKey,
+            endpoint: config.peerEndpoint,
+            keepalive: config.peerPersistentKeepalive ?? 25
+        )
+
+        guard configured else {
+            lastError = wgSession.lastError ?? "Configuration failed"
+            return false
+        }
+
+        await wgSession.connect()
+        try? await Task.sleep(for: .seconds(3))
+
+        if wgSession.isEstablished {
+            return true
+        }
+
+        try? await Task.sleep(for: .seconds(3))
+        return wgSession.isEstablished
+    }
+
+    private func handleTunnelPacket(_ ipData: Data) {
+        guard let ipPacket = IPv4Packet.parse(ipData) else { return }
+
+        if ipPacket.header.isUDP {
+            dnsResolver.handleIncomingPacket(ipData)
+            return
+        }
+
+        if ipPacket.header.isTCP {
+            stats.bytesDownstream += UInt64(ipData.count)
+            tcpManager.handleIncomingPacket(ipData)
+            return
+        }
+    }
+
+    // MARK: - WireGuard Server Resolution
+
+    private func resolveWireGuardConfig(for config: OpenVPNConfig) async -> WireGuardConfig? {
+        guard let countryId = config.nordCountryId else {
+            logger.log("OpenVPNBridge: cannot determine country from OVPN config \(config.fileName)", category: .vpn, level: .error)
+            return nil
+        }
+
+        if let server = await intel.bestWireGuardServer(forCountryId: countryId),
+           let wgConfig = intel.generateWireGuardConfig(from: server) {
+            logger.log("OpenVPNBridge: resolved WG server \(server.hostname) (load: \(server.load)%) for country \(countryId)", category: .vpn, level: .info)
+            return wgConfig
+        }
+
         let nordService = NordVPNService.shared
-        let username = nordService.serviceUsername
-        let password = nordService.servicePassword
-        let authUser: String? = username.isEmpty ? nil : username
-        let authPass: String? = password.isEmpty ? nil : password
-
-        if let regionKey = config.nordCountryCode, let cached = regionCache[regionKey] {
-            if Date().timeIntervalSince(cached.resolvedAt) < regionCacheTTL {
-                let (alive, _) = await validateSOCKS5Endpoint(cached.proxy)
-                if alive {
-                    return (cached.proxy, "cached(\(cached.source))")
+        let servers = await nordService.fetchRecommendedServers(countryId: countryId, technology: "wireguard_udp", limit: 3)
+        for server in servers {
+            if let publicKey = server.publicKey {
+                let privateKey = nordService.privateKey
+                guard !privateKey.isEmpty else {
+                    logger.log("OpenVPNBridge: no NordVPN private key available", category: .vpn, level: .error)
+                    return nil
                 }
-                regionCache.removeValue(forKey: regionKey)
-            } else {
-                regionCache.removeValue(forKey: regionKey)
+                let endpoint = "\(server.station):51820"
+                let rawContent = "[Interface]\nPrivateKey = \(privateKey)\nAddress = 10.5.0.2/32\nDNS = 103.86.96.100, 103.86.99.100\n\n[Peer]\nPublicKey = \(publicKey)\nAllowedIPs = 0.0.0.0/0\nEndpoint = \(endpoint)\nPersistentKeepalive = 25"
+
+                let wgConfig = WireGuardConfig(
+                    fileName: server.hostname,
+                    interfaceAddress: "10.5.0.2/32",
+                    interfacePrivateKey: privateKey,
+                    interfaceDNS: "103.86.96.100, 103.86.99.100",
+                    interfaceMTU: nil,
+                    peerPublicKey: publicKey,
+                    peerPreSharedKey: nil,
+                    peerEndpoint: endpoint,
+                    peerAllowedIPs: "0.0.0.0/0",
+                    peerPersistentKeepalive: 25,
+                    rawContent: rawContent
+                )
+                logger.log("OpenVPNBridge: resolved WG config from NordAPI for \(server.hostname)", category: .vpn, level: .info)
+                return wgConfig
             }
         }
 
-        if let countryId = config.nordCountryId {
-            let apiServers = await nordService.fetchSOCKS5Servers(countryId: countryId, limit: 3)
-            for server in apiServers {
-                let proxy = ProxyConfig(host: server.hostname, port: socks5Port, username: authUser, password: authPass)
-                let (alive, validated) = await validateSOCKS5Endpoint(proxy)
-                if alive && (validated || !nordService.hasServiceCredentials) {
-                    cacheEndpoint(proxy: proxy, regionKey: config.nordCountryCode, source: "NordAPI(\(server.hostname))")
-                    return (proxy, "NordAPI(\(server.hostname))")
-                }
-
-                let stationProxy = ProxyConfig(host: server.station, port: socks5Port, username: authUser, password: authPass)
-                let (stationAlive, stationValidated) = await validateSOCKS5Endpoint(stationProxy)
-                if stationAlive && (stationValidated || !nordService.hasServiceCredentials) {
-                    cacheEndpoint(proxy: stationProxy, regionKey: config.nordCountryCode, source: "NordAPI-station(\(server.station))")
-                    return (stationProxy, "NordAPI-station(\(server.station))")
-                }
-            }
-        }
-
-        let serverHost = config.remoteHost
-        guard !serverHost.isEmpty else { return nil }
-
-        let hostnameProxy = ProxyConfig(host: serverHost, port: socks5Port, username: authUser, password: authPass)
-        let (hostAlive, hostValidated) = await validateSOCKS5Endpoint(hostnameProxy)
-        if hostAlive && (hostValidated || !nordService.hasServiceCredentials) {
-            cacheEndpoint(proxy: hostnameProxy, regionKey: config.nordCountryCode, source: "hostname(\(serverHost):1080)")
-            return (hostnameProxy, "hostname(\(serverHost):1080)")
-        }
-
-        let stationIP = resolveStationIP(from: config)
-        if !stationIP.isEmpty && stationIP != serverHost {
-            let stationProxy = ProxyConfig(host: stationIP, port: socks5Port, username: authUser, password: authPass)
-            let (stationAlive, stationValidated) = await validateSOCKS5Endpoint(stationProxy)
-            if stationAlive && (stationValidated || !nordService.hasServiceCredentials) {
-                cacheEndpoint(proxy: stationProxy, regionKey: config.nordCountryCode, source: "stationIP(\(stationIP):1080)")
-                return (stationProxy, "stationIP(\(stationIP):1080)")
-            }
-        }
-
-        if config.remotePort != socks5Port {
-            let altProxy = ProxyConfig(host: serverHost, port: config.remotePort, username: authUser, password: authPass)
-            let (altAlive, _) = await validateSOCKS5Endpoint(altProxy)
-            if altAlive {
-                cacheEndpoint(proxy: altProxy, regionKey: config.nordCountryCode, source: "altPort(\(serverHost):\(config.remotePort))")
-                return (altProxy, "altPort(\(serverHost):\(config.remotePort))")
-            }
-        }
-
+        logger.log("OpenVPNBridge: no WireGuard servers found for country \(countryId)", category: .vpn, level: .error)
         return nil
     }
 
-    private func cacheEndpoint(proxy: ProxyConfig, regionKey: String?, source: String) {
-        guard let key = regionKey else { return }
-        regionCache[key] = SOCKS5RegionCacheEntry(proxy: proxy, resolvedAt: Date(), source: source)
-    }
+    private func retryWithAlternateServer(config: OpenVPNConfig) async {
+        guard let countryId = config.nordCountryId else { return }
+        let failedHost = activeWGConfig?.endpointHost ?? ""
 
-    func invalidateRegionCache() {
-        regionCache.removeAll()
-        logger.log("OpenVPNBridge: region cache cleared", category: .vpn, level: .debug)
+        for attempt in 1...3 {
+            reconnectAttempts += 1
+            try? await Task.sleep(for: .seconds(Double(attempt) * 0.5 + 0.5))
+
+            if let server = await intel.bestWireGuardServer(forCountryId: countryId, excluding: [failedHost]),
+               let wgConfig = intel.generateWireGuardConfig(from: server) {
+                activeWGConfig = wgConfig
+                let success = await startWireGuardTunnel(wgConfig)
+                if success {
+                    let latencyMs = stats.handshakeLatencyMs
+                    status = .established
+                    connectedSince = Date()
+                    stats.lastValidatedAt = Date()
+                    stats.consecutiveFailures = 0
+                    stats.resolutionSource = "WG-tunnel(\(server.hostname), load:\(server.load)%)"
+                    stats.intelServerLoad = server.load
+                    stats.apiReconnects += 1
+                    dnsResolver.startBackgroundRefresh()
+                    intel.recordSuccess(hostname: server.hostname, latencyMs: latencyMs)
+                    intel.startMonitoring()
+                    startHealthCheck()
+                    logger.log("OpenVPNBridge: retry \(attempt) SUCCEEDED via \(server.hostname)", category: .vpn, level: .success)
+                    return
+                }
+                intel.recordFailure(hostname: server.hostname)
+            }
+        }
+
+        status = .failed
+        lastError = "All WireGuard server alternatives exhausted for \(config.serverName)"
+        logger.log("OpenVPNBridge: FAILED after all retries — \(lastError!)", category: .vpn, level: .error)
     }
 
     // MARK: - Health Check
@@ -402,7 +434,7 @@ class OpenVPNProxyBridge {
         stopHealthCheck()
         healthCheckTimer = Timer.scheduledTimer(withTimeInterval: healthCheckInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.performHealthCheck()
+                self?.checkTunnelHealth()
             }
         }
     }
@@ -412,204 +444,22 @@ class OpenVPNProxyBridge {
         healthCheckTimer = nil
     }
 
-    private func performHealthCheck() async {
+    private func checkTunnelHealth() {
         guard status == .established else { return }
 
-        var anyHealthy = false
-        for (idx, slot) in endpointPool.enumerated() {
-            let (alive, _) = await validateSOCKS5Endpoint(slot.proxy)
-            if alive {
-                endpointPool[idx].lastValidatedAt = Date()
-                endpointPool[idx].consecutiveFailures = 0
-                anyHealthy = true
-            } else {
-                endpointPool[idx].consecutiveFailures += 1
-                intel.recordFailure(hostname: slot.hostname)
-                logger.log("OpenVPNBridge: health check — \(slot.hostname) FAILED (consecutive: \(endpointPool[idx].consecutiveFailures))", category: .vpn, level: .warning)
-            }
-        }
-
-        stats.endpointPoolSize = endpointPool.count
-
-        if anyHealthy {
+        if wgSession.isEstablished {
             stats.lastValidatedAt = Date()
             stats.consecutiveFailures = 0
-
-            if let best = endpointPool.filter(\.isHealthy).max(by: { $0.healthScore < $1.healthScore }) {
-                activeSOCKS5Proxy = best.proxy
-                stats.intelServerLoad = best.serverLoad
-            }
         } else {
             stats.consecutiveFailures += 1
-            logger.log("OpenVPNBridge: ALL \(endpointPool.count) endpoints failed health check (consecutive: \(stats.consecutiveFailures))", category: .vpn, level: .error)
-
-            if stats.consecutiveFailures >= 2 {
-                await replenishPool()
-
-                if activeEndpointCount == 0 {
-                    if let config = activeConfig, let regionKey = config.nordCountryCode {
-                        regionCache.removeValue(forKey: regionKey)
-                    }
-                    await reconnectPreservingSessions()
-                }
+            if let wgConfig = activeWGConfig {
+                intel.recordFailure(hostname: wgConfig.endpointHost)
+            }
+            logger.log("OpenVPNBridge: health check detected tunnel DOWN (consecutive: \(stats.consecutiveFailures))", category: .vpn, level: .error)
+            Task {
+                await reconnectPreservingSessions()
             }
         }
-    }
-
-    // MARK: - SOCKS5 Validation
-
-    nonisolated func validateSOCKS5Endpoint(_ proxy: ProxyConfig) async -> (alive: Bool, validated: Bool) {
-        await withCheckedContinuation { continuation in
-            let endpoint = NWEndpoint.hostPort(
-                host: NWEndpoint.Host(proxy.host),
-                port: NWEndpoint.Port(integerLiteral: UInt16(proxy.port))
-            )
-            let connection = NWConnection(to: endpoint, using: .tcp)
-            let queue = DispatchQueue(label: "ovpn-bridge-validate.\(UUID().uuidString.prefix(6))")
-            let completedBox = UnsafeSendableBox(false)
-
-            let timeoutWork = DispatchWorkItem { [weak connection] in
-                guard !completedBox.value else { return }
-                completedBox.value = true
-                connection?.cancel()
-                continuation.resume(returning: (false, false))
-            }
-            queue.asyncAfter(deadline: .now() + 5, execute: timeoutWork)
-
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    var greeting: Data
-                    if proxy.username != nil {
-                        greeting = Data([0x05, 0x02, 0x00, 0x02])
-                    } else {
-                        greeting = Data([0x05, 0x01, 0x00])
-                    }
-
-                    connection.send(content: greeting, completion: .contentProcessed { sendError in
-                        if sendError != nil {
-                            guard !completedBox.value else { return }
-                            completedBox.value = true
-                            timeoutWork.cancel()
-                            connection.cancel()
-                            continuation.resume(returning: (true, false))
-                            return
-                        }
-
-                        connection.receive(minimumIncompleteLength: 2, maximumLength: 16) { data, _, _, recvError in
-                            guard !completedBox.value else { return }
-
-                            if recvError != nil {
-                                completedBox.value = true
-                                timeoutWork.cancel()
-                                connection.cancel()
-                                continuation.resume(returning: (true, false))
-                                return
-                            }
-
-                            guard let data, data.count >= 2, data[0] == 0x05 else {
-                                completedBox.value = true
-                                timeoutWork.cancel()
-                                connection.cancel()
-                                continuation.resume(returning: (true, false))
-                                return
-                            }
-
-                            let authMethod = data[1]
-
-                            if authMethod == 0x02, let username = proxy.username, let password = proxy.password {
-                                var authPacket = Data([0x01])
-                                let uBytes = Array(username.utf8)
-                                authPacket.append(UInt8(uBytes.count))
-                                authPacket.append(contentsOf: uBytes)
-                                let pBytes = Array(password.utf8)
-                                authPacket.append(UInt8(pBytes.count))
-                                authPacket.append(contentsOf: pBytes)
-
-                                connection.send(content: authPacket, completion: .contentProcessed { authSendError in
-                                    if authSendError != nil {
-                                        guard !completedBox.value else { return }
-                                        completedBox.value = true
-                                        timeoutWork.cancel()
-                                        connection.cancel()
-                                        continuation.resume(returning: (true, false))
-                                        return
-                                    }
-
-                                    connection.receive(minimumIncompleteLength: 2, maximumLength: 4) { authData, _, _, authRecvError in
-                                        guard !completedBox.value else { return }
-                                        completedBox.value = true
-                                        timeoutWork.cancel()
-                                        connection.cancel()
-                                        if authRecvError != nil {
-                                            continuation.resume(returning: (true, false))
-                                            return
-                                        }
-                                        guard let authData, authData.count >= 2 else {
-                                            continuation.resume(returning: (true, false))
-                                            return
-                                        }
-                                        let authSuccess = authData[1] == 0x00
-                                        continuation.resume(returning: (true, authSuccess))
-                                    }
-                                })
-                            } else if authMethod == 0x00 {
-                                completedBox.value = true
-                                timeoutWork.cancel()
-                                connection.cancel()
-                                continuation.resume(returning: (true, true))
-                            } else if authMethod == 0xFF {
-                                completedBox.value = true
-                                timeoutWork.cancel()
-                                connection.cancel()
-                                continuation.resume(returning: (true, false))
-                            } else {
-                                completedBox.value = true
-                                timeoutWork.cancel()
-                                connection.cancel()
-                                continuation.resume(returning: (true, true))
-                            }
-                        }
-                    })
-
-                case .failed:
-                    guard !completedBox.value else { return }
-                    completedBox.value = true
-                    timeoutWork.cancel()
-                    connection.cancel()
-                    continuation.resume(returning: (false, false))
-
-                case .cancelled:
-                    guard !completedBox.value else { return }
-                    completedBox.value = true
-                    timeoutWork.cancel()
-                    continuation.resume(returning: (false, false))
-
-                default:
-                    break
-                }
-            }
-
-            connection.start(queue: queue)
-        }
-    }
-
-    // MARK: - Host Resolution Helpers
-
-    private func resolveStationIP(from config: OpenVPNConfig) -> String {
-        let lines = config.rawContent.components(separatedBy: .newlines)
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix("remote ") {
-                let parts = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                if parts.count >= 2 {
-                    let addr = parts[1]
-                    let isIP = addr.split(separator: ".").count == 4 && addr.allSatisfy { $0.isNumber || $0 == "." }
-                    if isIP { return addr }
-                }
-            }
-        }
-        return ""
     }
 
     // MARK: - Display
@@ -625,14 +475,14 @@ class OpenVPNProxyBridge {
     }
 
     var statusLabel: String {
-        guard let proxy = activeSOCKS5Proxy else { return status.rawValue }
-        let poolInfo = endpointPool.count > 1 ? " [\(activeEndpointCount)/\(endpointPool.count) pool]" : ""
-        return "\(status.rawValue) → \(proxy.host):\(proxy.port)\(poolInfo)"
+        guard let wgConfig = activeWGConfig else { return status.rawValue }
+        let loadInfo = stats.intelServerLoad >= 0 ? " (load: \(stats.intelServerLoad)%)" : ""
+        return "\(status.rawValue) → \(wgConfig.serverName)\(loadInfo)"
     }
 
     var activeProxyLabel: String? {
-        guard let proxy = activeSOCKS5Proxy else { return nil }
-        return "\(proxy.host):\(proxy.port)"
+        guard let wgConfig = activeWGConfig else { return nil }
+        return "WG:\(wgConfig.serverName)"
     }
 
     var resolutionSourceLabel: String {
@@ -640,9 +490,8 @@ class OpenVPNProxyBridge {
     }
 
     var poolSummary: String {
-        guard !endpointPool.isEmpty else { return "No endpoints" }
-        let healthy = endpointPool.filter(\.isHealthy)
-        let loads = healthy.compactMap { $0.serverLoad >= 0 ? "\($0.hostname.components(separatedBy: ".").first ?? $0.hostname):\($0.serverLoad)%" : nil }
-        return "\(healthy.count)/\(endpointPool.count) healthy — \(loads.joined(separator: ", "))"
+        guard isActive, let wgConfig = activeWGConfig else { return "No tunnel" }
+        let loadStr = stats.intelServerLoad >= 0 ? " load:\(stats.intelServerLoad)%" : ""
+        return "WG tunnel → \(wgConfig.serverName)\(loadStr)"
     }
 }
