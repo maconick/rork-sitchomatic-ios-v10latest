@@ -189,6 +189,7 @@ class SessionRecoveryService {
 
         let mode = proxyService.connectionMode(for: .joe)
         switch mode {
+        case .direct: return NetworkState(networkMode: "Direct", proxyHost: nil, proxyPort: nil, tunnelActive: false, wireProxyActive: false)
         case .dns: return NetworkState(networkMode: "DNS", proxyHost: nil, proxyPort: nil, tunnelActive: false, wireProxyActive: false)
         case .proxy: return NetworkState(networkMode: "SOCKS5", proxyHost: nil, proxyPort: nil, tunnelActive: false, wireProxyActive: false)
         case .wireguard:

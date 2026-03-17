@@ -62,6 +62,13 @@ class NetworkSessionFactory {
     private let ovpnBridge = OpenVPNProxyBridge.shared
 
     func nextConfig(for target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {
+        let mode = proxyService.unifiedConnectionMode
+
+        if mode == .direct {
+            logger.log("NetworkFactory: DIRECT mode (highest authority) — no proxy/tunnel for \(target.rawValue)", category: .network, level: .info)
+            return .direct
+        }
+
         let ipMode = deviceProxy.ipRoutingMode
 
         if ipMode == .appWideUnited, let config = deviceProxy.activeConfig {
@@ -87,11 +94,12 @@ class NetworkSessionFactory {
             logger.log("NetworkFactory: per-session tunnel active → 127.0.0.1:\(perSessionConfig.port) for \(target.rawValue)", category: .vpn, level: .debug)
             return .socks5(perSessionConfig)
         }
-
-        let mode = proxyService.connectionMode(for: target)
         logger.log("NetworkFactory: per-session \(mode.label) config for \(target.rawValue)", category: .network, level: .debug)
 
         switch mode {
+        case .direct:
+            return .direct
+
         case .dns:
             return .direct
 
@@ -165,6 +173,10 @@ class NetworkSessionFactory {
         case .hybrid:
             return HybridNetworkingService.shared.nextHybridConfig(for: target)
         }
+    }
+
+    func isDirectMode() -> Bool {
+        proxyService.unifiedConnectionMode == .direct
     }
 
     func buildURLSessionConfiguration(for config: ActiveNetworkConfig, target: ProxyRotationService.ProxyTarget) -> URLSessionConfiguration {
@@ -375,6 +387,10 @@ class NetworkSessionFactory {
     }
 
     func appWideConfig(for target: ProxyRotationService.ProxyTarget) -> ActiveNetworkConfig {
+        if proxyService.unifiedConnectionMode == .direct {
+            logger.log("NetworkFactory: appWideConfig → DIRECT mode (highest authority) for \(target.rawValue)", category: .network, level: .info)
+            return .direct
+        }
         let deviceProxy = DeviceProxyService.shared
         if deviceProxy.ipRoutingMode == .appWideUnited, let config = deviceProxy.activeConfig {
             logger.log("NetworkFactory: appWideConfig → united IP \(config.label) for \(target.rawValue)", category: .network, level: .debug)

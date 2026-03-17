@@ -712,6 +712,10 @@ struct IPScoreTestView: View {
         }
 
         switch mode {
+        case .direct:
+            session.networkLabel = "Direct (No Proxy)"
+            session.networkConfig = .direct
+
         case .proxy:
             if let proxy = proxyService.nextWorkingProxy(for: .joe) {
                 session.assignedProxy = proxy.displayString

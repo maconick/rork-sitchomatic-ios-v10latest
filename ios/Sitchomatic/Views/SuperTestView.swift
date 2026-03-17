@@ -193,6 +193,7 @@ struct SuperTestView: View {
 
     private var networkModeColor: Color {
         switch proxyService.unifiedConnectionMode {
+        case .direct: .green
         case .proxy: .blue
         case .openvpn: .indigo
         case .wireguard: .purple

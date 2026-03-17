@@ -3,6 +3,7 @@ import Network
 import Observation
 
 nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
+    case direct = "Direct"
     case dns = "DNS"
     case proxy = "Proxy"
     case openvpn = "OpenVPN"
@@ -12,6 +13,7 @@ nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
 
     var icon: String {
         switch self {
+        case .direct: "bolt.horizontal.fill"
         case .dns: "lock.shield.fill"
         case .proxy: "network"
         case .openvpn: "shield.lefthalf.filled"
@@ -23,6 +25,7 @@ nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
 
     var label: String {
         switch self {
+        case .direct: "Direct (No Proxy)"
         case .dns: "DNS-over-HTTPS"
         case .proxy: "SOCKS5 Proxy"
         case .openvpn: "OpenVPN"
@@ -722,6 +725,8 @@ class ProxyRotationService {
     func networkSummary(for target: ProxyTarget) -> String {
         let mode = connectionMode(for: target)
         switch mode {
+        case .direct:
+            return "Direct (No Proxy)"
         case .dns:
             return "Direct (DNS)"
         case .proxy:
@@ -740,7 +745,7 @@ class ProxyRotationService {
             let nm = NodeMavenService.shared
             return nm.isEnabled ? "NodeMaven (\(nm.shortStatus))" : "NodeMaven (not configured)"
         case .hybrid:
-            return "Hybrid (1 per method)"            
+            return "Hybrid (1 per method)"
         }
     }
 

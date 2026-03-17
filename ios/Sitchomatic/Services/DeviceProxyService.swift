@@ -664,7 +664,11 @@ class DeviceProxyService {
 
     private func activatePerSessionMode() {
         let mode = proxyService.unifiedConnectionMode
-        if mode == .wireguard && !perSessionWireProxyActive {
+        if mode == .direct {
+            stopPerSessionWireProxy()
+            stopPerSessionOpenVPN()
+            logger.log("DeviceProxy: DIRECT mode — no proxy/tunnel, bypassing all network layers", category: .network, level: .info)
+        } else if mode == .wireguard && !perSessionWireProxyActive {
             activatePerSessionWireProxy()
         } else if mode == .openvpn && !perSessionOpenVPNActive {
             activatePerSessionOpenVPN()
@@ -1094,6 +1098,9 @@ class DeviceProxyService {
             if let result = nextFromSOCKS5(allProxies) { return result }
             if let result = nextFromWG(allWG) { return result }
             if let result = nextFromOVPN(allOVPN) { return result }
+
+        case .direct:
+            return .direct
 
         case .dns:
             if let result = nextFromSOCKS5(allProxies) { return result }

@@ -949,7 +949,7 @@ class ConcurrentAutomationEngine {
         case .proxy:
             let _ = proxyService.nextWorkingProxy(for: target)
             logger.log("ConcurrentEngine: rotated to next SOCKS5 IP for \(target.rawValue)", category: .network, level: .warning)
-        case .dns, .nodeMaven:
+        case .direct, .dns, .nodeMaven:
             logger.log("ConcurrentEngine: no IP pool to rotate for mode \(mode.label) on \(target.rawValue)", category: .network, level: .warning)
         case .hybrid:
             HybridNetworkingService.shared.resetBatch()

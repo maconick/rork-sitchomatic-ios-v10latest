@@ -209,6 +209,9 @@ nonisolated struct TestDebugSettingsSnapshot: Sendable {
             }
             return .direct
 
+        case .direct:
+            return .direct
+
         case .dns:
             return .direct
 

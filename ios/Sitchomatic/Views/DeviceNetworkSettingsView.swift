@@ -699,6 +699,7 @@ struct DeviceNetworkSettingsView: View {
     @ViewBuilder
     private var endpointConfigSection: some View {
         switch proxyService.unifiedConnectionMode {
+        case .direct: EmptyView()
         case .proxy: proxySection
         case .openvpn: openVPNSummarySection
         case .wireguard: wireGuardSummarySection
@@ -892,6 +893,7 @@ struct DeviceNetworkSettingsView: View {
 
     private var modeColor: Color {
         switch proxyService.unifiedConnectionMode {
+        case .direct: .green
         case .proxy: .blue
         case .openvpn: .indigo
         case .wireguard: .purple

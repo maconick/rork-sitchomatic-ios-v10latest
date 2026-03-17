@@ -220,6 +220,13 @@ class NetworkTruthService {
             let mode = proxyService.connectionMode(for: defaultTarget)
 
             switch mode {
+            case .direct:
+                routeType = "Direct (No Proxy)"
+                proxyHost = nil
+                proxyPort = nil
+                tunnelActive = false
+                dnsMode = "System"
+                connectionModeLabel = "Direct"
             case .dns:
                 routeType = "Direct (DNS)"
                 proxyHost = nil

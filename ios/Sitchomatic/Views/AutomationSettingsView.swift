@@ -546,6 +546,7 @@ struct AutomationSettingsView: View {
 
     private var unifiedModeColor: Color {
         switch proxyService.unifiedConnectionMode {
+        case .direct: .green
         case .proxy: .blue
         case .openvpn: .indigo
         case .wireguard: .purple

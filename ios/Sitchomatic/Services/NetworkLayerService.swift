@@ -53,6 +53,9 @@ class NetworkLayerService {
             addFallbackLog("SOCKS5 unavailable for \(target.rawValue), using Direct")
             return .direct
 
+        case .direct:
+            return .direct
+
         case .dns:
             return .direct
 

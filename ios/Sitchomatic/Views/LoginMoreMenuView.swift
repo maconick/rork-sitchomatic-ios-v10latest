@@ -341,6 +341,7 @@ struct LoginMoreMenuView: View {
 
     private var connectionModeColor: Color {
         switch proxyService.unifiedConnectionMode {
+        case .direct: .green
         case .proxy: .blue
         case .openvpn: .indigo
         case .wireguard: .purple
