@@ -441,6 +441,8 @@ class TestDebugViewModel {
 
         var settings = snapshot.toAutomationSettings(base: AutomationSettings())
         settings = settings.normalizedTimeouts()
+        settings.trueDetectionEnabled = true
+        settings.trueDetectionPriority = true
 
         let sessionEngine = LoginAutomationEngine()
         sessionEngine.debugMode = false
@@ -449,7 +451,19 @@ class TestDebugViewModel {
         sessionEngine.proxyTarget = proxyTarget
         sessionEngine.networkConfigOverride = snapshot.buildNetworkConfig(proxyTarget: proxyTarget)
 
-        let outcome = await sessionEngine.runLoginTest(attempt, targetURL: testURL, timeout: 90)
+        let sessionTimeout: TimeInterval = 120
+        let outcome: LoginOutcome = await withTaskGroup(of: LoginOutcome.self) { group in
+            group.addTask {
+                return await sessionEngine.runLoginTest(attempt, targetURL: testURL, timeout: 90)
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(sessionTimeout))
+                return .timeout
+            }
+            let first = await group.next() ?? .timeout
+            group.cancelAll()
+            return first
+        }
 
         session.completedAt = Date()
         session.errorMessage = attempt.errorMessage

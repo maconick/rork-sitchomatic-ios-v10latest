@@ -233,6 +233,30 @@ class SuperTestService {
         return phases
     }
 
+    private func runPreTestNetworkCheck() async -> (passed: Bool, detail: String) {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: URL(string: "https://api.ipify.org?format=json")!, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
+        request.httpMethod = "GET"
+        do {
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let ip = json["ip"] as? String {
+                    return (true, "Network OK — IP: \(ip)")
+                }
+                return (true, "Network OK — HTTP 200")
+            }
+            return (false, "Network check failed: HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        } catch {
+            return (false, "Network check failed: \(error.localizedDescription)")
+        }
+    }
+
     func startSuperTest() {
         guard !isRunning else { return }
 
@@ -253,6 +277,15 @@ class SuperTestService {
         let totalPhases = max(activeTypes.count, 1)
 
         testTask = Task {
+            addLog("Running pre-test network check...")
+            let preCheck = await runPreTestNetworkCheck()
+            if !preCheck.passed {
+                addLog("PRE-TEST FAILED: \(preCheck.detail) — aborting super test", level: .error)
+                logger.log("Super Test pre-test FAILED: \(preCheck.detail)", category: .superTest, level: .error, sessionId: "supertest")
+                finalize(startTime: startTime)
+                return
+            }
+            addLog("Pre-test passed: \(preCheck.detail)", level: .success)
             var completed = 0
 
             if activeTypes.contains(.fingerprint) {

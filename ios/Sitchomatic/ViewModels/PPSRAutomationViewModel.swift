@@ -687,6 +687,19 @@ class PPSRAutomationViewModel {
 
         Task {
             configureEngine()
+
+            let preCheck = await engine.runPreTestNetworkCheck()
+            if !preCheck.passed {
+                log("Pre-test failed: \(preCheck.detail) — skipping", level: .error)
+                card.status = .untested
+                check.status = .failed
+                check.errorMessage = preCheck.detail
+                check.completedAt = Date()
+                persistCards()
+                return
+            }
+            log("Pre-test passed: \(preCheck.detail)", level: .success)
+
             isRunning = true
             activeTestCount += 1
             let outcome = await engine.runCheck(check, timeout: testTimeout)

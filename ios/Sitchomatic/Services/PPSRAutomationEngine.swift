@@ -28,9 +28,43 @@ class PPSRAutomationEngine {
     private let networkFactory = NetworkSessionFactory.shared
     private let deviceProxy = DeviceProxyService.shared
     private let deadSessionDetector = DeadSessionDetector.shared
+    private let aiSessionHealth = AISessionHealthMonitorService.shared
+    private let aiAntiDetection = AIAntiDetectionAdaptiveService.shared
+    private let aiOutcomeRescue = AIOutcomeRescueEngine.shared
+    private let aiPreConditioning = AISessionPreConditioningService.shared
+    private let aiFingerprintTuning = AIFingerprintTuningService.shared
+    private let aiChallengeSolver = AIChallengePageSolverService.shared
+    private let customTools = AICustomToolsCoordinator.shared
 
     var canStartSession: Bool {
         activeSessions < maxConcurrency
+    }
+
+    func runPreTestNetworkCheck() async -> (passed: Bool, detail: String) {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 12
+        config.waitsForConnectivity = false
+        let urlSession = URLSession(configuration: config)
+        defer { urlSession.invalidateAndCancel() }
+
+        let targetURL = LoginWebSession.targetURL
+        var request = URLRequest(url: targetURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 10)
+        request.httpMethod = "HEAD"
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (_, response) = try await urlSession.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode < 500 {
+                    return (true, "Pre-test OK: HTTP \(http.statusCode)")
+                }
+                return (false, "Pre-test failed: HTTP \(http.statusCode)")
+            }
+            return (true, "Pre-test OK")
+        } catch {
+            return (false, "Pre-test failed: \(error.localizedDescription)")
+        }
     }
 
     func runCheck(_ check: PPSRCheck, timeout: TimeInterval = 90) async -> CheckOutcome {
@@ -43,6 +77,17 @@ class PPSRAutomationEngine {
 
         logger.startSession(sessionId, category: .ppsr, message: "Starting PPSR check for \(check.card.brand) \(check.card.displayNumber)")
         logger.log("Config: timeout=\(Int(timeout))s stealth=\(stealthEnabled) retrySubmit=\(retrySubmitOnFail) VIN=\(check.vin) email=\(check.email)", category: .ppsr, level: .debug, sessionId: sessionId)
+
+        let preCheck = await runPreTestNetworkCheck()
+        if !preCheck.passed {
+            check.logs.append(PPSRLogEntry(message: "PRE-TEST FAILED: \(preCheck.detail)", level: .error))
+            logger.log("Pre-test network check FAILED: \(preCheck.detail)", category: .network, level: .error, sessionId: sessionId)
+            failCheck(check, message: "Pre-test network check failed: \(preCheck.detail)")
+            onConnectionFailure?(preCheck.detail)
+            return .connectionFailure
+        }
+        check.logs.append(PPSRLogEntry(message: preCheck.detail, level: .success))
+        logger.log(preCheck.detail, category: .network, level: .success, sessionId: sessionId)
 
         let session = LoginWebSession()
         session.stealthEnabled = stealthEnabled
@@ -314,11 +359,23 @@ class PPSRAutomationEngine {
             return .connectionFailure
         }
 
+        let preSubmitURL = await session.getCurrentURL()
+        check.logs.append(PPSRLogEntry(message: "Pre-submit URL: \(preSubmitURL)", level: .info))
+
         let navigated = await session.waitForNavigation(timeout: TimeoutResolver.resolveAutomationTimeout(10))
         if !navigated {
             check.logs.append(PPSRLogEntry(message: "Page did not navigate after submit — checking content anyway", level: .warning))
         }
         try? await Task.sleep(for: .seconds(1))
+
+        let postSubmitURL = await session.getCurrentURL()
+        let urlChanged = postSubmitURL != preSubmitURL
+        if urlChanged {
+            check.logs.append(PPSRLogEntry(message: "REDIRECT DETECTED: \(preSubmitURL) → \(postSubmitURL)", level: .info))
+            logger.log("URL redirect: \(preSubmitURL) → \(postSubmitURL)", category: .automation, level: .info, sessionId: sessionId)
+        } else {
+            check.logs.append(PPSRLogEntry(message: "No URL redirect — same page content evaluation", level: .info))
+        }
 
         if let postSubmitScreenshot = await session.captureScreenshotWithCrop(cropRect: nil).full, BlankScreenshotDetector.isBlank(postSubmitScreenshot) {
             check.logs.append(PPSRLogEntry(message: "BLANK SCREENSHOT after submit — waiting up to \(blankPageSettings.blankPageTimeoutSeconds)s...", level: .warning))
@@ -362,8 +419,41 @@ class PPSRAutomationEngine {
 
         var pageContent = await session.getPageContent()
         var contentLower = pageContent.lowercased()
+        var currentURL = await session.getCurrentURL()
 
-        let evaluation = evaluatePPSRResponse(contentLower: contentLower, pageContent: pageContent)
+        let ppsr_host = LoginWebSession.targetURL.host ?? "transact.ppsr.gov.au"
+        let postSubmitSnapshot = SessionHealthSnapshot(
+            sessionId: sessionId, host: ppsr_host, urlString: currentURL,
+            pageLoadTimeMs: Int(Date().timeIntervalSince(check.startedAt ?? Date()) * 1000),
+            outcome: "pending", wasTimeout: false, wasBlankPage: false, wasCrash: false,
+            wasChallenge: false, wasConnectionFailure: false, fingerprintDetected: false,
+            circuitBreakerOpen: false, consecutiveFailuresOnHost: 0, activeSessions: activeSessions, timestamp: Date()
+        )
+        aiSessionHealth.recordSnapshot(postSubmitSnapshot)
+
+        var evaluation = evaluatePPSRResponse(contentLower: contentLower, pageContent: pageContent, currentURL: currentURL, urlChanged: urlChanged)
+
+        if evaluation.outcome == .uncertain {
+            check.logs.append(PPSRLogEntry(message: "Initial eval uncertain — polling for redirect/content change (up to 10s)...", level: .warning))
+            for pollIdx in 1...5 {
+                try? await Task.sleep(for: .seconds(2))
+                let pollURL = await session.getCurrentURL()
+                let pollContent = await session.getPageContent()
+                let pollLower = pollContent.lowercased()
+                let pollURLChanged = pollURL != preSubmitURL
+
+                let pollEval = evaluatePPSRResponse(contentLower: pollLower, pageContent: pollContent, currentURL: pollURL, urlChanged: pollURLChanged)
+                check.logs.append(PPSRLogEntry(message: "Poll \(pollIdx)/5: score=\(pollEval.score) outcome=\(pollEval.outcome) url=\(pollURL.prefix(60))", level: .info))
+
+                if pollEval.outcome != .uncertain {
+                    evaluation = pollEval
+                    pageContent = pollContent
+                    contentLower = pollLower
+                    currentURL = pollURL
+                    break
+                }
+            }
+        }
 
         if retrySubmitOnFail && evaluation.outcome == .uncertain {
             check.logs.append(PPSRLogEntry(message: "Retry Submit: no clear result — retrying...", level: .warning))
@@ -373,13 +463,41 @@ class PPSRAutomationEngine {
                 if !retryNav {
                     check.logs.append(PPSRLogEntry(message: "Retry: page did not navigate", level: .warning))
                 }
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .seconds(2))
                 pageContent = await session.getPageContent()
                 contentLower = pageContent.lowercased()
+                currentURL = await session.getCurrentURL()
+                let retryURLChanged = currentURL != preSubmitURL
+                evaluation = evaluatePPSRResponse(contentLower: contentLower, pageContent: pageContent, currentURL: currentURL, urlChanged: retryURLChanged)
             }
         }
 
-        let finalEvaluation = evaluatePPSRResponse(contentLower: contentLower, pageContent: pageContent)
+        if evaluation.outcome == .uncertain && aiOutcomeRescue.shouldAttemptRescue(outcome: "unsure", confidence: 0.3) {
+            let rescueBundle = RescueSignalBundle(
+                host: ppsr_host, sessionId: sessionId, originalOutcome: "unsure", originalConfidence: 0.3,
+                pageContent: String(pageContent.prefix(2000)), currentURL: currentURL,
+                preLoginURL: preSubmitURL, pageTitle: "", ocrText: nil, httpStatus: nil,
+                latencyMs: Int(Date().timeIntervalSince(check.startedAt ?? Date()) * 1000),
+                redirectChain: urlChanged ? [preSubmitURL, currentURL] : [],
+                cookieCount: 0, hadContentChange: true, hadNavigation: navigated,
+                hadRedirect: urlChanged, welcomeTextFound: false, errorBannerDetected: false, timestamp: Date()
+            )
+            let rescueResult = await aiOutcomeRescue.attemptRescue(bundle: rescueBundle)
+            if rescueResult.rescued {
+                check.logs.append(PPSRLogEntry(message: "AI Outcome Rescue: \(rescueResult.newOutcome) — \(rescueResult.reasoning)", level: .warning))
+                logger.log("AI Outcome Rescue applied: \(rescueResult.newOutcome)", category: .evaluation, level: .info, sessionId: sessionId)
+                switch rescueResult.newOutcome {
+                case "success", "pass":
+                    evaluation = PPSREvaluation(outcome: .pass, score: evaluation.score + 10, reason: "AI rescue: \(rescueResult.reasoning)")
+                case "fail", "failInstitution", "noAcc", "permDisabled":
+                    evaluation = PPSREvaluation(outcome: .failInstitution, score: evaluation.score + 10, reason: "AI rescue: \(rescueResult.reasoning)")
+                default:
+                    break
+                }
+            }
+        }
+
+        let finalEvaluation = evaluation
         check.responseSnippet = String(pageContent.prefix(500))
         logger.log("PPSR evaluation: \(finalEvaluation.outcome) score=\(finalEvaluation.score) — \(finalEvaluation.reason)", category: .evaluation, level: finalEvaluation.outcome == .pass ? .success : .warning, sessionId: sessionId)
 
@@ -398,6 +516,25 @@ class PPSRAutomationEngine {
             message: "Evaluation: \(finalEvaluation.outcome) (score: \(finalEvaluation.score)) — \(finalEvaluation.reason)",
             level: finalEvaluation.outcome == .pass ? .success : finalEvaluation.outcome == .uncertain ? .warning : .error
         ))
+
+        let finalOutcomeStr: String
+        switch finalEvaluation.outcome {
+        case .pass: finalOutcomeStr = "success"
+        case .failInstitution: finalOutcomeStr = "failInstitution"
+        case .uncertain: finalOutcomeStr = "unsure"
+        case .connectionFailure: finalOutcomeStr = "connectionFailure"
+        case .timeout: finalOutcomeStr = "timeout"
+        }
+        let finalSnapshot = SessionHealthSnapshot(
+            sessionId: sessionId, host: ppsr_host, urlString: currentURL,
+            pageLoadTimeMs: Int(Date().timeIntervalSince(check.startedAt ?? Date()) * 1000),
+            outcome: finalOutcomeStr, wasTimeout: finalEvaluation.outcome == .timeout,
+            wasBlankPage: false, wasCrash: false, wasChallenge: false,
+            wasConnectionFailure: finalEvaluation.outcome == .connectionFailure,
+            fingerprintDetected: false, circuitBreakerOpen: false,
+            consecutiveFailuresOnHost: 0, activeSessions: activeSessions, timestamp: Date()
+        )
+        aiSessionHealth.recordSnapshot(finalSnapshot)
 
         switch finalEvaluation.outcome {
         case .failInstitution:
@@ -428,7 +565,7 @@ class PPSRAutomationEngine {
         let reason: String
     }
 
-    private func evaluatePPSRResponse(contentLower: String, pageContent: String) -> PPSREvaluation {
+    private func evaluatePPSRResponse(contentLower: String, pageContent: String, currentURL: String = "", urlChanged: Bool = false) -> PPSREvaluation {
         var failScore: Int = 0
         var passScore: Int = 0
         var failSignals: [String] = []
@@ -502,6 +639,22 @@ class PPSRAutomationEngine {
             if contentLower.contains(term) {
                 passScore += weight
                 passSignals.append("+\(weight) '\(term)'")
+            }
+        }
+
+        if urlChanged {
+            let urlLower = currentURL.lowercased()
+            if urlLower.contains("result") || urlLower.contains("certificate") || urlLower.contains("report") || urlLower.contains("confirmation") {
+                passScore += 20
+                passSignals.append("+20 'redirect to result page'")
+            }
+            if urlLower.contains("error") || urlLower.contains("declined") || urlLower.contains("fail") {
+                failScore += 15
+                failSignals.append("+15 'redirect to error page'")
+            }
+            if !urlLower.contains("error") && !urlLower.contains("declined") {
+                passScore += 5
+                passSignals.append("+5 'url changed (generic redirect)'")
             }
         }
 

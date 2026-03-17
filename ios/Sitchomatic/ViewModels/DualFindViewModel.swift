@@ -99,6 +99,12 @@ class DualFindViewModel {
 
         reloadAllSettings()
 
+        automationSettings.trueDetectionEnabled = true
+        automationSettings.trueDetectionPriority = true
+        if let data = try? JSONEncoder().encode(automationSettings) {
+            UserDefaults.standard.set(data, forKey: "automation_settings_v1")
+        }
+
         emails = parsed
         totalEmails = parsed.count
         currentEmailIndex = 0
@@ -116,6 +122,7 @@ class DualFindViewModel {
         logSettingsSummary()
         log("Starting Dual Find: \(totalEmails) emails × 3 passwords × 2 sites = \(totalEmails * 3 * 2) combinations")
         log("Session mode: \(sessionCount.label) — persistent sessions, field-clear pattern")
+        log("TRUE DETECTION enforced as default for both Joe and Ignition")
 
         isRunning = true
         DeviceProxyService.shared.notifyBatchStart()

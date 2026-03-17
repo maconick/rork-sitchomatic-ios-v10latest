@@ -876,7 +876,8 @@ class LoginViewModel {
         batchTask?.cancel()
         secondaryBatchTask?.cancel()
         isRunning = true
-        batchTotalCount = credsToTest.count
+        let doubledTotal = credsToTest.count * 2
+        batchTotalCount = doubledTotal
         batchCompletedCount = 0
         batchSuccessCount = 0
         batchFailCount = 0
@@ -889,19 +890,26 @@ class LoginViewModel {
         let doubleBatchURL = getNextTestURL()
         recoveryService.beginBatch(credentials: credsToTest, siteMode: "Double", targetURL: doubleBatchURL)
 
-        let concurrencyLimit = max(2, effectiveMaxConcurrency)
-        let halfConcurrency = concurrencyLimit / 2
-        let joeSlots = halfConcurrency
-        let ignSlots = concurrencyLimit - halfConcurrency
+        let doubledConcurrency = max(4, effectiveMaxConcurrency * 2)
+        let joeSlots = doubledConcurrency / 2
+        let ignSlots = doubledConcurrency - joeSlots
 
-        let midpoint = credsToTest.count / 2
-        let joeCreds = Array(credsToTest.prefix(midpoint))
-        let ignCreds = Array(credsToTest.suffix(from: midpoint))
+        log("Double Mode: ALL \(credsToTest.count) creds on BOTH sites (\(doubledTotal) total tests), Joe=\(joeSlots) slots, Ign=\(ignSlots) slots")
+        logger.log("DOUBLE MODE: \(credsToTest.count) creds × 2 sites = \(doubledTotal) tests, concurrency=\(doubledConcurrency)", category: .login, level: .info)
 
-        log("Double Mode: \(joeCreds.count) creds → Joe (\(joeSlots) slots), \(ignCreds.count) creds → Ignition (\(ignSlots) slots)")
+        if !automationSettings.trueDetectionEnabled || !automationSettings.trueDetectionPriority {
+            automationSettings.trueDetectionEnabled = true
+            automationSettings.trueDetectionPriority = true
+            persistAutomationSettings()
+            log("Dual mode: forced TRUE DETECTION as default for both sites")
+        }
 
         batchTask = Task {
             configureEngine()
+            engine.automationSettings.trueDetectionEnabled = true
+            engine.automationSettings.trueDetectionPriority = true
+            secondaryEngine.automationSettings.trueDetectionEnabled = true
+            secondaryEngine.automationSettings.trueDetectionPriority = true
 
             var batchWorking = 0
             var batchDead = 0
@@ -913,7 +921,7 @@ class LoginViewModel {
                 var joeIndex = 0
                 var ignIndex = 0
 
-                while (joeIndex < joeCreds.count || ignIndex < ignCreds.count) && !isStopping {
+                while (joeIndex < credsToTest.count || ignIndex < credsToTest.count) && !isStopping {
                     while isPaused && !isStopping {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
@@ -921,12 +929,12 @@ class LoginViewModel {
 
                     var launched = false
 
-                    if joeIndex < joeCreds.count && joeRunning < joeSlots {
-                        let cred = joeCreds[joeIndex]
+                    if joeIndex < credsToTest.count && joeRunning < joeSlots {
+                        let cred = credsToTest[joeIndex]
                         joeIndex += 1
                         joeRunning += 1
                         launched = true
-                        cred.status = .testing
+                        if cred.status != .testing { cred.status = .testing }
                         let attempt = LoginAttempt(credential: cred, sessionIndex: joeRunning)
                         self.attempts.insert(attempt, at: 0)
                         self.activeTestCount += 1
@@ -949,12 +957,12 @@ class LoginViewModel {
                         }
                     }
 
-                    if ignIndex < ignCreds.count && ignRunning < ignSlots {
-                        let cred = ignCreds[ignIndex]
+                    if ignIndex < credsToTest.count && ignRunning < ignSlots {
+                        let cred = credsToTest[ignIndex]
                         ignIndex += 1
                         ignRunning += 1
                         launched = true
-                        cred.status = .testing
+                        if cred.status != .testing { cred.status = .testing }
                         let attempt = LoginAttempt(credential: cred, sessionIndex: ignRunning)
                         self.attempts.insert(attempt, at: 0)
                         self.activeTestCount += 1
