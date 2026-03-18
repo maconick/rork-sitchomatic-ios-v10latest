@@ -6,6 +6,8 @@ class AIAnomalyForecastingService {
 
     private let logger = DebugLogger.shared
 
+    private let knowledgeGraph = AIKnowledgeGraphService.shared
+
     private var latencyWindows: [String: RollingWindow] = [:]
     private var errorWindows: [String: RollingWindow] = [:]
     private var requestCounters: [String: RequestCounter] = [:]
@@ -249,6 +251,8 @@ class AIAnomalyForecastingService {
 
         if action != .none {
             logger.log("AnomalyForecast: \(key) → \(action.rawValue) (latTrend=\(String(format: "%.2f", latencyTrend)) errTrend=\(String(format: "%.2f", errorTrend)) rl=\(nearRateLimit.map(String.init) ?? "n/a") correlated=\(correlatedFailure))", category: .network, level: action == .regionFailover ? .critical : .warning)
+
+            publishAnomalyToKnowledgeGraph(key: key, forecast: result)
         }
 
         return result
@@ -302,5 +306,42 @@ class AIAnomalyForecastingService {
         errorWindows.removeValue(forKey: key)
         requestCounters.removeValue(forKey: key)
         forecasts.removeValue(forKey: key)
+    }
+
+    private func publishAnomalyToKnowledgeGraph(key: String, forecast: AnomalyForecast) {
+        let severity: KnowledgeSeverity
+        switch forecast.recommendedAction {
+        case .regionFailover: severity = .critical
+        case .softBreak: severity = .high
+        case .reduceConcurrency, .throttleRequests: severity = .medium
+        case .rotateProxy: severity = .medium
+        case .none: severity = .low
+        }
+
+        var payload: [String: String] = [
+            "action": forecast.recommendedAction.rawValue,
+            "latencyTrend": String(format: "%.2f", forecast.latencyTrend),
+            "errorTrend": String(format: "%.2f", forecast.errorTrend),
+            "correlatedRegionFailure": "\(forecast.correlatedRegionFailure)",
+            "softBreakRecommended": "\(forecast.softBreakRecommended)",
+            "forecast": forecast.recommendedAction == .none ? "stable" : "degrading",
+        ]
+        if let rl = forecast.predictedRateLimitIn { payload["predictedRateLimitIn"] = "\(rl)" }
+        if let cr = forecast.concurrencyReduction { payload["concurrencyReduction"] = "\(cr)" }
+
+        let host = key.components(separatedBy: "|").first ?? key
+
+        let summary = "Anomaly on \(key): \(forecast.recommendedAction.rawValue) — latTrend \(String(format: "%.1f", forecast.latencyTrend)), errTrend \(String(format: "%.1f", forecast.errorTrend))"
+
+        knowledgeGraph.publishEvent(
+            source: "AIAnomalyForecasting",
+            host: host,
+            domain: .anomaly,
+            type: .anomalyAlert,
+            severity: severity,
+            confidence: 0.75,
+            payload: payload,
+            summary: summary
+        )
     }
 }
