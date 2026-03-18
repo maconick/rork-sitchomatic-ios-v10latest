@@ -84,12 +84,11 @@ class DeviceProxyService {
         healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation
         Task { @MainActor [weak self] in
             guard let self else { return }
-            do {
-                if self.ipRoutingMode == .appWideUnited {
-                    self.activateUnifiedMode()
-                } else {
-                    self.activatePerSessionMode()
-                }
+            self.cleanupStaleTunnelsOnLaunch()
+            if self.ipRoutingMode == .appWideUnited {
+                self.activateUnifiedMode()
+            } else {
+                self.activatePerSessionMode()
             }
         }
     }
@@ -230,20 +229,20 @@ class DeviceProxyService {
         let mode = proxyService.unifiedConnectionMode
 
         if mode != .wireguard {
-            if wireProxyBridge.isActive || localProxy.wireProxyMode || perSessionManager.wireProxyActive {
-                wireProxyBridge.stop()
-                localProxy.enableWireProxyMode(false)
-                perSessionManager.stopWireProxy()
-                logger.log("DeviceProxy: cleaned up WireProxy for mode change → \(mode.label)", category: .vpn, level: .info)
-            }
+            wireProxyBridge.stop()
+            localProxy.enableWireProxyMode(false)
+            perSessionManager.stopWireProxy()
+            logger.log("DeviceProxy: force-stopped all WireProxy/WireGuard for mode change → \(mode.label)", category: .vpn, level: .info)
         }
         if mode != .openvpn {
-            if ovpnBridge.isActive || localProxy.openVPNProxyMode || perSessionManager.openVPNActive {
-                ovpnBridge.stop()
-                localProxy.enableOpenVPNProxyMode(false)
-                perSessionManager.stopOpenVPN()
-                logger.log("DeviceProxy: cleaned up OpenVPN for mode change → \(mode.label)", category: .vpn, level: .info)
-            }
+            ovpnBridge.stop()
+            localProxy.enableOpenVPNProxyMode(false)
+            perSessionManager.stopOpenVPN()
+            logger.log("DeviceProxy: force-stopped all OpenVPN for mode change → \(mode.label)", category: .vpn, level: .info)
+        }
+        if mode == .direct || mode == .dns {
+            localProxy.stop()
+            logger.log("DeviceProxy: stopped local proxy — no tunnel/proxy needed for \(mode.label)", category: .network, level: .info)
         }
         isEnabled ? rotateNow(reason: "Connection Mode Changed") : activatePerSessionMode()
     }
@@ -338,6 +337,46 @@ class DeviceProxyService {
         logger.log("DeviceProxy: profile switched to \(profile.rawValue) — tunnel stopped, state reset, configs reloaded", category: .network, level: .success)
     }
 
+    private func cleanupStaleTunnelsOnLaunch() {
+        let mode = proxyService.unifiedConnectionMode
+        var didClean = false
+
+        if mode != .wireguard {
+            if wireProxyBridge.isActive || localProxy.wireProxyMode {
+                wireProxyBridge.stop()
+                localProxy.enableWireProxyMode(false)
+                didClean = true
+            }
+        }
+        if mode != .openvpn {
+            if ovpnBridge.isActive || localProxy.openVPNProxyMode {
+                ovpnBridge.stop()
+                localProxy.enableOpenVPNProxyMode(false)
+                didClean = true
+            }
+        }
+        if mode == .direct {
+            if localProxy.isRunning {
+                localProxy.stop()
+                didClean = true
+            }
+        }
+        if didClean {
+            logger.log("DeviceProxy: launch cleanup — killed stale tunnels/bridges for mode \(mode.label)", category: .vpn, level: .warning)
+        }
+    }
+
+    func forceStopAllTunnels() {
+        wireProxyBridge.stop()
+        ovpnBridge.stop()
+        localProxy.enableWireProxyMode(false)
+        localProxy.enableOpenVPNProxyMode(false)
+        perSessionManager.stopWireProxy()
+        perSessionManager.stopOpenVPN()
+        rotationManager.stopActiveTunnels()
+        logger.log("DeviceProxy: force-stopped ALL tunnels/proxies/bridges", category: .vpn, level: .info)
+    }
+
     // MARK: - Mode Activation
 
     private func activateUnifiedMode() {
@@ -373,17 +412,26 @@ class DeviceProxyService {
     private func activatePerSessionMode() {
         let mode = proxyService.unifiedConnectionMode
 
-        if mode != .wireguard && perSessionManager.wireProxyActive {
-            perSessionManager.stopWireProxy()
-            logger.log("DeviceProxy: stopping stale per-session WireProxy (mode now: \(mode.label))", category: .vpn, level: .info)
+        if mode != .wireguard {
+            if perSessionManager.wireProxyActive || perSessionManager.wireProxyStarting || wireProxyBridge.isActive {
+                wireProxyBridge.stop()
+                localProxy.enableWireProxyMode(false)
+                perSessionManager.stopWireProxy()
+                logger.log("DeviceProxy: stopping stale WireProxy/WireGuard (mode now: \(mode.label))", category: .vpn, level: .info)
+            }
         }
-        if mode != .openvpn && perSessionManager.openVPNActive {
-            perSessionManager.stopOpenVPN()
-            logger.log("DeviceProxy: stopping stale per-session OpenVPN (mode now: \(mode.label))", category: .vpn, level: .info)
+        if mode != .openvpn {
+            if perSessionManager.openVPNActive || perSessionManager.openVPNStarting || ovpnBridge.isActive {
+                ovpnBridge.stop()
+                localProxy.enableOpenVPNProxyMode(false)
+                perSessionManager.stopOpenVPN()
+                logger.log("DeviceProxy: stopping stale OpenVPN (mode now: \(mode.label))", category: .vpn, level: .info)
+            }
         }
 
         switch mode {
         case .direct:
+            localProxy.stop()
             logger.log("DeviceProxy: DIRECT mode — no proxy/tunnel, bypassing all network layers", category: .network, level: .info)
 
         case .wireguard:
