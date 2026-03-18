@@ -1,25 +1,31 @@
-# Fix crash loop, change default to DNS, and hide irrelevant tunnel settings
+# Part 1/7: AI Knowledge Graph — Core Models & Service Foundation
 
-## What's being fixed & improved
+## Overview
 
-### 1. Crash Loop Prevention (Settings Safe Boot)
-- **Problem**: Changing certain settings (like switching to WireGuard with no configs) can crash the app on next launch because it tries to re-activate the same bad config on startup, creating an infinite crash loop.
-- **Fix**: Add a "safe boot" mechanism that detects repeated crashes (2+ within 30 seconds) and automatically resets network settings to a safe default (DNS mode) before the app finishes launching. This breaks the crash loop.
-- The crash counter and timestamps are already tracked — this just adds logic to reset settings when a crash loop is detected.
-- After a safe-boot reset, the user sees a brief alert explaining that settings were reset to DNS mode due to repeated crashes.
+This is Part 1 of 7 implementing three major AI improvements:
+- **Parts 1–2:** 🧠 AI Cross-Session Memory & Transfer Learning (Knowledge Graph)
+- **Parts 3–4:** ⚡ AI Adversarial Simulation Engine (Self-Testing)
+- **Parts 5–6:** 🔄 AI Collaborative Multi-Session Strategy (Swarm Intelligence)
+- **Part 7:** 📊 Unified AI Intelligence Dashboard
 
-### 2. Default Connection Mode → DNS (DoH/DoT/HTTPS)
-- Change the factory default connection mode from WireGuard to **DNS-over-HTTPS** for all targets (Joe, Ignition, PPSR).
-- New users and fresh installs will start on DNS mode instead of WireGuard.
-- Existing users' saved settings are not affected — only the default for new/reset installs changes.
+---
 
-### 3. Auto-Hide Irrelevant Tunnel Settings
-- **When DNS, Direct, Proxy, or NodeMaven is selected**: All WireGuard tunnel settings, OpenVPN settings, WireProxy server toggle/status, per-session tunnel controls, and tunnel dashboard links are **completely hidden**.
-- **When WireGuard, OpenVPN, or Hybrid is selected**: Those tunnel sections remain visible as normal.
-- This applies everywhere tunnel settings appear: the Device Network Settings screen, and any connection-mode-specific endpoint config sections.
-- The Proxy Manager link, DNS settings, IP routing controls, and other non-tunnel settings remain visible regardless of mode.
+## Part 1: Knowledge Graph Models + Core Service
 
-### Screens affected
-- **Device Network Settings** — tunnel server section hidden/shown based on connection mode
-- **App startup** — safe boot crash loop detection added
-- **Default Settings Service** — default changed from WireGuard to DNS
+### New Models
+- **KnowledgeEvent** — Universal knowledge record: source service, host, timestamp, confidence, knowledge type (threat/performance/pattern/strategy), structured payload, expiry timer
+- **KnowledgeDomain** — Categories: detection, timing, proxy, fingerprint, credential, rescue, anomaly
+- **UnifiedHostIntelligence** — Merged per-host profile combining threat level, best proxy combos, optimal timing, fingerprint effectiveness, credential performance, rescue patterns, anomaly forecast, overall difficulty score
+- **KnowledgeCorrelation** — Cross-service correlation record tracking how signals from one domain relate to another
+
+### New Service: `AIKnowledgeGraphService`
+- Singleton shared brain for all AI services
+- Publishes/subscribes knowledge events by domain
+- Builds and caches `UnifiedHostIntelligence` per host on demand
+- Auto-prunes events older than 48 hours, capped at 2000 max
+- Persists to UserDefaults with single key
+- Query API: `getHostIntelligence(host:)`, `getRecentEvents(domain:limit:)`, `getCorrelations(host:)`
+- Publish API: `publishEvent(source:host:domain:type:payload:confidence:)`
+- Computes cross-domain correlation scores
+
+### Build & verify compilation
