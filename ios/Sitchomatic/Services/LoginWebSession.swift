@@ -509,14 +509,14 @@ class LoginWebSession: NSObject {
     }
 
     func clickShowMyResults() async -> (success: Bool, detail: String) {
-        let js = """
+        let findBtnJS = """
         (function() {
             var strategies = [
                 function() {
                     var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
                     for (var i = 0; i < btns.length; i++) {
                         var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                        if (text.indexOf('show my results') !== -1) { btns[i].click(); return 'CLICKED_TEXT'; }
+                        if (text.indexOf('show my results') !== -1) return { el: btns[i], tag: 'TEXT' };
                     }
                     return null;
                 },
@@ -524,36 +524,53 @@ class LoginWebSession: NSObject {
                     var btns = document.querySelectorAll('button, input[type="submit"]');
                     for (var i = 0; i < btns.length; i++) {
                         var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                        if (text.indexOf('show') !== -1 && text.indexOf('result') !== -1) { btns[i].click(); return 'CLICKED_PARTIAL'; }
+                        if (text.indexOf('show') !== -1 && text.indexOf('result') !== -1) return { el: btns[i], tag: 'PARTIAL' };
                     }
                     return null;
                 },
                 function() {
                     var btn = document.getElementById('submit');
-                    if (btn) { btn.click(); return 'CLICKED_ID'; }
+                    if (btn) return { el: btn, tag: 'ID' };
                     return null;
                 },
                 function() {
                     var btns = document.querySelectorAll('button[type="submit"], input[type="submit"]');
-                    if (btns.length > 0) { btns[btns.length - 1].click(); return 'CLICKED_SUBMIT'; }
-                    return null;
-                },
-                function() {
-                    var forms = document.querySelectorAll('form');
-                    if (forms.length > 0) { forms[0].submit(); return 'FORM_SUBMITTED'; }
+                    if (btns.length > 0) return { el: btns[btns.length - 1], tag: 'SUBMIT' };
                     return null;
                 }
             ];
             for (var i = 0; i < strategies.length; i++) {
                 var result = strategies[i]();
-                if (result) return result;
+                if (result) {
+                    var btn = result.el;
+                    btn.scrollIntoView({behavior:'instant',block:'center'});
+                    var r = btn.getBoundingClientRect();
+                    function tripleClick(el, rect) {
+                        for (var c = 0; c < 3; c++) {
+                            var cx = rect.left + rect.width * (0.3 + Math.random() * 0.4);
+                            var cy = rect.top + rect.height * (0.3 + Math.random() * 0.4);
+                            el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                            el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
+                            el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                            el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                            el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,detail:c+1}));
+                        }
+                        el.click();
+                        var form = el.closest('form');
+                        if (form) { try { form.requestSubmit(); } catch(e) { try { form.submit(); } catch(e2) {} } }
+                    }
+                    tripleClick(btn, r);
+                    return 'TRIPLE_CLICKED_' + result.tag;
+                }
             }
+            var forms = document.querySelectorAll('form');
+            if (forms.length > 0) { forms[0].submit(); return 'FORM_SUBMITTED'; }
             return 'NOT_FOUND';
         })();
         """
-        let result = await executeJS(js)
+        let result = await executeJS(findBtnJS)
         if let result, result != "NOT_FOUND" {
-            return (true, "Submit clicked via strategy: \(result)")
+            return (true, "Submit triple-clicked via strategy: \(result)")
         }
         return (false, "Submit button not found")
     }
