@@ -82,10 +82,15 @@ class DeviceProxyService {
         healthMonitor.autoFailoverEnabled = autoFailoverEnabled
         healthMonitor.checkIntervalSeconds = healthCheckInterval
         healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation
-        if ipRoutingMode == .appWideUnited {
-            activateUnifiedMode()
-        } else {
-            activatePerSessionMode()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if self.ipRoutingMode == .appWideUnited {
+                    self.activateUnifiedMode()
+                } else {
+                    self.activatePerSessionMode()
+                }
+            }
         }
     }
 

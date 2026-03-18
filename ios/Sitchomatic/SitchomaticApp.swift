@@ -14,6 +14,54 @@ struct SitchomaticApp: App {
     @State private var pendingCrashReport: CrashReport?
     @State private var showSafeBootAlert: Bool = false
 
+    init() {
+        Self.performEarlySafeBootCheck()
+    }
+
+    private static func performEarlySafeBootCheck() {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let tsFile = docs.appendingPathComponent("launch_timestamps.json")
+
+        var timestamps: [TimeInterval] = []
+        if let data = try? Data(contentsOf: tsFile),
+           let arr = try? JSONSerialization.jsonObject(with: data) as? [TimeInterval] {
+            timestamps = arr
+        }
+
+        let now = Date().timeIntervalSince1970
+        let recentLaunches = timestamps.filter { now - $0 < 60 }
+
+        if recentLaunches.count >= 2 {
+            let proxySettings: [String: Any] = [
+                "ipRoutingMode": "App-Wide United IP",
+                "interval": "Every Batch",
+                "rotateOnBatch": false,
+                "rotateOnFingerprint": true,
+                "localProxy": false,
+                "autoFailover": true,
+                "healthCheckInterval": 30.0,
+                "maxFailures": 3,
+            ]
+            UserDefaults.standard.set(proxySettings, forKey: "device_proxy_settings_v2")
+            UserDefaults.standard.set("DNS", forKey: "unified_connection_mode_v1")
+            let connectionModes: [String: String] = [
+                "joe": "DNS",
+                "ignition": "DNS",
+                "ppsr": "DNS",
+            ]
+            UserDefaults.standard.set(connectionModes, forKey: "connection_modes_v1")
+            UserDefaults.standard.synchronize()
+            try? FileManager.default.removeItem(at: tsFile)
+            return
+        }
+
+        timestamps.append(now)
+        timestamps = timestamps.filter { now - $0 < 120 }
+        if let data = try? JSONSerialization.data(withJSONObject: timestamps) {
+            try? data.write(to: tsFile, options: .atomic)
+        }
+    }
+
     private var activeMode: ActiveAppMode? {
         ActiveAppMode(rawValue: activeModeRaw)
     }

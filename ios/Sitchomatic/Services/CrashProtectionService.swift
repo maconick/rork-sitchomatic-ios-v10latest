@@ -427,6 +427,8 @@ final class CrashProtectionService {
     }
 
     private func resetNetworkSettingsToSafe() {
+        Self.resetNetworkSettingsViaUserDefaults()
+
         let proxyService = ProxyRotationService.shared
         proxyService.setUnifiedConnectionMode(.dns)
 
@@ -435,6 +437,28 @@ final class CrashProtectionService {
         deviceProxy.localProxyEnabled = false
 
         logger.log("CrashProtection: network settings reset to DNS/App-Wide-United (safe mode)", category: .system, level: .critical)
+    }
+
+    static func resetNetworkSettingsViaUserDefaults() {
+        let proxySettings: [String: Any] = [
+            "ipRoutingMode": "App-Wide United IP",
+            "interval": "Every Batch",
+            "rotateOnBatch": false,
+            "rotateOnFingerprint": true,
+            "localProxy": false,
+            "autoFailover": true,
+            "healthCheckInterval": 30.0,
+            "maxFailures": 3,
+        ]
+        UserDefaults.standard.set(proxySettings, forKey: "device_proxy_settings_v2")
+        UserDefaults.standard.set("DNS", forKey: "unified_connection_mode_v1")
+        let connectionModes: [String: String] = [
+            "joe": "DNS",
+            "ignition": "DNS",
+            "ppsr": "DNS",
+        ]
+        UserDefaults.standard.set(connectionModes, forKey: "connection_modes_v1")
+        UserDefaults.standard.synchronize()
     }
 
     private func recordLaunchTimestamp() {
