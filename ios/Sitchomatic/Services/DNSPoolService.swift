@@ -216,9 +216,8 @@ class DNSPoolService {
 
         var servers = activeServers
         if servers.isEmpty {
-            logger.log("DNSPool: no active servers — reset and retry", category: .dns, level: .error)
-            resetAutoDisabled()
-            servers = activeServers
+            logger.log("DNSPool: no active servers — falling back to all enabled servers", category: .dns, level: .error)
+            servers = managedServers.filter(\.isEnabled)
             guard !servers.isEmpty else { return nil }
         }
 
@@ -536,10 +535,6 @@ class DNSPoolService {
         managedServers[idx].lastTestLatencyMs = latencyMs
         managedServers[idx].lastTestedAt = Date()
         managedServers[idx].lifetimeSuccesses += 1
-        if managedServers[idx].autoDisabled {
-            managedServers[idx].autoDisabled = false
-            logger.log("DNSPool: re-enabled \(managedServers[idx].displayLabel) after successful resolve", category: .dns, level: .success)
-        }
     }
 
     private func recordFailure(serverId: UUID) {
@@ -550,7 +545,8 @@ class DNSPoolService {
 
         if autoDisableEnabled && managedServers[idx].consecutiveFailures >= autoDisableThreshold && !managedServers[idx].autoDisabled {
             managedServers[idx].autoDisabled = true
-            logger.log("DNSPool: auto-disabled \(managedServers[idx].displayLabel) after \(autoDisableThreshold) consecutive failures", category: .dns, level: .warning)
+            persistManagedServers()
+            logger.log("DNSPool: auto-disabled \(managedServers[idx].displayLabel) after \(autoDisableThreshold) consecutive failures — saved", category: .dns, level: .warning)
         }
     }
 
@@ -580,7 +576,8 @@ class DNSPoolService {
     func testAllAndAutoDisable(hostname: String = "cloudflare.com") async -> (results: [(server: ManagedDNSServer, passed: Bool, latencyMs: Int?)], disabledCount: Int) {
         var results: [(server: ManagedDNSServer, passed: Bool, latencyMs: Int?)] = []
         var disabledCount = 0
-        for server in managedServers {
+        let serversToTest = managedServers.filter { $0.isEnabled && !$0.autoDisabled }
+        for server in serversToTest {
             let answer = await testServer(server, hostname: hostname)
             let passed = answer != nil
             results.append((server: server, passed: passed, latencyMs: answer?.latencyMs))
@@ -592,8 +589,11 @@ class DNSPoolService {
                 }
             }
         }
+        for server in managedServers.filter(\.autoDisabled) {
+            results.append((server: server, passed: false, latencyMs: nil))
+        }
         persistManagedServers()
-        logger.log("DNSPool: Test All complete — \(results.filter(\.passed).count) passed, \(disabledCount) auto-disabled", category: .dns, level: disabledCount == 0 ? .success : .warning)
+        logger.log("DNSPool: Test All complete — \(results.filter(\.passed).count) passed, \(disabledCount) newly auto-disabled, \(managedServers.filter(\.autoDisabled).count) total disabled", category: .dns, level: disabledCount == 0 ? .success : .warning)
         return (results, disabledCount)
     }
 
@@ -602,6 +602,7 @@ class DNSPoolService {
             managedServers[i].autoDisabled = false
             managedServers[i].consecutiveFailures = 0
         }
+        persistManagedServers()
         logger.log("DNSPool: reset all auto-disabled servers", category: .dns, level: .info)
     }
 
@@ -723,6 +724,10 @@ class DNSPoolService {
                 "region": server.region.rawValue,
                 "enabled": server.isEnabled ? "1" : "0",
                 "default": server.isDefault ? "1" : "0",
+                "autoDisabled": server.autoDisabled ? "1" : "0",
+                "consecutiveFailures": String(server.consecutiveFailures),
+                "lifetimeSuccesses": String(server.lifetimeSuccesses),
+                "lifetimeFailures": String(server.lifetimeFailures),
             ]
         }
         UserDefaults.standard.set(data, forKey: persistKey)
@@ -731,7 +736,7 @@ class DNSPoolService {
     private func loadManagedServers() {
         if let saved = UserDefaults.standard.array(forKey: persistKey) as? [[String: String]], !saved.isEmpty {
             managedServers = saved.map { dict in
-                ManagedDNSServer(
+                var server = ManagedDNSServer(
                     name: dict["name"] ?? "Unknown",
                     protocolType: DNSProtocolType(rawValue: dict["protocol"] ?? "DoH") ?? .doh,
                     endpoint: dict["endpoint"] ?? "",
@@ -740,6 +745,11 @@ class DNSPoolService {
                     isEnabled: dict["enabled"] == "1",
                     isDefault: dict["default"] == "1"
                 )
+                server.autoDisabled = dict["autoDisabled"] == "1"
+                server.consecutiveFailures = Int(dict["consecutiveFailures"] ?? "0") ?? 0
+                server.lifetimeSuccesses = Int(dict["lifetimeSuccesses"] ?? "0") ?? 0
+                server.lifetimeFailures = Int(dict["lifetimeFailures"] ?? "0") ?? 0
+                return server
             }
         } else {
             managedServers = Self.defaultServers.map {
