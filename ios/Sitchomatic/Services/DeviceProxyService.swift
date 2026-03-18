@@ -21,9 +21,11 @@ class DeviceProxyService {
     private(set) var rotationManager: ProxyRotationManager!
 
     private let settingsKey = "device_proxy_settings_v2"
+    private var isLoadingSettings: Bool = true
 
     var localProxyEnabled: Bool = true {
         didSet {
+            guard !isLoadingSettings else { return }
             persistSettings()
             if isEnabled {
                 localProxyEnabled ? localProxy.start() : localProxy.stop()
@@ -34,6 +36,7 @@ class DeviceProxyService {
 
     var ipRoutingMode: IPRoutingMode = .appWideUnited {
         didSet {
+            guard !isLoadingSettings else { return }
             persistSettings()
             if ipRoutingMode == .appWideUnited {
                 perSessionManager.stopWireProxy()
@@ -47,27 +50,27 @@ class DeviceProxyService {
     }
 
     var rotationInterval: RotationInterval = .everyBatch {
-        didSet { persistSettings(); restartRotationTimer() }
+        didSet { guard !isLoadingSettings else { return }; persistSettings(); restartRotationTimer() }
     }
 
     var rotateOnBatchStart: Bool = false {
-        didSet { persistSettings() }
+        didSet { guard !isLoadingSettings else { return }; persistSettings() }
     }
 
     var rotateOnFingerprintDetection: Bool = true {
-        didSet { persistSettings() }
+        didSet { guard !isLoadingSettings else { return }; persistSettings() }
     }
 
     var autoFailoverEnabled: Bool = true {
-        didSet { persistSettings(); healthMonitor.autoFailoverEnabled = autoFailoverEnabled }
+        didSet { guard !isLoadingSettings else { return }; persistSettings(); healthMonitor.autoFailoverEnabled = autoFailoverEnabled }
     }
 
     var healthCheckInterval: TimeInterval = 30 {
-        didSet { persistSettings(); healthMonitor.checkIntervalSeconds = healthCheckInterval }
+        didSet { guard !isLoadingSettings else { return }; persistSettings(); healthMonitor.checkIntervalSeconds = healthCheckInterval }
     }
 
     var maxFailuresBeforeRotation: Int = 3 {
-        didSet { persistSettings(); healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation }
+        didSet { guard !isLoadingSettings else { return }; persistSettings(); healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation }
     }
 
     init() {
@@ -75,6 +78,7 @@ class DeviceProxyService {
         perSessionManager = PerSessionTunnelManager(configResolver: resolver)
         rotationManager = ProxyRotationManager(configResolver: resolver)
         loadSettings()
+        isLoadingSettings = false
         healthMonitor.autoFailoverEnabled = autoFailoverEnabled
         healthMonitor.checkIntervalSeconds = healthCheckInterval
         healthMonitor.maxConsecutiveFailures = maxFailuresBeforeRotation

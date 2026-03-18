@@ -431,10 +431,10 @@ final class CrashProtectionService {
         proxyService.setUnifiedConnectionMode(.dns)
 
         let deviceProxy = DeviceProxyService.shared
-        deviceProxy.ipRoutingMode = .separatePerSession
+        deviceProxy.ipRoutingMode = .appWideUnited
         deviceProxy.localProxyEnabled = false
 
-        logger.log("CrashProtection: network settings reset to DNS/Separate-Per-Session (safe mode)", category: .system, level: .critical)
+        logger.log("CrashProtection: network settings reset to DNS/App-Wide-United (safe mode)", category: .system, level: .critical)
     }
 
     private func recordLaunchTimestamp() {
