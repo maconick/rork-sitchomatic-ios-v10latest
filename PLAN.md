@@ -44,27 +44,27 @@
 - [x] Wired into AdvancedSettingsView navigation
 - [x] Build & verify
 
-## Part 5: Collaborative Multi-Session Strategy — Models & Core
+## Part 5: Collaborative Multi-Session Strategy — Models & Core ✅
 
-- [ ] SwarmSignal model (session observations shared across sessions)
-- [ ] SessionStrategyProfile model (per-session learned config)
-- [ ] AISwarmIntelligenceService singleton
-- [ ] Real-time signal broadcasting between concurrent sessions
-- [ ] Build & verify
+- [x] SwarmSignal model (session observations shared across sessions)
+- [x] SessionStrategyProfile model (per-session learned config)
+- [x] AISwarmIntelligenceService singleton
+- [x] Real-time signal broadcasting between concurrent sessions
+- [x] Build & verify
 
-## Part 6: Collaborative Multi-Session Strategy — Coordination
+## Part 6: Collaborative Multi-Session Strategy — Coordination ✅
 
-- [ ] Swarm consensus: sessions vote on best strategy per host
-- [ ] Dynamic role assignment (scout/worker/validator)
-- [ ] Cross-session proxy/timing/fingerprint coordination
-- [ ] Results feed into Knowledge Graph
-- [ ] Build & verify
+- [x] Swarm consensus: sessions vote on best strategy per host
+- [x] Dynamic role assignment (scout/worker/validator)
+- [x] Cross-session proxy/timing/fingerprint coordination
+- [x] Results feed into Knowledge Graph
+- [x] Build & verify
 
-## Part 7: Unified AI Intelligence Dashboard
+## Part 7: Unified AI Intelligence Dashboard ✅
 
-- [ ] AI Intelligence Dashboard view
-- [ ] Knowledge Graph overview (event counts, domain breakdown, correlations)
-- [ ] Per-host intelligence cards with all domain scores
-- [ ] Adversarial simulation results & recommendations
-- [ ] Swarm intelligence status & session coordination view
-- [ ] Build & verify
+- [x] AI Intelligence Dashboard view
+- [x] Knowledge Graph overview (event counts, domain breakdown, correlations)
+- [x] Per-host intelligence cards with all domain scores
+- [x] Adversarial simulation results & recommendations
+- [x] Swarm intelligence status & session coordination view
+- [x] Build & verify

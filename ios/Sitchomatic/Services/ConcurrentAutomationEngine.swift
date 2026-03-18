@@ -23,6 +23,7 @@ class ConcurrentAutomationEngine {
     private let batchPreOptimizer = AIPredictiveBatchPreOptimizer.shared
     private let credentialTriage = AICredentialTriageService.shared
     private let adversarialSim = AIAdversarialSimulationEngine.shared
+    private let swarmIntelligence = AISwarmIntelligenceService.shared
 
     private(set) var isRunning: Bool = false
     private var cancelFlag: Bool = false
@@ -244,6 +245,10 @@ class ConcurrentAutomationEngine {
 
         await runPreBatchAdversarialSim(host: healthyURLs.first?.host ?? urls.first?.host ?? "unknown", batchId: batchId)
 
+        let swarmHost = healthyURLs.first?.host ?? urls.first?.host ?? "unknown"
+        let swarmProfile = swarmIntelligence.registerSession(sessionId: batchId, host: swarmHost)
+        _ = swarmProfile
+
         var allResults: [(String, LoginOutcome)] = []
         var carryOverIndices: [Int] = []
         let batchSize = effectiveMax
@@ -288,6 +293,12 @@ class ConcurrentAutomationEngine {
                 }
                 state.consecutiveConnectionFailures = 0
                 concurrencyGovernor.feedOutcome(success: success)
+                swarmIntelligence.recordSessionOutcome(sessionId: batchId, success: success, latencyMs: latency)
+                if success {
+                    swarmIntelligence.broadcastSignal(sessionId: batchId, host: swarmHost, type: .successPattern, payload: ["username": username, "latencyMs": "\(latency)"], confidence: 0.8)
+                } else if outcome == .redBannerError || outcome == .smsDetected {
+                    swarmIntelligence.broadcastSignal(sessionId: batchId, host: swarmHost, type: .rateLimitHit, priority: .high, payload: ["outcome": "\(outcome)"], confidence: 0.9)
+                }
                 onProgress(state.processed, attempts.count, outcome)
             }
 
@@ -334,6 +345,7 @@ class ConcurrentAutomationEngine {
 
             trackRateLimitSignals(batchResults: batchResults, state: &state)
             recordAnomalyMetrics(batchResults: batchResults, proxyTarget: proxyTarget, state: state)
+            swarmIntelligence.runCoordinationCycle(host: swarmHost)
             await applyLiveSpeedAdaptation(batchResults: batchResults)
             await applyAnomalyForecastActions(healthyURLs: healthyURLs, proxyTarget: proxyTarget, maxConcurrency: maxConcurrency)
 
@@ -368,6 +380,7 @@ class ConcurrentAutomationEngine {
             )
         }
 
+        swarmIntelligence.unregisterSession(sessionId: batchId)
         logger.endSession(batchId, category: .login, message: "ConcurrentEngine: login batch complete — \(state.successCount) success, \(state.failureCount) fail, avgLatency=\(avgLatency)ms | network=\(networkSummary)")
 
         isRunning = false

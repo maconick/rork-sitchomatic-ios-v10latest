@@ -62,6 +62,17 @@ struct AdvancedSettingsView: View {
                 }
 
                 NavigationLink {
+                    AIIntelligenceDashboardView()
+                } label: {
+                    settingsRow(
+                        icon: "brain.head.profile.fill",
+                        title: "AI Intelligence Dashboard",
+                        subtitle: "Knowledge graph, swarm & simulation",
+                        color: .purple
+                    )
+                }
+
+                NavigationLink {
                     AdversarialSimulationView()
                 } label: {
                     settingsRow(
