@@ -49,6 +49,20 @@ class PPSRAutomationViewModel {
         return Double(batchCompletedCount) / Double(batchTotalCount)
     }
     var testTimeout: TimeInterval = 90
+    var activeGateway: TestGateway = {
+        if let raw = UserDefaults.standard.string(forKey: "ppsr_active_gateway"),
+           let gw = TestGateway(rawValue: raw) { return gw }
+        return .ppsr
+    }() {
+        didSet { UserDefaults.standard.set(activeGateway.rawValue, forKey: "ppsr_active_gateway") }
+    }
+    var chargeAmountTier: ChargeAmountTier = {
+        if let raw = UserDefaults.standard.string(forKey: "ppsr_charge_tier"),
+           let tier = ChargeAmountTier(rawValue: raw) { return tier }
+        return .low
+    }() {
+        didSet { UserDefaults.standard.set(chargeAmountTier.rawValue, forKey: "ppsr_charge_tier") }
+    }
     var cardSortOption: CardSortOption = {
         if let raw = UserDefaults.standard.string(forKey: "ppsr_card_sort_option"),
            let opt = CardSortOption(rawValue: raw) { return opt }
@@ -97,6 +111,7 @@ class PPSRAutomationViewModel {
     private var batchStartTime: Date?
 
     private let engine = PPSRAutomationEngine()
+    private let bpointEngine = BPointAutomationEngine()
     private let persistence = PPSRPersistenceService.shared
     private let notifications = PPSRNotificationService.shared
     private let emailRotation = PPSREmailRotationService.shared
@@ -141,6 +156,7 @@ class PPSRAutomationViewModel {
         engine.onBlankScreenshot = { [weak self] in
             self?.log("Blank screenshot detected — card requeued for auto-retry", level: .warning)
         }
+        configureBPointEngine()
         notifications.requestPermission()
         loadPersistedData()
         batchPresets = presetService.loadPresets()
@@ -149,6 +165,25 @@ class PPSRAutomationViewModel {
             self?.handleScheduledTest(schedule)
         }
         scheduler.startMonitoring()
+    }
+
+    private func configureBPointEngine() {
+        bpointEngine.onScreenshot = { [weak self] screenshot in
+            guard let self else { return }
+            self.addScreenshot(screenshot)
+        }
+        bpointEngine.onConnectionFailure = { [weak self] detail in
+            self?.notifications.sendConnectionFailure(detail: detail)
+        }
+        bpointEngine.onUnusualFailure = { [weak self] detail in
+            guard let self else { return }
+            self.consecutiveUnusualFailures += 1
+            NoticesService.shared.addNotice(message: detail, source: .ppsr, autoRetried: self.autoRetryEnabled)
+            self.log("BPoint unusual failure: \(detail)", level: .warning)
+        }
+        bpointEngine.onLog = { [weak self] message, level in
+            self?.log(message, level: level)
+        }
     }
 
     private func loadPersistedData() {
@@ -678,6 +713,15 @@ class PPSRAutomationViewModel {
             return
         }
 
+        switch activeGateway {
+        case .ppsr:
+            testSingleCardViaPPSR(card)
+        case .bpoint:
+            testSingleCardViaBPoint(card)
+        }
+    }
+
+    private func testSingleCardViaPPSR(_ card: PPSRCard) {
         let vin = PPSRVINGenerator.generate()
         let email = resolveEmail()
         card.status = .testing
@@ -708,6 +752,44 @@ class PPSRAutomationViewModel {
             if activeTestCount == 0 { isRunning = false }
             persistCards()
         }
+    }
+
+    private func testSingleCardViaBPoint(_ card: PPSRCard) {
+        let amount = chargeAmountTier.randomizedAmount()
+        card.status = .testing
+
+        let check = PPSRCheck(vin: "BPOINT", email: "n/a", card: card, sessionIndex: activeTestCount + 1)
+        checks.insert(check, at: 0)
+
+        Task {
+            configureBPointEngineSettings()
+
+            let preCheck = await bpointEngine.runPreTestNetworkCheck()
+            if !preCheck.passed {
+                log("BPoint pre-test failed: \(preCheck.detail)", level: .error)
+                card.status = .untested
+                check.status = .failed
+                check.errorMessage = preCheck.detail
+                check.completedAt = Date()
+                persistCards()
+                return
+            }
+            log("BPoint pre-test passed — charging $\(String(format: "%.2f", amount))", level: .success)
+
+            isRunning = true
+            activeTestCount += 1
+            let outcome = await bpointEngine.runCheck(check, chargeAmount: amount, timeout: testTimeout)
+            activeTestCount -= 1
+            handleOutcome(outcome, card: card, check: check, vin: "BPOINT_$\(String(format: "%.2f", amount))")
+            if activeTestCount == 0 { isRunning = false }
+            persistCards()
+        }
+    }
+
+    private func configureBPointEngineSettings() {
+        bpointEngine.debugMode = debugMode
+        bpointEngine.stealthEnabled = stealthEnabled
+        bpointEngine.screenshotCropRect = screenshotCropRect
     }
 
     private func configureEngine() {
@@ -750,6 +832,13 @@ class PPSRAutomationViewModel {
     }
 
     func testAllUntested() {
+        switch activeGateway {
+        case .ppsr: testAllUntestedViaPPSR()
+        case .bpoint: testAllUntestedViaBPoint()
+        }
+    }
+
+    private func testAllUntestedViaPPSR() {
         let cardsToTest = untestedCards
         guard !cardsToTest.isEmpty else {
             log("No untested cards in queue", level: .warning)
@@ -763,7 +852,7 @@ class PPSRAutomationViewModel {
         batchTotalCount = cardsToTest.count
         batchCompletedCount = 0
         autoRetryBackoffCounts.removeAll()
-        log("Starting batch test: \(cardsToTest.count) cards, max \(maxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
+        log("Starting PPSR batch: \(cardsToTest.count) cards, max \(maxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
         logger.log("PPSR BATCH START: \(cardsToTest.count) cards, concurrency=\(maxConcurrency), stealth=\(stealthEnabled)", category: .ppsr, level: .info, metadata: ["count": "\(cardsToTest.count)"])
         isRunning = true
         startHeartbeatMonitor()
@@ -810,6 +899,84 @@ class PPSRAutomationViewModel {
                             self.activeTestCount -= 1
                             self.batchCompletedCount += 1
                             self.handleOutcome(outcome, card: card, check: check, vin: vin)
+
+                            switch outcome {
+                            case .pass: batchWorking += 1
+                            case .failInstitution: batchDead += 1
+                            case .uncertain, .timeout, .connectionFailure: batchRequeued += 1
+                            }
+
+                            self.persistCards()
+                        }
+                    }
+                }
+
+                await group.waitForAll()
+            }
+
+            finalizePPSRBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
+        }
+    }
+
+    private func testAllUntestedViaBPoint() {
+        let cardsToTest = untestedCards
+        guard !cardsToTest.isEmpty else {
+            log("No untested cards in queue", level: .warning)
+            return
+        }
+
+        batchTask?.cancel()
+        isPaused = false
+        isStopping = false
+        batchStartTime = Date()
+        batchTotalCount = cardsToTest.count
+        batchCompletedCount = 0
+        autoRetryBackoffCounts.removeAll()
+        let tierDisplay = chargeAmountTier.displayRange
+        log("Starting BPoint batch: \(cardsToTest.count) cards, \(tierDisplay) charge, max \(maxConcurrency) concurrent")
+        logger.log("BPOINT BATCH START: \(cardsToTest.count) cards, tier=\(chargeAmountTier.rawValue), concurrency=\(maxConcurrency)", category: .ppsr, level: .info, metadata: ["count": "\(cardsToTest.count)", "tier": chargeAmountTier.rawValue])
+        isRunning = true
+        startHeartbeatMonitor()
+        DeviceProxyService.shared.notifyBatchStart()
+        backgroundService.beginExtendedBackgroundExecution(reason: "BPoint batch test")
+        persistence.saveTestQueue(cardIds: cardsToTest.map(\.id))
+
+        var batchWorking = 0
+        var batchDead = 0
+        var batchRequeued = 0
+
+        batchTask = Task {
+            configureBPointEngineSettings()
+            await withTaskGroup(of: Void.self) { group in
+                var running = 0
+
+                for card in cardsToTest {
+                    if isStopping { break }
+                    while isPaused && !isStopping {
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                    if isStopping { break }
+                    if running >= maxConcurrency {
+                        await group.next()
+                        running -= 1
+                    }
+
+                    running += 1
+                    let amount = chargeAmountTier.randomizedAmount()
+                    card.status = .testing
+                    let sessionIdx = running
+
+                    let check = PPSRCheck(vin: "BPOINT", email: "n/a", card: card, sessionIndex: sessionIdx)
+                    checks.insert(check, at: 0)
+                    activeTestCount += 1
+
+                    let capturedAmount = amount
+                    group.addTask { [bpointEngine, testTimeout] in
+                        let outcome = await bpointEngine.runCheck(check, chargeAmount: capturedAmount, timeout: testTimeout)
+                        await MainActor.run {
+                            self.activeTestCount -= 1
+                            self.batchCompletedCount += 1
+                            self.handleOutcome(outcome, card: card, check: check, vin: "BPOINT_$\(String(format: "%.2f", capturedAmount))")
 
                             switch outcome {
                             case .pass: batchWorking += 1
@@ -888,18 +1055,25 @@ class PPSRAutomationViewModel {
         isStopping = false
         batchTotalCount = cardsToTest.count
         batchCompletedCount = 0
-        log("Starting selected test: \(cardsToTest.count) cards, max \(maxConcurrency) concurrent")
+        let gatewayLabel = activeGateway.displayName
+        log("Starting \(gatewayLabel) selected test: \(cardsToTest.count) cards, max \(maxConcurrency) concurrent")
         isRunning = true
         startHeartbeatMonitor()
-        backgroundService.beginExtendedBackgroundExecution(reason: "PPSR selected card test")
+        backgroundService.beginExtendedBackgroundExecution(reason: "\(gatewayLabel) selected card test")
         persistence.saveTestQueue(cardIds: cardsToTest.map(\.id))
 
         var batchWorking = 0
         var batchDead = 0
         var batchRequeued = 0
+        let gateway = activeGateway
+        let tier = chargeAmountTier
 
         batchTask = Task {
-            configureEngine()
+            if gateway == .bpoint {
+                configureBPointEngineSettings()
+            } else {
+                configureEngine()
+            }
             await withTaskGroup(of: Void.self) { group in
                 var running = 0
 
@@ -915,27 +1089,50 @@ class PPSRAutomationViewModel {
                     }
 
                     running += 1
-                    let vin = PPSRVINGenerator.generate()
-                    let email = resolveEmail()
                     card.status = .testing
                     let sessionIdx = running
 
-                    let check = PPSRCheck(vin: vin, email: email, card: card, sessionIndex: sessionIdx)
-                    checks.insert(check, at: 0)
-                    activeTestCount += 1
+                    if gateway == .bpoint {
+                        let amount = tier.randomizedAmount()
+                        let check = PPSRCheck(vin: "BPOINT", email: "n/a", card: card, sessionIndex: sessionIdx)
+                        checks.insert(check, at: 0)
+                        activeTestCount += 1
 
-                    group.addTask { [engine, testTimeout] in
-                        let outcome = await engine.runCheck(check, timeout: testTimeout)
-                        await MainActor.run {
-                            self.activeTestCount -= 1
-                            self.batchCompletedCount += 1
-                            self.handleOutcome(outcome, card: card, check: check, vin: vin)
-                            switch outcome {
-                            case .pass: batchWorking += 1
-                            case .failInstitution: batchDead += 1
-                            case .uncertain, .timeout, .connectionFailure: batchRequeued += 1
+                        let capturedAmount = amount
+                        group.addTask { [bpointEngine, testTimeout] in
+                            let outcome = await bpointEngine.runCheck(check, chargeAmount: capturedAmount, timeout: testTimeout)
+                            await MainActor.run {
+                                self.activeTestCount -= 1
+                                self.batchCompletedCount += 1
+                                self.handleOutcome(outcome, card: card, check: check, vin: "BPOINT_$\(String(format: "%.2f", capturedAmount))")
+                                switch outcome {
+                                case .pass: batchWorking += 1
+                                case .failInstitution: batchDead += 1
+                                case .uncertain, .timeout, .connectionFailure: batchRequeued += 1
+                                }
+                                self.persistCards()
                             }
-                            self.persistCards()
+                        }
+                    } else {
+                        let vin = PPSRVINGenerator.generate()
+                        let email = resolveEmail()
+                        let check = PPSRCheck(vin: vin, email: email, card: card, sessionIndex: sessionIdx)
+                        checks.insert(check, at: 0)
+                        activeTestCount += 1
+
+                        group.addTask { [engine, testTimeout] in
+                            let outcome = await engine.runCheck(check, timeout: testTimeout)
+                            await MainActor.run {
+                                self.activeTestCount -= 1
+                                self.batchCompletedCount += 1
+                                self.handleOutcome(outcome, card: card, check: check, vin: vin)
+                                switch outcome {
+                                case .pass: batchWorking += 1
+                                case .failInstitution: batchDead += 1
+                                case .uncertain, .timeout, .connectionFailure: batchRequeued += 1
+                                }
+                                self.persistCards()
+                            }
                         }
                     }
                 }

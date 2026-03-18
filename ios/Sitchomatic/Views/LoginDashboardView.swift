@@ -75,28 +75,120 @@ struct LoginDashboardView: View {
         }
     }
 
-    private var statusHeader: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "bolt.shield.fill")
-                .font(.system(size: 32))
-                .foregroundStyle(.teal)
-                .symbolEffect(.pulse, isActive: vm.isRunning)
+    private var gatewayColor: Color {
+        switch vm.activeGateway {
+        case .ppsr: .teal
+        case .bpoint: .indigo
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("PPSR TestFlow")
-                    .font(.title3.bold())
-                Text("transact.ppsr.gov.au")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
+    private var statusHeader: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: vm.activeGateway.icon)
+                    .font(.system(size: 32))
+                    .foregroundStyle(gatewayColor)
+                    .symbolEffect(.pulse, isActive: vm.isRunning)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(vm.activeGateway.displayName)
+                        .font(.title3.bold())
+                    Text(vm.activeGateway.baseURL.replacingOccurrences(of: "https://", with: ""))
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                connectionBadge
             }
 
-            Spacer()
+            gatewayPicker
 
-            connectionBadge
+            if vm.activeGateway.requiresChargeAmount {
+                chargeAmountPicker
+            }
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: 14))
+    }
+
+    private var gatewayPicker: some View {
+        HStack(spacing: 8) {
+            ForEach(TestGateway.allCases) { gw in
+                Button {
+                    withAnimation(.snappy) { vm.activeGateway = gw }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: gw.icon)
+                            .font(.caption)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(gw.rawValue)
+                                .font(.caption.bold())
+                            Text(gw.subtitle)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(vm.activeGateway == gw ? .white.opacity(0.7) : .secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 8)
+                    .background(vm.activeGateway == gw ? gatewayButtonColor(gw) : Color(.tertiarySystemGroupedBackground))
+                    .foregroundStyle(vm.activeGateway == gw ? .white : .primary)
+                    .clipShape(.rect(cornerRadius: 10))
+                }
+                .disabled(vm.isRunning)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: vm.activeGateway.rawValue)
+    }
+
+    private func gatewayButtonColor(_ gw: TestGateway) -> Color {
+        switch gw {
+        case .ppsr: .teal
+        case .bpoint: .indigo
+        }
+    }
+
+    private var chargeAmountPicker: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "dollarsign.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.indigo)
+                Text("Charge Amount")
+                    .font(.caption.bold())
+                Spacer()
+                Text("±$10 variance")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(ChargeAmountTier.allCases) { tier in
+                    Button {
+                        withAnimation(.snappy) { vm.chargeAmountTier = tier }
+                    } label: {
+                        VStack(spacing: 3) {
+                            Text(tier.rawValue)
+                                .font(.system(.subheadline, design: .monospaced, weight: .bold))
+                            Text(tier.displayRange)
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(vm.chargeAmountTier == tier ? .white.opacity(0.7) : .secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(vm.chargeAmountTier == tier ? Color.indigo : Color(.tertiarySystemGroupedBackground))
+                        .foregroundStyle(vm.chargeAmountTier == tier ? .white : .primary)
+                        .clipShape(.rect(cornerRadius: 10))
+                    }
+                    .disabled(vm.isRunning)
+                }
+            }
+        }
+        .sensoryFeedback(.selection, trigger: vm.chargeAmountTier.rawValue)
     }
 
     private var connectionBadge: some View {
@@ -602,11 +694,19 @@ struct LoginDashboardView: View {
                         Image(systemName: "play.fill")
                         Text("Test All Untested (\(vm.untestedCards.count))")
                             .fontWeight(.semibold)
+                        if vm.activeGateway == .bpoint {
+                            Text("via BPoint")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.white.opacity(0.2))
+                                .clipShape(Capsule())
+                        }
                     }
                     .font(.subheadline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 13)
-                    .background(Color.teal)
+                    .background(gatewayColor)
                     .foregroundStyle(.white)
                     .clipShape(.rect(cornerRadius: 12))
                 }
