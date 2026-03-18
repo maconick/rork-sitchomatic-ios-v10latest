@@ -171,9 +171,16 @@ class NetworkSessionFactory {
             return .direct
 
         case .hybrid:
-            return HybridNetworkingService.shared.nextHybridConfig(for: target)
+            let hybridConfig = HybridNetworkingService.shared.nextHybridConfig(for: target)
+            if case .direct = hybridConfig, Self.proxyRequiredTargets.contains(target) {
+                logger.log("NetworkFactory: hybrid returned .direct for proxy-required \(target.rawValue) — applying fail-closed", category: .network, level: .error)
+                return .socks5(failClosedProxy)
+            }
+            return hybridConfig
         }
     }
+
+    private static let proxyRequiredTargets: Set<ProxyRotationService.ProxyTarget> = [.joe, .ignition]
 
     func isDirectMode() -> Bool {
         proxyService.unifiedConnectionMode == .direct
