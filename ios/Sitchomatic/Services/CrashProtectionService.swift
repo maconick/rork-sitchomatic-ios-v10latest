@@ -250,11 +250,15 @@ final class CrashProtectionService {
         continuousLogFlushTask = Task { [weak self] in
             while !Task.isCancelled {
                 let anyBatchRunning = LoginViewModel.shared.isRunning || PPSRAutomationViewModel.shared.isRunning
-                let interval: TimeInterval = anyBatchRunning ? 30 : 10
+                let interval: TimeInterval = anyBatchRunning ? 45 : 10
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled, let self else { return }
                 DebugLogger.shared.persistLatestLog()
                 self.persistPreCrashDiagnostics()
+                if anyBatchRunning && self.isMemoryCritical {
+                    LoginViewModel.shared.handleMemoryPressure()
+                    PPSRAutomationViewModel.shared.handleMemoryPressure()
+                }
             }
         }
     }

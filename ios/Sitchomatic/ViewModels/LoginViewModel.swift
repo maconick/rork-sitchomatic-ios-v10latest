@@ -819,7 +819,7 @@ class LoginViewModel {
                 var running = 0
 
                 for cred in credsToTest {
-                    if Task.isCancelled || isStopping { break }
+                    guard !Task.isCancelled && !isStopping else { break }
 
                     if CrashProtectionService.shared.isMemoryEmergency {
                         self.log("Memory EMERGENCY during login batch — auto-stopping to prevent crash", level: .error)
@@ -830,7 +830,7 @@ class LoginViewModel {
                     if !CrashProtectionService.shared.isMemorySafeForNewSession {
                         self.log("Memory pressure — waiting before spawning next login session", level: .warning)
                         let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 15)
-                        if !recovered && CrashProtectionService.shared.isMemoryEmergency {
+                        if !recovered || Task.isCancelled {
                             self.isStopping = true
                             break
                         }
@@ -840,7 +840,7 @@ class LoginViewModel {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
 
-                    if Task.isCancelled || isStopping { break }
+                    guard !Task.isCancelled && !isStopping else { break }
 
                     if running >= concurrencyLimit {
                         await group.next()
@@ -859,9 +859,13 @@ class LoginViewModel {
                     let testURL = getNextTestURL()
 
                     group.addTask { [engine, testTimeout] in
+                        defer {
+                            Task { @MainActor in
+                                self.activeTestCount = max(0, self.activeTestCount - 1)
+                            }
+                        }
                         let outcome = await engine.runLoginTest(attempt, targetURL: testURL, timeout: testTimeout)
                         await MainActor.run {
-                            self.activeTestCount = max(0, self.activeTestCount - 1)
                             self.batchCompletedCount += 1
                             self.handleOutcome(outcome, credential: cred, attempt: attempt)
                             self.updateRecoveryForOutcome(outcome, credential: cred, attempt: attempt)
@@ -948,7 +952,7 @@ class LoginViewModel {
                     if !CrashProtectionService.shared.isMemorySafeForNewSession {
                         self.log("Memory pressure — waiting before spawning next double-site session", level: .warning)
                         let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 15)
-                        if !recovered && CrashProtectionService.shared.isMemoryEmergency {
+                        if !recovered || Task.isCancelled {
                             self.isStopping = true
                             break
                         }
@@ -957,7 +961,7 @@ class LoginViewModel {
                     while isPaused && !isStopping && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
-                    if isStopping || Task.isCancelled { break }
+                    guard !isStopping && !Task.isCancelled else { break }
 
                     var launched = false
 
@@ -974,9 +978,14 @@ class LoginViewModel {
                         let testURL = self.getNextTestURL(forSite: .joefortune)
 
                         group.addTask { [testTimeout] in
+                            defer {
+                                Task { @MainActor in
+                                    self.activeTestCount = max(0, self.activeTestCount - 1)
+                                    joeRunning = max(0, joeRunning - 1)
+                                }
+                            }
                             let outcome = await self.engine.runLoginTest(attempt, targetURL: testURL, timeout: testTimeout)
                             await MainActor.run {
-                                self.activeTestCount = max(0, self.activeTestCount - 1)
                                 self.batchCompletedCount = min(self.batchCompletedCount + 1, self.batchTotalCount)
                                 attempt.logs.insert(PPSRLogEntry(message: "[JOE] Tested on \(testURL.host ?? "")", level: .info), at: 0)
                                 self.handleOutcome(outcome, credential: cred, attempt: attempt)
@@ -984,7 +993,6 @@ class LoginViewModel {
                                 if outcome == .success { batchWorking += 1; self.batchSuccessCount += 1 }
                                 else if cred.status == .untested { batchRequeued += 1 }
                                 else { batchDead += 1; self.batchFailCount += 1 }
-                                joeRunning = max(0, joeRunning - 1)
                                 self.persistCredentials()
                             }
                         }
@@ -1003,9 +1011,14 @@ class LoginViewModel {
                         let testURL = self.getNextTestURL(forSite: .ignition)
 
                         group.addTask { [testTimeout] in
+                            defer {
+                                Task { @MainActor in
+                                    self.activeTestCount = max(0, self.activeTestCount - 1)
+                                    ignRunning = max(0, ignRunning - 1)
+                                }
+                            }
                             let outcome = await self.secondaryEngine.runLoginTest(attempt, targetURL: testURL, timeout: testTimeout)
                             await MainActor.run {
-                                self.activeTestCount = max(0, self.activeTestCount - 1)
                                 self.batchCompletedCount = min(self.batchCompletedCount + 1, self.batchTotalCount)
                                 attempt.logs.insert(PPSRLogEntry(message: "[IGN] Tested on \(testURL.host ?? "")", level: .info), at: 0)
                                 self.handleOutcome(outcome, credential: cred, attempt: attempt)
@@ -1013,7 +1026,6 @@ class LoginViewModel {
                                 if outcome == .success { batchWorking += 1; self.batchSuccessCount += 1 }
                                 else if cred.status == .untested { batchRequeued += 1 }
                                 else { batchDead += 1; self.batchFailCount += 1 }
-                                ignRunning = max(0, ignRunning - 1)
                                 self.persistCredentials()
                             }
                         }
@@ -1346,8 +1358,12 @@ class LoginViewModel {
     private let maxInMemoryScreenshots: Int = 200
 
     func addScreenshot(_ screenshot: PPSRDebugScreenshot) {
+        if isRunning && CrashProtectionService.shared.isMemoryCritical {
+            ScreenshotCacheService.shared.store(screenshot.image, forKey: screenshot.id)
+            return
+        }
         debugScreenshots.insert(screenshot, at: 0)
-        let effectiveLimit = isRunning ? min(20, maxInMemoryScreenshots) : maxInMemoryScreenshots
+        let effectiveLimit = isRunning ? min(15, maxInMemoryScreenshots) : maxInMemoryScreenshots
         if debugScreenshots.count > effectiveLimit {
             let overflow = Array(debugScreenshots.suffix(from: effectiveLimit))
             for ss in overflow {
@@ -1553,8 +1569,18 @@ class LoginViewModel {
     }
 
     private let maxAttemptHistory: Int = 500
+    private let maxAttemptsInBatch: Int = 500
 
     func trimAttemptsIfNeeded() {
+        let hardCap = isRunning ? maxAttemptsInBatch : maxAttemptHistory
+        if attempts.count > hardCap {
+            let terminal = attempts.enumerated().filter { $0.element.status.isTerminal }
+            if terminal.count > hardCap / 2 {
+                let toRemove = terminal.suffix(terminal.count - hardCap / 2)
+                let removeIds = Set(toRemove.map { $0.element.id })
+                attempts.removeAll { removeIds.contains($0.id) }
+            }
+        }
         let terminal = attempts.filter { $0.status.isTerminal }
         if terminal.count > maxAttemptHistory {
             let excess = terminal.count - maxAttemptHistory
