@@ -99,6 +99,17 @@ class WebViewPool {
     }
 
     func acquire(stealthEnabled: Bool = false, viewportSize: CGSize = CGSize(width: 390, height: 844), networkConfig: ActiveNetworkConfig = .direct, target: ProxyRotationService.ProxyTarget = .joe) async -> WKWebView {
+        if CrashProtectionService.shared.isMemoryCritical {
+            logger.log("WebViewPool: memory CRITICAL before acquire — draining pre-warmed and reaping stale", category: .webView, level: .critical)
+            drainPreWarmed()
+            reapStaleSessions()
+            reapDeallocatedSessions()
+            let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 10)
+            if !recovered {
+                logger.log("WebViewPool: memory still critical after 10s wait — proceeding cautiously", category: .webView, level: .critical)
+            }
+        }
+
         if inUseCount >= hardCapActiveWebViews {
             logger.log("WebViewPool: HARD CAP reached (\(inUseCount)/\(hardCapActiveWebViews)) — waiting for release before creating new WebView", category: .webView, level: .critical)
 

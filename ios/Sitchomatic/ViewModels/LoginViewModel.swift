@@ -819,13 +819,28 @@ class LoginViewModel {
                 var running = 0
 
                 for cred in credsToTest {
-                    if isStopping { break }
+                    if Task.isCancelled || isStopping { break }
 
-                    while isPaused && !isStopping {
+                    if CrashProtectionService.shared.isMemoryEmergency {
+                        self.log("Memory EMERGENCY during login batch — auto-stopping to prevent crash", level: .error)
+                        self.isStopping = true
+                        break
+                    }
+
+                    if !CrashProtectionService.shared.isMemorySafeForNewSession {
+                        self.log("Memory pressure — waiting before spawning next login session", level: .warning)
+                        let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 15)
+                        if !recovered && CrashProtectionService.shared.isMemoryEmergency {
+                            self.isStopping = true
+                            break
+                        }
+                    }
+
+                    while isPaused && !isStopping && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
 
-                    if isStopping { break }
+                    if Task.isCancelled || isStopping { break }
 
                     if running >= concurrencyLimit {
                         await group.next()
@@ -839,13 +854,14 @@ class LoginViewModel {
                     let attempt = LoginAttempt(credential: cred, sessionIndex: sessionIdx)
                     attempts.insert(attempt, at: 0)
                     activeTestCount += 1
+                    trimAttemptsIfNeeded()
 
                     let testURL = getNextTestURL()
 
                     group.addTask { [engine, testTimeout] in
                         let outcome = await engine.runLoginTest(attempt, targetURL: testURL, timeout: testTimeout)
                         await MainActor.run {
-                            self.activeTestCount -= 1
+                            self.activeTestCount = max(0, self.activeTestCount - 1)
                             self.batchCompletedCount += 1
                             self.handleOutcome(outcome, credential: cred, attempt: attempt)
                             self.updateRecoveryForOutcome(outcome, credential: cred, attempt: attempt)
@@ -868,6 +884,7 @@ class LoginViewModel {
                 await group.waitForAll()
             }
 
+            syncActiveTestCount()
             finalizeBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
         }
     }
@@ -921,11 +938,26 @@ class LoginViewModel {
                 var joeIndex = 0
                 var ignIndex = 0
 
-                while (joeIndex < credsToTest.count || ignIndex < credsToTest.count) && !isStopping {
-                    while isPaused && !isStopping {
+                while (joeIndex < credsToTest.count || ignIndex < credsToTest.count) && !isStopping && !Task.isCancelled {
+                    if CrashProtectionService.shared.isMemoryEmergency {
+                        self.log("Memory EMERGENCY during double batch — auto-stopping to prevent crash", level: .error)
+                        self.isStopping = true
+                        break
+                    }
+
+                    if !CrashProtectionService.shared.isMemorySafeForNewSession {
+                        self.log("Memory pressure — waiting before spawning next double-site session", level: .warning)
+                        let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 15)
+                        if !recovered && CrashProtectionService.shared.isMemoryEmergency {
+                            self.isStopping = true
+                            break
+                        }
+                    }
+
+                    while isPaused && !isStopping && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
-                    if isStopping { break }
+                    if isStopping || Task.isCancelled { break }
 
                     var launched = false
 
@@ -938,6 +970,7 @@ class LoginViewModel {
                         let attempt = LoginAttempt(credential: cred, sessionIndex: joeRunning)
                         self.attempts.insert(attempt, at: 0)
                         self.activeTestCount += 1
+                        self.trimAttemptsIfNeeded()
                         let testURL = self.getNextTestURL(forSite: .joefortune)
 
                         group.addTask { [testTimeout] in
@@ -966,6 +999,7 @@ class LoginViewModel {
                         let attempt = LoginAttempt(credential: cred, sessionIndex: ignRunning)
                         self.attempts.insert(attempt, at: 0)
                         self.activeTestCount += 1
+                        self.trimAttemptsIfNeeded()
                         let testURL = self.getNextTestURL(forSite: .ignition)
 
                         group.addTask { [testTimeout] in
@@ -993,6 +1027,7 @@ class LoginViewModel {
                 await group.waitForAll()
             }
 
+            syncActiveTestCount()
             finalizeBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
         }
     }
@@ -1312,12 +1347,13 @@ class LoginViewModel {
 
     func addScreenshot(_ screenshot: PPSRDebugScreenshot) {
         debugScreenshots.insert(screenshot, at: 0)
-        if debugScreenshots.count > maxInMemoryScreenshots {
-            let overflow = Array(debugScreenshots.suffix(from: maxInMemoryScreenshots))
+        let effectiveLimit = isRunning ? min(20, maxInMemoryScreenshots) : maxInMemoryScreenshots
+        if debugScreenshots.count > effectiveLimit {
+            let overflow = Array(debugScreenshots.suffix(from: effectiveLimit))
             for ss in overflow {
                 ScreenshotCacheService.shared.store(ss.image, forKey: ss.id)
             }
-            debugScreenshots.removeLast(debugScreenshots.count - maxInMemoryScreenshots)
+            debugScreenshots.removeLast(debugScreenshots.count - effectiveLimit)
         }
     }
 

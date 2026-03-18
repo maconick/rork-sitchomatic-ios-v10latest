@@ -589,12 +589,13 @@ class PPSRAutomationViewModel {
 
     func addScreenshot(_ screenshot: PPSRDebugScreenshot) {
         debugScreenshots.insert(screenshot, at: 0)
-        if debugScreenshots.count > maxInMemoryScreenshots {
-            let overflow = Array(debugScreenshots.suffix(from: maxInMemoryScreenshots))
+        let effectiveLimit = isRunning ? min(20, maxInMemoryScreenshots) : maxInMemoryScreenshots
+        if debugScreenshots.count > effectiveLimit {
+            let overflow = Array(debugScreenshots.suffix(from: effectiveLimit))
             for ss in overflow {
                 ScreenshotCacheService.shared.store(ss.image, forKey: ss.id)
             }
-            debugScreenshots.removeLast(debugScreenshots.count - maxInMemoryScreenshots)
+            debugScreenshots.removeLast(debugScreenshots.count - effectiveLimit)
         }
     }
 
@@ -870,13 +871,28 @@ class PPSRAutomationViewModel {
                 var running = 0
 
                 for card in cardsToTest {
-                    if isStopping { break }
+                    if Task.isCancelled || isStopping { break }
 
-                    while isPaused && !isStopping {
+                    if CrashProtectionService.shared.isMemoryEmergency {
+                        self.log("Memory EMERGENCY during batch — auto-stopping to prevent crash", level: .error)
+                        self.isStopping = true
+                        break
+                    }
+
+                    if !CrashProtectionService.shared.isMemorySafeForNewSession {
+                        self.log("Memory pressure — waiting before spawning next session", level: .warning)
+                        let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 15)
+                        if !recovered && CrashProtectionService.shared.isMemoryEmergency {
+                            self.isStopping = true
+                            break
+                        }
+                    }
+
+                    while isPaused && !isStopping && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
 
-                    if isStopping { break }
+                    if Task.isCancelled || isStopping { break }
 
                     if running >= maxConcurrency {
                         await group.next()
@@ -892,11 +908,12 @@ class PPSRAutomationViewModel {
                     let check = PPSRCheck(vin: vin, email: email, card: card, sessionIndex: sessionIdx)
                     checks.insert(check, at: 0)
                     activeTestCount += 1
+                    trimChecksIfNeeded()
 
                     group.addTask { [engine, testTimeout] in
                         let outcome = await engine.runCheck(check, timeout: testTimeout)
                         await MainActor.run {
-                            self.activeTestCount -= 1
+                            self.activeTestCount = max(0, self.activeTestCount - 1)
                             self.batchCompletedCount += 1
                             self.handleOutcome(outcome, card: card, check: check, vin: vin)
 
@@ -914,6 +931,7 @@ class PPSRAutomationViewModel {
                 await group.waitForAll()
             }
 
+            syncActiveTestCount()
             finalizePPSRBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
         }
     }
@@ -951,11 +969,27 @@ class PPSRAutomationViewModel {
                 var running = 0
 
                 for card in cardsToTest {
-                    if isStopping { break }
-                    while isPaused && !isStopping {
+                    if Task.isCancelled || isStopping { break }
+
+                    if CrashProtectionService.shared.isMemoryEmergency {
+                        self.log("Memory EMERGENCY during BPoint batch — auto-stopping to prevent crash", level: .error)
+                        self.isStopping = true
+                        break
+                    }
+
+                    if !CrashProtectionService.shared.isMemorySafeForNewSession {
+                        self.log("Memory pressure — waiting before spawning next BPoint session", level: .warning)
+                        let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 15)
+                        if !recovered && CrashProtectionService.shared.isMemoryEmergency {
+                            self.isStopping = true
+                            break
+                        }
+                    }
+
+                    while isPaused && !isStopping && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
-                    if isStopping { break }
+                    if Task.isCancelled || isStopping { break }
                     if running >= maxConcurrency {
                         await group.next()
                         running -= 1
@@ -969,12 +1003,13 @@ class PPSRAutomationViewModel {
                     let check = PPSRCheck(vin: "BPOINT", email: "n/a", card: card, sessionIndex: sessionIdx)
                     checks.insert(check, at: 0)
                     activeTestCount += 1
+                    trimChecksIfNeeded()
 
                     let capturedAmount = amount
                     group.addTask { [bpointEngine, testTimeout] in
                         let outcome = await bpointEngine.runCheck(check, chargeAmount: capturedAmount, timeout: testTimeout)
                         await MainActor.run {
-                            self.activeTestCount -= 1
+                            self.activeTestCount = max(0, self.activeTestCount - 1)
                             self.batchCompletedCount += 1
                             self.handleOutcome(outcome, card: card, check: check, vin: "BPOINT_$\(String(format: "%.2f", capturedAmount))")
 
@@ -992,6 +1027,7 @@ class PPSRAutomationViewModel {
                 await group.waitForAll()
             }
 
+            syncActiveTestCount()
             finalizePPSRBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
         }
     }
@@ -1079,11 +1115,27 @@ class PPSRAutomationViewModel {
                 var running = 0
 
                 for card in cardsToTest {
-                    if isStopping { break }
-                    while isPaused && !isStopping {
+                    if Task.isCancelled || isStopping { break }
+
+                    if CrashProtectionService.shared.isMemoryEmergency {
+                        self.log("Memory EMERGENCY during selected batch — auto-stopping to prevent crash", level: .error)
+                        self.isStopping = true
+                        break
+                    }
+
+                    if !CrashProtectionService.shared.isMemorySafeForNewSession {
+                        self.log("Memory pressure — waiting before spawning next session", level: .warning)
+                        let recovered = await CrashProtectionService.shared.waitForMemoryToDrop(timeout: 15)
+                        if !recovered && CrashProtectionService.shared.isMemoryEmergency {
+                            self.isStopping = true
+                            break
+                        }
+                    }
+
+                    while isPaused && !isStopping && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(500))
                     }
-                    if isStopping { break }
+                    if Task.isCancelled || isStopping { break }
                     if running >= maxConcurrency {
                         await group.next()
                         running -= 1
@@ -1098,12 +1150,13 @@ class PPSRAutomationViewModel {
                         let check = PPSRCheck(vin: "BPOINT", email: "n/a", card: card, sessionIndex: sessionIdx)
                         checks.insert(check, at: 0)
                         activeTestCount += 1
+                        trimChecksIfNeeded()
 
                         let capturedAmount = amount
                         group.addTask { [bpointEngine, testTimeout] in
                             let outcome = await bpointEngine.runCheck(check, chargeAmount: capturedAmount, timeout: testTimeout)
                             await MainActor.run {
-                                self.activeTestCount -= 1
+                                self.activeTestCount = max(0, self.activeTestCount - 1)
                                 self.batchCompletedCount += 1
                                 self.handleOutcome(outcome, card: card, check: check, vin: "BPOINT_$\(String(format: "%.2f", capturedAmount))")
                                 switch outcome {
@@ -1120,11 +1173,12 @@ class PPSRAutomationViewModel {
                         let check = PPSRCheck(vin: vin, email: email, card: card, sessionIndex: sessionIdx)
                         checks.insert(check, at: 0)
                         activeTestCount += 1
+                        trimChecksIfNeeded()
 
                         group.addTask { [engine, testTimeout] in
                             let outcome = await engine.runCheck(check, timeout: testTimeout)
                             await MainActor.run {
-                                self.activeTestCount -= 1
+                                self.activeTestCount = max(0, self.activeTestCount - 1)
                                 self.batchCompletedCount += 1
                                 self.handleOutcome(outcome, card: card, check: check, vin: vin)
                                 switch outcome {
@@ -1140,6 +1194,7 @@ class PPSRAutomationViewModel {
                 await group.waitForAll()
             }
 
+            syncActiveTestCount()
             finalizePPSRBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
         }
     }

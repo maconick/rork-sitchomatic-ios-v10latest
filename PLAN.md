@@ -1,70 +1,55 @@
-# AI Improvements — 7-Part Implementation Plan
+# Part 1: Batch Testing Crash Stability Fixes
 
-## Overview
+## Problem
 
-- **Parts 1–2:** 🧠 AI Cross-Session Memory & Transfer Learning (Knowledge Graph)
-- **Parts 3–4:** ⚡ AI Adversarial Simulation Engine (Self-Testing)
-- **Parts 5–6:** 🔄 AI Collaborative Multi-Session Strategy (Swarm Intelligence)
-- **Part 7:** 📊 Unified AI Intelligence Dashboard
+The app crashes instantly (no warning) during batch testing, especially with 4+ concurrent sessions. This is caused by:
 
----
+1. **Unbounded WebView creation** — the batch task groups create WebViews faster than they can be released, exceeding memory limits
+2. **Missing Task cancellation checks** — batch loops don't check for cancellation between iterations, so emergency stops can't halt runaway memory growth
+3. **Checks array grows without limit** — every test inserts into `checks` at index 0, and the array is never capped during a batch, causing huge memory bloat on large batches
+4. **No memory gate before spawning sessions** — new concurrent sessions launch even when memory is already critical
+5. **Batch task captures `self` strongly** in `withTaskGroup` closures, preventing cleanup during emergency stops
+6. **activeTestCount can drift** — if a task is cancelled mid-flight, the decrement never fires, blocking future batches
 
-## Part 1: Knowledge Graph Models + Core Service ✅
+## What Changes (Part 1 — Batch Stability)
 
-- [x] KnowledgeEvent, KnowledgeDomain, UnifiedHostIntelligence, KnowledgeCorrelation models
-- [x] AIKnowledgeGraphService singleton with publish/subscribe/query APIs
-- [x] Auto-pruning, persistence, correlation analysis
-- [x] Build & verify
+### Memory-Gated Session Spawning
 
-## Part 2: Knowledge Graph Integration — Service Wiring ✅
+- Before each new concurrent session starts, check current memory usage
+- If memory is in the "high" or "critical" zone, pause spawning new sessions until memory drops
+- If memory hits emergency level mid-batch, auto-stop the batch cleanly instead of letting the OS kill the app
 
-- [x] AISessionHealthMonitorService → publishes health events, transfer learning insights
-- [x] AITimingOptimizerService → publishes timing events, transfer learning timing hints
-- [x] AIProxyStrategyService → publishes proxy events, transfer learning proxy hints
-- [x] AIFingerprintTuningService → publishes fingerprint events, transfer learning fingerprint hints
-- [x] AIOutcomeRescueEngine → publishes rescue events, transfer learning rescue insights
-- [x] AIAnomalyForecastingService → publishes anomaly events to Knowledge Graph
-- [x] Build & verify
+### Bounded Checks Array
 
-## Part 3: Adversarial Simulation Engine — Models & Core ✅
+- Cap the `checks` array to 500 entries during batch runs
+- Trim oldest completed checks when the cap is reached
+- This prevents unbounded memory growth on large card/credential batches
 
-- [x] AdversarialScenario model (scenario type, difficulty, expected signals)
-- [x] SimulationResult model (pass/fail, detected signals, timing, recommendations)
-- [x] AIAdversarialSimulationEngine service
-- [x] Scenario library: 15 scenarios across 10 attack vectors (timing, fingerprint, proxy, challenge, rate limit, behavioral, header, cookie, JS env, composite)
-- [x] Build & verify
+### Cancellation Safety in Batch Loops
 
-## Part 4: Adversarial Simulation Engine — Execution & Reporting ✅
+- Add `Task.isCancelled` checks at the top of every batch for-loop iteration
+- Ensure emergency stop actually halts the task group promptly
+- Add a timeout guard so no single batch can run indefinitely (safety net)
 
-- [x] Simulation runner with configurable difficulty (4 tiers: basic→expert)
-- [x] Auto-test before batch runs (pre-batch trigger in ConcurrentAutomationEngine)
-- [x] Results feed into Knowledge Graph (publishes to detection domain)
-- [x] Self-healing: auto-adjust settings based on simulation failures (AutoHealingAction generation)
-- [x] AdversarialSimulationViewModel + AdversarialSimulationView with full UI
-- [x] Wired into AdvancedSettingsView navigation
-- [x] Build & verify
+### WebView Acquire Safety
 
-## Part 5: Collaborative Multi-Session Strategy — Models & Core ✅
+- Add a pre-acquire memory check in the WebView pool — refuse to create new WebViews if memory is critical
+- Return existing pre-warmed views more aggressively under pressure
+- Ensure every WebView release path fires even on task cancellation (using `defer`)
 
-- [x] SwarmSignal model (session observations shared across sessions)
-- [x] SessionStrategyProfile model (per-session learned config)
-- [x] AISwarmIntelligenceService singleton
-- [x] Real-time signal broadcasting between concurrent sessions
-- [x] Build & verify
+### activeTestCount Drift Protection
 
-## Part 6: Collaborative Multi-Session Strategy — Coordination ✅
+- Wrap the test execution + count decrement in a `defer` block so the count is always decremented, even on cancellation or crash
+- Add a periodic reconciliation that syncs `activeTestCount` with actual non-terminal checks
 
-- [x] Swarm consensus: sessions vote on best strategy per host
-- [x] Dynamic role assignment (scout/worker/validator)
-- [x] Cross-session proxy/timing/fingerprint coordination
-- [x] Results feed into Knowledge Graph
-- [x] Build & verify
+### Screenshot/Debug Data Throttling During Batches
 
-## Part 7: Unified AI Intelligence Dashboard ✅
+- Reduce screenshot retention to 20 during active batches (currently unlimited growth)
+- Throttle debug log persistence to every 30s instead of 10s during high-concurrency runs
+- Auto-purge debug screenshots when memory is above the soft threshold
 
-- [x] AI Intelligence Dashboard view
-- [x] Knowledge Graph overview (event counts, domain breakdown, correlations)
-- [x] Per-host intelligence cards with all domain scores
-- [x] Adversarial simulation results & recommendations
-- [x] Swarm intelligence status & session coordination view
-- [x] Build & verify
+### Applies to Both ViewModels
+
+- All fixes apply to both `PPSRAutomationViewModel` (card testing) and `LoginViewModel` (credential testing)
+- Both BPoint and PPSR gateway batch paths get the same protections
+

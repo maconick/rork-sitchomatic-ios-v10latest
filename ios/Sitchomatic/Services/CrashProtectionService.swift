@@ -69,6 +69,30 @@ final class CrashProtectionService {
     var shouldReduceConcurrency: Bool { memoryMonitor.shouldReduceConcurrency }
     var recommendedMaxConcurrency: Int { memoryMonitor.recommendedMaxConcurrency }
 
+    var isMemorySafeForNewSession: Bool {
+        let mb = MemoryMonitor.currentUsageMB()
+        return mb < memoryMonitor.thresholds.highMB && !memoryMonitor.deathSpiralDetected
+    }
+
+    var isMemoryEmergency: Bool {
+        let mb = MemoryMonitor.currentUsageMB()
+        return mb > memoryMonitor.thresholds.emergencyMB || memoryMonitor.deathSpiralDetected
+    }
+
+    var isMemoryCritical: Bool {
+        let mb = MemoryMonitor.currentUsageMB()
+        return mb > memoryMonitor.thresholds.criticalMB
+    }
+
+    func waitForMemoryToDrop(timeout: TimeInterval = 15) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !isMemorySafeForNewSession && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(500))
+            if Task.isCancelled { return false }
+        }
+        return isMemorySafeForNewSession
+    }
+
     var diagnosticSummary: String {
         let mb = currentMemoryUsageMB()
         let webViews = WebViewPool.shared.activeCount
@@ -225,7 +249,9 @@ final class CrashProtectionService {
         continuousLogFlushTask?.cancel()
         continuousLogFlushTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
+                let anyBatchRunning = LoginViewModel.shared.isRunning || PPSRAutomationViewModel.shared.isRunning
+                let interval: TimeInterval = anyBatchRunning ? 30 : 10
+                try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled, let self else { return }
                 DebugLogger.shared.persistLatestLog()
                 self.persistPreCrashDiagnostics()
