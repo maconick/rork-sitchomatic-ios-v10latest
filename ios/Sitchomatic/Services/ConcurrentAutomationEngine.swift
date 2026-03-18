@@ -20,6 +20,8 @@ class ConcurrentAutomationEngine {
     private let liveSpeed = LiveSpeedAdaptationService.shared
     private let concurrencyGovernor = AIPredictiveConcurrencyGovernor.shared
     private let webViewMemoryManager = AIWebViewMemoryLifecycleManager.shared
+    private let batchPreOptimizer = AIPredictiveBatchPreOptimizer.shared
+    private let credentialTriage = AICredentialTriageService.shared
 
     private(set) var isRunning: Bool = false
     private var cancelFlag: Bool = false
@@ -276,6 +278,7 @@ class ConcurrentAutomationEngine {
                 state.recordOutcome(success: success)
                 let matchingURL = effectiveURLs[batchIndices.first ?? 0]?.absoluteString ?? ""
                 urlCooldown.recordSuccess(for: matchingURL)
+                credentialTriage.recordOutcome(username: username, outcome: "\(outcome)", latencyMs: latency)
                 if outcome == .permDisabled {
                     state.deadAccounts.insert(username)
                     logger.log("ConcurrentEngine: account '\(username)' marked DEAD (permDisabled)", category: .automation, level: .warning)
@@ -349,6 +352,19 @@ class ConcurrentAutomationEngine {
         concurrencyGovernor.stop()
         webViewMemoryManager.stop()
         AppStabilityCoordinator.shared.cancelTaskGroupWatchdog(id: batchId)
+
+        let batchSuccessRate = (state.successCount + state.failureCount) > 0 ? Double(state.successCount) / Double(state.successCount + state.failureCount) : 0
+        let challengeRate = 0.0
+        for url in healthyURLs {
+            batchPreOptimizer.recordBatchOutcome(
+                host: url.host ?? "",
+                successRate: batchSuccessRate,
+                avgLatencyMs: avgLatency,
+                challengeRate: challengeRate,
+                concurrency: effectiveMax
+            )
+        }
+
         logger.endSession(batchId, category: .login, message: "ConcurrentEngine: login batch complete — \(state.successCount) success, \(state.failureCount) fail, avgLatency=\(avgLatency)ms | network=\(networkSummary)")
 
         isRunning = false
@@ -508,12 +524,15 @@ class ConcurrentAutomationEngine {
     // MARK: - Login-Specific Helpers
 
     private func prioritizeCredentials(_ attempts: [LoginAttempt]) -> [LoginAttempt] {
-        let sorted = aiCredentialPriority.sortedCredentials(attempts.map { $0.credential.username })
-        let order = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1, $0) })
+        let triaged = credentialTriage.triageAndOrder(credentials: attempts.map { $0.credential })
+        let order = Dictionary(uniqueKeysWithValues: triaged.orderedUsernames.enumerated().map { ($1, $0) })
         let result = attempts.sorted { a, b in
             (order[a.credential.username] ?? Int.max) < (order[b.credential.username] ?? Int.max)
         }
-        logger.log("ConcurrentEngine: credentials reordered by AI priority scoring", category: .automation, level: .info)
+        logger.log("ConcurrentEngine: credentials reordered by AI triage — \(triaged.estimatedHighValueCount) high value, \(triaged.similarityGroups.count) similarity clusters", category: .automation, level: .info)
+        for line in triaged.triageReasoningLog {
+            logger.log("  Triage: \(line)", category: .automation, level: .info)
+        }
         return result
     }
 
