@@ -699,13 +699,65 @@ struct DeviceNetworkSettingsView: View {
     @ViewBuilder
     private var endpointConfigSection: some View {
         switch proxyService.unifiedConnectionMode {
-        case .direct: EmptyView()
+        case .direct: directDNSURLSection
         case .proxy: proxySection
         case .openvpn: openVPNSummarySection
         case .wireguard: wireGuardSummarySection
-        case .dns: dnsSection
+        case .dns:
+            dnsSection
+            directDNSURLSection
         case .nodeMaven: nodeMavenSection
         case .hybrid: hybridInfoSection
+        }
+    }
+
+    private var directDNSURLSection: some View {
+        let urlService = LoginURLRotationService.shared
+        return Section {
+            Toggle(isOn: Binding(
+                get: { urlService.dontAutoDisableURLsForDirectDNS },
+                set: { newValue in
+                    urlService.dontAutoDisableURLsForDirectDNS = newValue
+                    if !newValue {
+                        urlService.applyDirectDNSAutoDisable()
+                    }
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Don't auto disable any URLs for Direct/DNS")
+                        .font(.subheadline)
+                    if urlService.isDirectDNSAutoDisableActive {
+                        Text("\(urlService.directDNSAutoDisabledCount) URLs auto-disabled")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+            .tint(.orange)
+
+            if !urlService.dontAutoDisableURLsForDirectDNS {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Safe Domains for Direct/DNS", systemImage: "checkmark.shield.fill")
+                        .font(.caption.bold())
+                        .foregroundStyle(.green)
+                    ForEach(Array(LoginURLRotationService.directDNSSafeJoeDomains.sorted()), id: \.self) { domain in
+                        HStack(spacing: 6) {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 4))
+                                .foregroundStyle(.green)
+                            Text(domain)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    Text("All other Joe/Ignition URLs are auto-disabled on Direct/DNS to prevent resolution failures.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+        } header: {
+            Label("Direct/DNS URL Protection", systemImage: "shield.lefthalf.filled")
         }
     }
 

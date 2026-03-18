@@ -220,6 +220,7 @@ class ProxyRotationService {
     }
 
     func setUnifiedConnectionMode(_ mode: ConnectionMode) {
+        let previousMode = unifiedConnectionMode
         unifiedConnectionMode = mode
         joeConnectionMode = mode
         ignitionConnectionMode = mode
@@ -227,6 +228,14 @@ class ProxyRotationService {
         persistConnectionModes()
         persistUnifiedMode()
         DeviceProxyService.shared.handleUnifiedConnectionModeChange()
+
+        let urlService = LoginURLRotationService.shared
+        if mode == .direct || mode == .dns {
+            urlService.applyDirectDNSAutoDisable()
+        } else if previousMode == .direct || previousMode == .dns {
+            urlService.restoreAutoDisabledURLs()
+        }
+
         logger.log("ProxyRotation: unified connection mode set to \(mode.label)", category: .proxy, level: .success)
     }
 

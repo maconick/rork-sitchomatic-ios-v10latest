@@ -18,6 +18,24 @@ class LoginURLRotationService {
     private let persistKey = "login_url_rotation_state_v1"
     private let aiURLOptimizer = AILoginURLOptimizerService.shared
 
+    static let directDNSSafeJoeDomains: Set<String> = [
+        "joefortunepokies.win",
+        "joefortune36.com",
+        "joefortune24.com",
+    ]
+
+    var dontAutoDisableURLsForDirectDNS: Bool = false {
+        didSet {
+            UserDefaults.standard.set(dontAutoDisableURLsForDirectDNS, forKey: "dont_auto_disable_urls_direct_dns")
+            if dontAutoDisableURLsForDirectDNS {
+                restoreAutoDisabledURLs()
+            }
+        }
+    }
+
+    private var directDNSAutoDisabledJoeURLs: Set<String> = []
+    private var directDNSAutoDisabledIgnitionURLs: Set<String> = []
+
     struct RotatingURL: Identifiable {
         let id: UUID = UUID()
         let urlString: String
@@ -62,6 +80,7 @@ class LoginURLRotationService {
     init() {
         joeURLs = Self.defaultJoeURLStrings.map { RotatingURL(urlString: $0, isEnabled: true, lastFailure: nil, failCount: 0) }
         ignitionURLs = Self.defaultIgnitionURLStrings.map { RotatingURL(urlString: $0, isEnabled: true, lastFailure: nil, failCount: 0) }
+        dontAutoDisableURLsForDirectDNS = UserDefaults.standard.bool(forKey: "dont_auto_disable_urls_direct_dns")
         loadState()
     }
 
@@ -399,6 +418,71 @@ class LoginURLRotationService {
 
     func resetAIURLData() {
         aiURLOptimizer.resetAll()
+    }
+
+    func applyDirectDNSAutoDisable() {
+        guard !dontAutoDisableURLsForDirectDNS else { return }
+        directDNSAutoDisabledJoeURLs.removeAll()
+        directDNSAutoDisabledIgnitionURLs.removeAll()
+
+        for i in joeURLs.indices {
+            let host = extractBaseDomain(from: joeURLs[i].urlString)
+            if !Self.directDNSSafeJoeDomains.contains(host) && joeURLs[i].isEnabled {
+                joeURLs[i].isEnabled = false
+                directDNSAutoDisabledJoeURLs.insert(joeURLs[i].urlString)
+            }
+        }
+
+        for i in ignitionURLs.indices {
+            if ignitionURLs[i].isEnabled {
+                ignitionURLs[i].isEnabled = false
+                directDNSAutoDisabledIgnitionURLs.insert(ignitionURLs[i].urlString)
+            }
+        }
+
+        let joeDisabled = directDNSAutoDisabledJoeURLs.count
+        let ignDisabled = directDNSAutoDisabledIgnitionURLs.count
+        if joeDisabled > 0 || ignDisabled > 0 {
+            persistState()
+        }
+    }
+
+    func restoreAutoDisabledURLs() {
+        var restored = 0
+        for urlStr in directDNSAutoDisabledJoeURLs {
+            if let idx = joeURLs.firstIndex(where: { $0.urlString == urlStr }) {
+                joeURLs[idx].isEnabled = true
+                joeURLs[idx].failCount = 0
+                restored += 1
+            }
+        }
+        for urlStr in directDNSAutoDisabledIgnitionURLs {
+            if let idx = ignitionURLs.firstIndex(where: { $0.urlString == urlStr }) {
+                ignitionURLs[idx].isEnabled = true
+                ignitionURLs[idx].failCount = 0
+                restored += 1
+            }
+        }
+        directDNSAutoDisabledJoeURLs.removeAll()
+        directDNSAutoDisabledIgnitionURLs.removeAll()
+        if restored > 0 { persistState() }
+    }
+
+    var isDirectDNSAutoDisableActive: Bool {
+        !directDNSAutoDisabledJoeURLs.isEmpty || !directDNSAutoDisabledIgnitionURLs.isEmpty
+    }
+
+    var directDNSAutoDisabledCount: Int {
+        directDNSAutoDisabledJoeURLs.count + directDNSAutoDisabledIgnitionURLs.count
+    }
+
+    func isDirectDNSAutoDisabled(urlString: String) -> Bool {
+        directDNSAutoDisabledJoeURLs.contains(urlString) || directDNSAutoDisabledIgnitionURLs.contains(urlString)
+    }
+
+    private func extractBaseDomain(from urlString: String) -> String {
+        guard let url = URL(string: urlString), let host = url.host else { return urlString }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 
     private func persistState() {
