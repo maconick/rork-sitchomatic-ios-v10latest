@@ -257,6 +257,8 @@ class ConcurrentAutomationEngine {
             if cancelFlag { break }
             if state.isBatchDeadlineExceeded {
                 logger.log("ConcurrentEngine: BATCH DEADLINE EXCEEDED after \(Int(Date().timeIntervalSince(state.startTime)))s — stopping batch", category: .automation, level: .critical)
+                cancelFlag = true
+                await throttler.cancelAll()
                 break
             }
             if shouldAbortForMemory() {

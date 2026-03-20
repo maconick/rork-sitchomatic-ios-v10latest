@@ -109,10 +109,66 @@ struct LoginDashboardView: View {
             if vm.activeGateway.requiresChargeAmount {
                 chargeAmountPicker
             }
+
+            speedToggle
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: 14))
+    }
+
+    private var speedToggle: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "gauge.with.needle.fill")
+                    .font(.caption)
+                    .foregroundStyle(speedToggleColor)
+                Text("Automation Speed")
+                    .font(.caption.bold())
+                Spacer()
+                if vm.speedMultiplier.blocksImages {
+                    Text("No images")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            HStack(spacing: 6) {
+                ForEach(PPSRAutomationViewModel.SpeedMultiplier.allCases) { speed in
+                    Button {
+                        withAnimation(.snappy) { vm.speedMultiplier = speed }
+                    } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: speed.icon)
+                                .font(.system(size: 12))
+                            Text(speed.rawValue)
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(vm.speedMultiplier == speed ? speedColor(for: speed) : Color(.tertiarySystemGroupedBackground))
+                        .foregroundStyle(vm.speedMultiplier == speed ? .white : .primary)
+                        .clipShape(.rect(cornerRadius: 8))
+                    }
+                    .disabled(vm.isRunning)
+                }
+            }
+        }
+        .sensoryFeedback(.selection, trigger: vm.speedMultiplier.rawValue)
+    }
+
+    private var speedToggleColor: Color {
+        speedColor(for: vm.speedMultiplier)
+    }
+
+    private func speedColor(for speed: PPSRAutomationViewModel.SpeedMultiplier) -> Color {
+        switch speed {
+        case .half: .blue
+        case .normal: .green
+        case .fast: .yellow
+        case .turbo: .orange
+        case .max: .red
+        }
     }
 
     private var gatewayPicker: some View {

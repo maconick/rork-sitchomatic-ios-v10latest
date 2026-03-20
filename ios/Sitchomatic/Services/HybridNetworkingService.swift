@@ -664,12 +664,19 @@ class HybridNetworkingService {
             let connection = NWConnection(to: endpoint, using: .tcp)
             let queue = DispatchQueue(label: "hybrid-preflight-\(host)-\(port)")
             var completed = false
+            let lock = NSLock()
 
-            let timeoutWork = DispatchWorkItem { [weak connection] in
+            func finish(_ result: Bool) {
+                lock.lock()
+                defer { lock.unlock() }
                 guard !completed else { return }
                 completed = true
+                continuation.resume(returning: result)
+            }
+
+            let timeoutWork = DispatchWorkItem { [weak connection] in
                 connection?.cancel()
-                continuation.resume(returning: false)
+                finish(false)
             }
             queue.asyncAfter(deadline: .now() + 2.0, execute: timeoutWork)
 
@@ -679,35 +686,29 @@ class HybridNetworkingService {
                     let greeting = Data([0x05, 0x01, 0x00])
                     connection.send(content: greeting, completion: .contentProcessed { sendError in
                         if sendError != nil {
-                            guard !completed else { return }
-                            completed = true
                             timeoutWork.cancel()
                             connection.cancel()
-                            continuation.resume(returning: false)
+                            finish(false)
                             return
                         }
                         connection.receive(minimumIncompleteLength: 2, maximumLength: 2) { data, _, _, recvError in
-                            guard !completed else { return }
-                            completed = true
                             timeoutWork.cancel()
                             connection.cancel()
                             if recvError != nil {
-                                continuation.resume(returning: false)
+                                finish(false)
                                 return
                             }
                             guard let data, data.count >= 2, data[0] == 0x05 else {
-                                continuation.resume(returning: false)
+                                finish(false)
                                 return
                             }
-                            continuation.resume(returning: true)
+                            finish(true)
                         }
                     })
                 case .failed, .cancelled:
-                    guard !completed else { return }
-                    completed = true
                     timeoutWork.cancel()
                     connection.cancel()
-                    continuation.resume(returning: false)
+                    finish(false)
                 default:
                     break
                 }
