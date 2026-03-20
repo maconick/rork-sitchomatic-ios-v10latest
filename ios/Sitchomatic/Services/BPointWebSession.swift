@@ -35,14 +35,25 @@ class BPointWebSession: NSObject {
             let blockScript = WKUserScript(source: """
             (function() {
                 var style = document.createElement('style');
-                style.textContent = 'img, video, svg, picture, [style*="background-image"] { display: none !important; visibility: hidden !important; }';
+                style.textContent = 'img, video, audio, source, svg, picture, iframe, object, embed, canvas, [style*="background-image"], link[rel="stylesheet"], style { display: none !important; visibility: hidden !important; } * { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; }';
                 (document.head || document.documentElement).appendChild(style);
                 var observer = new MutationObserver(function(mutations) {
                     mutations.forEach(function(m) {
                         m.addedNodes.forEach(function(node) {
-                            if (node.tagName === 'IMG' || node.tagName === 'VIDEO' || node.tagName === 'SVG' || node.tagName === 'PICTURE') {
+                            if (!node || !node.tagName) return;
+                            var tag = node.tagName.toUpperCase();
+                            if (tag === 'IMG' || tag === 'VIDEO' || tag === 'AUDIO' || tag === 'SOURCE' || tag === 'SVG' || tag === 'PICTURE' || tag === 'IFRAME' || tag === 'OBJECT' || tag === 'EMBED' || tag === 'CANVAS') {
                                 node.style.display = 'none';
-                                if (node.tagName === 'IMG') node.src = '';
+                                if (tag === 'IMG' || tag === 'VIDEO' || tag === 'AUDIO' || tag === 'SOURCE') {
+                                    try { node.src = ''; } catch (e) {}
+                                }
+                            }
+                            if (tag === 'LINK' && ((node.rel || '').toLowerCase() === 'stylesheet' || ((node.as || '').toLowerCase() === 'font'))) {
+                                try { node.href = 'about:blank'; } catch (e) {}
+                                try { node.remove(); } catch (e) {}
+                            }
+                            if (tag === 'STYLE') {
+                                try { node.textContent = ''; } catch (e) {}
                             }
                         });
                     });
@@ -318,7 +329,6 @@ class BPointWebSession: NSObject {
                 el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0,buttons:1}));
                 el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
                 el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));
-                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0,detail:1}));
                 el.click();
                 if (el.focus) el.focus();
                 return tag;
@@ -508,7 +518,6 @@ class BPointWebSession: NSObject {
                 el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
                 el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
                 el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
-                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,detail:1}));
                 el.click();
                 if (el.focus) el.focus();
                 return tag;
