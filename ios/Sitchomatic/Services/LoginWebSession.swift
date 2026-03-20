@@ -546,11 +546,8 @@ class LoginWebSession: NSObject {
                 el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
                 el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
                 el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
-                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,detail:1}));
                 el.click();
                 if (el.focus) el.focus();
-                var form = el.closest('form');
-                if (form) { try { form.requestSubmit(); } catch(e) { try { form.submit(); } catch(e2) {} } }
                 return tag;
             }
             var strategies = [
