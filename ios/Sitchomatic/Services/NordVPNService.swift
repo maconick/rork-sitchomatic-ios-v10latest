@@ -602,7 +602,7 @@ class NordVPNService {
         return await downloadAllTCPConfigs(for: recommendedServers, target: target)
     }
 
-    func ensureProfileNetworkPoolsReady() async {
+    func ensureProfileNetworkPoolsReady() async -> Bool {
         let proxyService = ProxyRotationService.shared
         let nickCounts = proxyService.storageCounts(for: .nick)
         let poliCounts = proxyService.storageCounts(for: .poli)
@@ -614,7 +614,7 @@ class NordVPNService {
             || poliCounts.wireGuard != expectedWireGuardConfigCount
             || poliCounts.openVPN != expectedOpenVPNConfigCount
 
-        guard needsRefresh else { return }
+        guard needsRefresh else { return hasSelectedProfile }
 
         let originalProfile = activeKeyProfile
         let originalProfileRaw = UserDefaults.standard.string(forKey: keyProfilePersistKey)
@@ -626,19 +626,21 @@ class NordVPNService {
         }
 
         persistCurrentPrivateKey()
-        if let originalProfileRaw, let restoredProfile = NordKeyProfile(rawValue: originalProfileRaw) {
-            activateProfile(restoredProfile, persistSelection: true)
-            hasSelectedProfile = true
+        let restoredProfile: NordKeyProfile?
+        if let originalProfileRaw, let profileToRestore = NordKeyProfile(rawValue: originalProfileRaw) {
+            restoredProfile = profileToRestore
+            activateProfile(profileToRestore, persistSelection: true)
         } else {
+            restoredProfile = nil
             activateProfile(originalProfile, persistSelection: false)
             UserDefaults.standard.removeObject(forKey: keyProfilePersistKey)
-            hasSelectedProfile = false
         }
 
         ProxyRotationService.shared.reloadForActiveProfile()
         NetworkSessionFactory.shared.resetRotationIndexes()
         DeviceProxyService.shared.handleProfileSwitch()
         UserDefaults.standard.set(profileStorageSeedVersion, forKey: profileStorageSeedKey)
+        return restoredProfile != nil
     }
 
     private func rebuildNetworkPool(for profile: NordKeyProfile) async {

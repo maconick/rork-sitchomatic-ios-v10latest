@@ -62,7 +62,7 @@ struct LoginContentView: View {
         .tint(accentColor)
         .preferredColorScheme(vm.effectiveColorScheme)
         .onAppear {
-            if !initialModeApplied {
+            if !initialModeApplied, NordVPNService.shared.hasSelectedProfile {
                 initialModeApplied = true
                 switch initialMode {
                 case .joe: vm.setSiteMode(.joe)
