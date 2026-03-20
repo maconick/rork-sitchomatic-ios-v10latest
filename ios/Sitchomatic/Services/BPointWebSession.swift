@@ -9,6 +9,8 @@ class BPointWebSession: NSObject {
     private var isPageLoaded: Bool = false
     private var loadTimeoutTask: Task<Void, Never>?
     var stealthEnabled: Bool = false
+    var speedMultiplier: Double = 1.0
+    var blockImages: Bool = false
     var lastNavigationError: String?
     var lastHTTPStatusCode: Int?
     var networkConfig: ActiveNetworkConfig = .direct
@@ -28,6 +30,28 @@ class BPointWebSession: NSObject {
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+
+        if blockImages {
+            let blockScript = WKUserScript(source: """
+            (function() {
+                var style = document.createElement('style');
+                style.textContent = 'img, video, svg, picture, [style*="background-image"] { display: none !important; visibility: hidden !important; }';
+                (document.head || document.documentElement).appendChild(style);
+                var observer = new MutationObserver(function(mutations) {
+                    mutations.forEach(function(m) {
+                        m.addedNodes.forEach(function(node) {
+                            if (node.tagName === 'IMG' || node.tagName === 'VIDEO' || node.tagName === 'SVG' || node.tagName === 'PICTURE') {
+                                node.style.display = 'none';
+                                if (node.tagName === 'IMG') node.src = '';
+                            }
+                        });
+                    });
+                });
+                observer.observe(document.documentElement, { childList: true, subtree: true });
+            })();
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+            config.userContentController.addUserScript(blockScript)
+        }
 
         let proxyApplied = NetworkSessionFactory.shared.configureWKWebView(config: config, networkConfig: networkConfig, target: .ppsr)
         isProtectedRouteBlocked = networkConfig.requiresProtectedRoute && !proxyApplied
@@ -279,9 +303,47 @@ class BPointWebSession: NSObject {
     func clickCardBrandLogo(isVisa: Bool) async -> (success: Bool, detail: String) {
         let brandName = isVisa ? "visa" : "mastercard"
         let altBrandName = isVisa ? "visa" : "master"
+        let titleName = isVisa ? "Visa" : "MasterCard"
+        let typingDelay = Int(max(10, 30.0 * speedMultiplier))
         let js = """
         (function() {
+            function humanClick(el, tag) {
+                el.scrollIntoView({behavior:'instant',block:'center'});
+                var r = el.getBoundingClientRect();
+                var cx = r.left + r.width * (0.3 + Math.random() * 0.4);
+                var cy = r.top + r.height * (0.3 + Math.random() * 0.4);
+                el.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'}));
+                el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,clientX:cx,clientY:cy}));
+                el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0,buttons:1}));
+                el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0,detail:1}));
+                el.click();
+                if (el.focus) el.focus();
+                return tag;
+            }
             var strategies = [
+                function() {
+                    var el = document.querySelector('div.\(brandName)') || document.querySelector('.\(brandName)');
+                    if (el) return humanClick(el, 'CLASS_DIV');
+                    return null;
+                },
+                function() {
+                    var el = document.querySelector('[data-type="\(brandName)"]');
+                    if (el) return humanClick(el, 'DATA_TYPE');
+                    return null;
+                },
+                function() {
+                    var el = document.querySelector('[aria-label="\(titleName)"]') || document.querySelector('[aria-label="\(brandName)"]');
+                    if (el) return humanClick(el, 'ARIA_LABEL');
+                    return null;
+                },
+                function() {
+                    var el = document.querySelector('[title="\(titleName)"]') || document.querySelector('[title="\(brandName)"]');
+                    if (el) return humanClick(el, 'TITLE');
+                    return null;
+                },
                 function() {
                     var imgs = document.querySelectorAll('img');
                     for (var i = 0; i < imgs.length; i++) {
@@ -291,26 +353,24 @@ class BPointWebSession: NSObject {
                         if (src.indexOf('\(brandName)') !== -1 || alt.indexOf('\(brandName)') !== -1 || title.indexOf('\(brandName)') !== -1 ||
                             src.indexOf('\(altBrandName)') !== -1 || alt.indexOf('\(altBrandName)') !== -1) {
                             var parent = imgs[i].parentElement;
-                            if (parent && (parent.tagName === 'A' || parent.tagName === 'BUTTON' || parent.onclick || parent.getAttribute('role') === 'button')) {
-                                parent.click();
-                                return 'CLICKED_PARENT';
+                            if (parent && (parent.tagName === 'A' || parent.tagName === 'BUTTON' || parent.onclick || parent.getAttribute('role') === 'button' || parent.getAttribute('tabindex'))) {
+                                return humanClick(parent, 'IMG_PARENT');
                             }
-                            imgs[i].click();
-                            return 'CLICKED_IMG';
+                            return humanClick(imgs[i], 'IMG_DIRECT');
                         }
                     }
                     return null;
                 },
                 function() {
-                    var links = document.querySelectorAll('a, button, [role="button"], label, div[onclick]');
-                    for (var i = 0; i < links.length; i++) {
-                        var text = (links[i].textContent || '').toLowerCase().trim();
-                        var cls = (links[i].className || '').toLowerCase();
-                        var id = (links[i].id || '').toLowerCase();
-                        if (text.indexOf('\(brandName)') !== -1 || cls.indexOf('\(brandName)') !== -1 || id.indexOf('\(brandName)') !== -1 ||
-                            text.indexOf('\(altBrandName)') !== -1 || cls.indexOf('\(altBrandName)') !== -1) {
-                            links[i].click();
-                            return 'CLICKED_LINK';
+                    var all = document.querySelectorAll('div, a, button, span, [role="button"], label, [tabindex]');
+                    for (var i = 0; i < all.length; i++) {
+                        var cls = (all[i].className || '').toLowerCase();
+                        var id = (all[i].id || '').toLowerCase();
+                        var dt = (all[i].getAttribute('data-type') || '').toLowerCase();
+                        var text = (all[i].textContent || '').toLowerCase().trim();
+                        if (cls.indexOf('\(brandName)') !== -1 || id.indexOf('\(brandName)') !== -1 || dt.indexOf('\(brandName)') !== -1 ||
+                            cls.indexOf('\(altBrandName)') !== -1 || text === '\(brandName)' || text === '\(altBrandName)') {
+                            return humanClick(all[i], 'GENERIC_MATCH');
                         }
                     }
                     return null;
@@ -321,13 +381,11 @@ class BPointWebSession: NSObject {
                         var lbl = radios[i].closest('label') || document.querySelector('label[for="' + radios[i].id + '"]');
                         var labelText = lbl ? (lbl.textContent || '').toLowerCase() : '';
                         var val = (radios[i].value || '').toLowerCase();
-                        var name = (radios[i].name || '').toLowerCase();
                         if (val.indexOf('\(brandName)') !== -1 || labelText.indexOf('\(brandName)') !== -1 ||
                             val.indexOf('\(altBrandName)') !== -1 || labelText.indexOf('\(altBrandName)') !== -1) {
                             radios[i].checked = true;
-                            radios[i].click();
                             radios[i].dispatchEvent(new Event('change', {bubbles: true}));
-                            return 'CLICKED_RADIO';
+                            return humanClick(radios[i], 'RADIO');
                         }
                     }
                     return null;
@@ -340,11 +398,18 @@ class BPointWebSession: NSObject {
             return 'NOT_FOUND';
         })();
         """
-        let result = await executeJS(js)
-        if let result, result != "NOT_FOUND" {
-            return (true, "\(isVisa ? "Visa" : "Mastercard") logo clicked via: \(result)")
+
+        for attempt in 1...3 {
+            let result = await executeJS(js)
+            if let result, result != "NOT_FOUND" {
+                return (true, "\(isVisa ? "Visa" : "Mastercard") clicked via: \(result) (attempt \(attempt))")
+            }
+            if attempt < 3 {
+                let backoff = Double(attempt) * max(0.5, 1.0 * speedMultiplier)
+                try? await Task.sleep(for: .seconds(backoff))
+            }
         }
-        return (false, "\(isVisa ? "Visa" : "Mastercard") logo not found")
+        return (false, "\(isVisa ? "Visa" : "Mastercard") not found after 3 attempts")
     }
 
     func fillCardNumber(_ number: String) async -> (success: Bool, detail: String) {
@@ -432,14 +497,31 @@ class BPointWebSession: NSObject {
     func clickSubmitPayment() async -> (success: Bool, detail: String) {
         let js = """
         (function() {
+            function humanClick(el, tag) {
+                el.scrollIntoView({behavior:'instant',block:'center'});
+                var r = el.getBoundingClientRect();
+                var cx = r.left + r.width * (0.3 + Math.random() * 0.4);
+                var cy = r.top + r.height * (0.3 + Math.random() * 0.4);
+                el.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'}));
+                el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,clientX:cx,clientY:cy}));
+                el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
+                el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,detail:1}));
+                el.click();
+                if (el.focus) el.focus();
+                var form = el.closest('form');
+                if (form) { try { form.requestSubmit(); } catch(e) { try { form.submit(); } catch(e2) {} } }
+                return tag;
+            }
             var strategies = [
                 function() {
                     var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
                     for (var i = 0; i < btns.length; i++) {
                         var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
                         if (text.indexOf('pay now') !== -1 || text.indexOf('submit payment') !== -1 || text.indexOf('make payment') !== -1 || text.indexOf('proceed') !== -1) {
-                            btns[i].click();
-                            return 'CLICKED_PAY';
+                            return humanClick(btns[i], 'PAY_TEXT');
                         }
                     }
                     return null;
@@ -449,15 +531,14 @@ class BPointWebSession: NSObject {
                     for (var i = 0; i < btns.length; i++) {
                         var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
                         if (text.indexOf('pay') !== -1 || text.indexOf('submit') !== -1) {
-                            btns[i].click();
-                            return 'CLICKED_SUBMIT';
+                            return humanClick(btns[i], 'SUBMIT_TEXT');
                         }
                     }
                     return null;
                 },
                 function() {
                     var btns = document.querySelectorAll('button[type="submit"], input[type="submit"]');
-                    if (btns.length > 0) { btns[btns.length - 1].click(); return 'CLICKED_LAST_SUBMIT'; }
+                    if (btns.length > 0) return humanClick(btns[btns.length - 1], 'LAST_SUBMIT');
                     return null;
                 },
                 function() {
@@ -467,17 +548,26 @@ class BPointWebSession: NSObject {
                 }
             ];
             for (var i = 0; i < strategies.length; i++) {
-                var result = strategies[i]();
-                if (result) return result;
+                try {
+                    var result = strategies[i]();
+                    if (result) return result;
+                } catch(e) {}
             }
             return 'NOT_FOUND';
         })();
         """
-        let result = await executeJS(js)
-        if let result, result != "NOT_FOUND" {
-            return (true, "Payment submit clicked: \(result)")
+
+        for attempt in 1...3 {
+            let result = await executeJS(js)
+            if let result, result != "NOT_FOUND" {
+                return (true, "Payment submit clicked: \(result) (attempt \(attempt))")
+            }
+            if attempt < 3 {
+                let backoff = Double(attempt) * max(0.5, 1.0 * speedMultiplier)
+                try? await Task.sleep(for: .seconds(backoff))
+            }
         }
-        return (false, "Submit payment button not found")
+        return (false, "Submit payment button not found after 3 attempts")
     }
 
     private func fillSelectJS(strategies: String, value: String) -> String {
