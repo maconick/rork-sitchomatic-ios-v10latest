@@ -64,14 +64,12 @@ class LoginPersistenceService {
             guard let username = dict["username"] as? String,
                   let password = dict["password"] as? String else { return nil }
 
-            let cred = LoginCredential(username: username, password: password)
+            let id = dict["id"] as? String
+            let addedAt = (dict["addedAt"] as? TimeInterval).map { Date(timeIntervalSince1970: $0) }
+            let cred = LoginCredential(username: username, password: password, id: id, addedAt: addedAt)
 
-            if let id = dict["id"] as? String { cred.overrideId(id) }
             if let statusRaw = dict["status"] as? String, let status = CredentialStatus(rawValue: statusRaw) {
                 cred.status = status
-            }
-            if let addedTs = dict["addedAt"] as? TimeInterval {
-                cred.overrideAddedAt(Date(timeIntervalSince1970: addedTs))
             }
             if let notes = dict["notes"] as? String { cred.notes = notes }
             if let assignedPws = dict["assignedPasswords"] as? [String] { cred.assignedPasswords = assignedPws }

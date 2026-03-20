@@ -59,7 +59,7 @@ nonisolated enum CardStatus: String, Sendable, Codable {
 
 @Observable
 class PPSRCard: Identifiable {
-    private(set) var id: String
+    let id: String
     let number: String
     let expiryMonth: String
     let expiryYear: String
@@ -80,14 +80,6 @@ class PPSRCard: Identifiable {
 
     var pipeFormat: String {
         "\(number)|\(expiryMonth)|\(expiryYear)|\(cvv)"
-    }
-
-    func overrideId(_ newId: String) {
-        id = newId
-    }
-
-    func overrideAddedAt(_ date: Date) {
-        addedAt = date
     }
 
     var formattedExpiry: String {
@@ -134,14 +126,14 @@ class PPSRCard: Identifiable {
         binData?.type ?? ""
     }
 
-    init(number: String, expiryMonth: String, expiryYear: String, cvv: String) {
-        self.id = UUID().uuidString
+    init(number: String, expiryMonth: String, expiryYear: String, cvv: String, id: String? = nil, addedAt: Date? = nil) {
+        self.id = id ?? UUID().uuidString
         self.number = number
         self.expiryMonth = Self.sanitizeTwoDigit(expiryMonth)
         self.expiryYear = Self.sanitizeTwoDigit(expiryYear)
         self.cvv = cvv
         self.brand = CardBrand.detect(number)
-        self.addedAt = Date()
+        self.addedAt = addedAt ?? Date()
         self.status = .untested
         self.testResults = []
     }

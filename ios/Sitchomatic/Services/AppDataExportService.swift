@@ -596,9 +596,7 @@ class AppDataExportService {
             for ec in config.loginCredentials {
                 let key = "\(ec.username):\(ec.password)"
                 guard !existingIds.contains(key) else { continue }
-                let cred = LoginCredential(username: ec.username, password: ec.password)
-                cred.overrideId(ec.id)
-                cred.overrideAddedAt(Date(timeIntervalSince1970: ec.addedAt))
+                let cred = LoginCredential(username: ec.username, password: ec.password, id: ec.id, addedAt: Date(timeIntervalSince1970: ec.addedAt))
                 if let status = CredentialStatus(rawValue: ec.status) { cred.status = status }
                 cred.notes = ec.notes
                 cred.assignedPasswords = ec.assignedPasswords
@@ -620,9 +618,7 @@ class AppDataExportService {
             var merged = existingCards
             for ec in config.ppsrCards {
                 guard !existingNums.contains(ec.number) else { continue }
-                let card = PPSRCard(number: ec.number, expiryMonth: ec.expiryMonth, expiryYear: ec.expiryYear, cvv: ec.cvv)
-                card.overrideId(ec.id)
-                card.overrideAddedAt(Date(timeIntervalSince1970: ec.addedAt))
+                let card = PPSRCard(number: ec.number, expiryMonth: ec.expiryMonth, expiryYear: ec.expiryYear, cvv: ec.cvv, id: ec.id, addedAt: Date(timeIntervalSince1970: ec.addedAt))
                 if let status = CardStatus(rawValue: ec.status) { card.status = status }
                 card.testResults = ec.testResults.map { r in
                     PPSRTestResult(success: r.success, vin: r.vin, duration: r.duration, errorMessage: r.errorMessage, timestamp: Date(timeIntervalSince1970: r.timestamp))

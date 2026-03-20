@@ -13,11 +13,11 @@ nonisolated enum CredentialStatus: String, Sendable, Codable, CaseIterable {
 
 @Observable
 class LoginCredential: Identifiable {
-    private(set) var id: String
+    let id: String
     let username: String
     let password: String
     var status: CredentialStatus
-    var addedAt: Date
+    private(set) var addedAt: Date
     var notes: String
     var testResults: [LoginTestResult]
     var assignedPasswords: [String] = []
@@ -60,18 +60,15 @@ class LoginCredential: Identifiable {
         accountConfirmedViaTempDisabled = true
     }
 
-    init(username: String, password: String) {
-        self.id = UUID().uuidString
+    init(username: String, password: String, id: String? = nil, addedAt: Date? = nil) {
+        self.id = id ?? UUID().uuidString
         self.username = username
         self.password = password
         self.status = .untested
-        self.addedAt = Date()
+        self.addedAt = addedAt ?? Date()
         self.notes = ""
         self.testResults = []
     }
-
-    func overrideId(_ newId: String) { id = newId }
-    func overrideAddedAt(_ date: Date) { addedAt = date }
 
     func recordResult(success: Bool, duration: TimeInterval, error: String? = nil, detail: String? = nil) {
         let result = LoginTestResult(success: success, duration: duration, errorMessage: error, responseDetail: detail)

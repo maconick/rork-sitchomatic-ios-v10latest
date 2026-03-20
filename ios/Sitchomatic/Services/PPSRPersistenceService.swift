@@ -83,16 +83,12 @@ class PPSRPersistenceService {
                   let expiryYear = dict["expiryYear"] as? String,
                   let cvv = dict["cvv"] as? String else { return nil }
 
-            let card = PPSRCard(number: number, expiryMonth: expiryMonth, expiryYear: expiryYear, cvv: cvv)
+            let id = dict["id"] as? String
+            let addedAt = (dict["addedAt"] as? TimeInterval).map { Date(timeIntervalSince1970: $0) }
+            let card = PPSRCard(number: number, expiryMonth: expiryMonth, expiryYear: expiryYear, cvv: cvv, id: id, addedAt: addedAt)
 
-            if let id = dict["id"] as? String {
-                card.overrideId(id)
-            }
             if let statusRaw = dict["status"] as? String, let status = CardStatus(rawValue: statusRaw) {
                 card.status = status
-            }
-            if let addedTs = dict["addedAt"] as? TimeInterval {
-                card.overrideAddedAt(Date(timeIntervalSince1970: addedTs))
             }
 
             if let results = dict["testResults"] as? [[String: Any]] {
