@@ -1,5 +1,11 @@
 # BPoint Biller Pool System — Auto-rotating pool of 1000+ billers with smart blacklisting
 
+## Priority Areas for Targeted Fixes
+- **PPSR / BPoint pool (P0)**: Guard pool health before every run, surface blacklist reasons in Settings for quick triage, and harden JS field detection + email-field blacklisting with short per-failure run logs so the pool doesn't churn on unknown errors. Stop batches when `poolExhausted` is true and prompt for pool reset/import.
+- **Login automation (P0)**: Keep crash-resume tight by exercising `WebViewCrashRecoveryService` within Joe/Ignition runs and requeue attempts when recovery fails. Revisit login page-signal scoring in `evaluateLoginResponse` to cut false positives while keeping minimum-attempt gating intact.
+- **Proxy manager (P1)**: Validate import/auto-populate flows: enforce per-set caps/dedup (max 10 items), and surface parse failures back to the user. Confirm `useOneServerPerSet` only unlocks with >=4 active sets and that disabled items never enter rotation.
+- **Crash / safe-boot (P1)**: Exercise the safe-boot path in `CrashProtectionService` (>=2 crashes within 30s) and confirm it resets to the DNS-over-HTTPS connection mode and App-Wide United IP routing mode (DNS/App-Wide-United) without losing pending crash reports. After a stable launch, clear launch timestamps and surface the safe-boot state to the user before restoring normal proxy settings.
+
 ## Overview
 Transform BPoint from a single hardcoded URL to a massive rotating pool of 1000+ biller codes. Each test randomly picks a biller, navigates via the biller lookup page, auto-detects text boxes, fills them, and proceeds to payment. Bad billers (validation errors, email requirements) are permanently blacklisted and never used again.
 
