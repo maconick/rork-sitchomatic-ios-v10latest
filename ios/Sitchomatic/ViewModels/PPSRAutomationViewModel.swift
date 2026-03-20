@@ -109,6 +109,8 @@ class PPSRAutomationViewModel {
             case .max: "bolt.horizontal.fill"
             }
         }
+
+        var blocksImages: Bool { multiplier <= 0.5 }
     }
 
     nonisolated enum CardSortOption: String, CaseIterable, Identifiable, Sendable {

@@ -126,7 +126,7 @@ struct LoginDashboardView: View {
                 Text("Automation Speed")
                     .font(.caption.bold())
                 Spacer()
-                if vm.speedMultiplier.multiplier < 0.5 {
+                if vm.speedMultiplier.blocksImages {
                     Text("No images")
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.orange)
@@ -146,7 +146,7 @@ struct LoginDashboardView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                        .background(vm.speedMultiplier == speed ? speedButtonColor(speed) : Color(.tertiarySystemGroupedBackground))
+                        .background(vm.speedMultiplier == speed ? speedColor(for: speed) : Color(.tertiarySystemGroupedBackground))
                         .foregroundStyle(vm.speedMultiplier == speed ? .white : .primary)
                         .clipShape(.rect(cornerRadius: 8))
                     }
@@ -158,16 +158,10 @@ struct LoginDashboardView: View {
     }
 
     private var speedToggleColor: Color {
-        switch vm.speedMultiplier {
-        case .half: .blue
-        case .normal: .green
-        case .fast: .yellow
-        case .turbo: .orange
-        case .max: .red
-        }
+        speedColor(for: vm.speedMultiplier)
     }
 
-    private func speedButtonColor(_ speed: PPSRAutomationViewModel.SpeedMultiplier) -> Color {
+    private func speedColor(for speed: PPSRAutomationViewModel.SpeedMultiplier) -> Color {
         switch speed {
         case .half: .blue
         case .normal: .green
