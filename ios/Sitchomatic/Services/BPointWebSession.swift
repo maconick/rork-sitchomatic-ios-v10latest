@@ -320,7 +320,6 @@ class BPointWebSession: NSObject {
             function humanClick(el, tag) {
                 el.scrollIntoView({behavior:'instant',block:'center'});
                 var r = el.getBoundingClientRect();
-                var r = el.getBoundingClientRect();
                 var cx = r.left + r.width * (0.3 + Math.random() * 0.4);
                 var cy = r.top + r.height * (0.3 + Math.random() * 0.4);
                 el.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'}));
@@ -521,8 +520,6 @@ class BPointWebSession: NSObject {
                 el.click();
                 if (el.focus) el.focus();
                 return tag;
-            }
-            var strategies = [
             }
             var strategies = [
                 function() {
