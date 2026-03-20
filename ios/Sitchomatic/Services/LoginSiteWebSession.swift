@@ -60,6 +60,17 @@ class LoginSiteWebSession: NSObject {
     var onProcessTerminated: (() -> Void)?
     var monitoringSessionId: String?
 
+    private func resolvePageLoad(_ result: Bool, errorMessage: String? = nil) {
+        guard let cont = pageLoadContinuation else { return }
+        pageLoadContinuation = nil
+        if let errorMessage {
+            lastNavigationError = lastNavigationError ?? errorMessage
+        }
+        loadTimeoutTask?.cancel()
+        loadTimeoutTask = nil
+        cont.resume(returning: result)
+    }
+
     init(targetURL: URL, networkConfig: ActiveNetworkConfig = .direct, proxyTarget: ProxyRotationService.ProxyTarget? = nil) {
         self.targetURL = targetURL
         self.networkConfig = networkConfig
@@ -218,10 +229,8 @@ class LoginSiteWebSession: NSObject {
             self.pageLoadContinuation = continuation
             self.loadTimeoutTask = Task {
                 try? await Task.sleep(for: .seconds(timeout))
-                if self.pageLoadContinuation != nil {
-                    self.pageLoadContinuation = nil
-                    self.lastNavigationError = self.lastNavigationError ?? "Page load timed out after \(Int(timeout))s"
-                    continuation.resume(returning: false)
+                await MainActor.run {
+                    self.resolvePageLoad(false, errorMessage: "Page load timed out after \(Int(timeout))s")
                 }
             }
         }
@@ -1923,30 +1932,21 @@ extension LoginSiteWebSession: WKNavigationDelegate {
                 SessionActivityMonitor.shared.recordNavigation(sessionId: sid)
             }
             self.isPageLoaded = true
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: true)
-            }
+            self.resolvePageLoad(true)
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             self.lastNavigationError = self.classifyNavigationError(error)
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: false)
-            }
+            self.resolvePageLoad(false)
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             self.lastNavigationError = self.classifyNavigationError(error)
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: false)
-            }
+            self.resolvePageLoad(false)
         }
     }
 
@@ -1966,10 +1966,7 @@ extension LoginSiteWebSession: WKNavigationDelegate {
             self.lastNavigationError = "WebKit content process terminated (crash)"
             self.logger.log("LoginSiteWebSession: WKWebView content process TERMINATED — controlled recovery needed", category: .webView, level: .critical)
             WebViewPool.shared.reportProcessTermination()
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: false)
-            }
+            self.resolvePageLoad(false)
             self.onProcessTerminated?()
         }
     }

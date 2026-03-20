@@ -21,6 +21,17 @@ class LoginWebSession: NSObject {
     var onFingerprintLog: ((String, PPSRLogEntry.Level) -> Void)?
     private let logger = DebugLogger.shared
 
+    private func resolvePageLoad(_ result: Bool, errorMessage: String? = nil) {
+        guard let cont = pageLoadContinuation else { return }
+        pageLoadContinuation = nil
+        if let errorMessage {
+            lastNavigationError = lastNavigationError ?? errorMessage
+        }
+        loadTimeoutTask?.cancel()
+        loadTimeoutTask = nil
+        cont.resume(returning: result)
+    }
+
     static let targetURL = URL(string: "https://transact.ppsr.gov.au/CarCheck/")!
     private static let blockResourcesRuleListID = "SitchomaticBlockHeavyResources"
     private static let blockResourcesRuleListJSON = """
@@ -234,10 +245,8 @@ class LoginWebSession: NSObject {
 
             self.loadTimeoutTask = Task {
                 try? await Task.sleep(for: .seconds(timeout))
-                if self.pageLoadContinuation != nil {
-                    self.pageLoadContinuation = nil
-                    self.lastNavigationError = self.lastNavigationError ?? "Page load timed out after \(Int(timeout))s"
-                    continuation.resume(returning: false)
+                await MainActor.run {
+                    self.resolvePageLoad(false, errorMessage: "Page load timed out after \(Int(timeout))s")
                 }
             }
         }
@@ -858,30 +867,21 @@ extension LoginWebSession: WKNavigationDelegate {
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor in
             self.isPageLoaded = true
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: true)
-            }
+            self.resolvePageLoad(true)
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             self.lastNavigationError = self.classifyNavigationError(error)
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: false)
-            }
+            self.resolvePageLoad(false)
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             self.lastNavigationError = self.classifyNavigationError(error)
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: false)
-            }
+            self.resolvePageLoad(false)
         }
     }
 

@@ -5,7 +5,7 @@ actor AutomationThrottler {
     private var maxConcurrency: Int
     private var backoffMs: Int = 0
     private var consecutiveFailures: Int = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [CheckedContinuation<Bool, Never>] = []
     private var isCancelled: Bool = false
 
     init(maxConcurrency: Int = 5) {
@@ -17,14 +17,14 @@ actor AutomationThrottler {
         if activeCount < maxConcurrency {
             activeCount += 1
         } else {
-            await withCheckedContinuation { continuation in
+            let acquired = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
                 if isCancelled {
-                    continuation.resume()
+                    continuation.resume(returning: false)
                 } else {
                     waiters.append(continuation)
                 }
             }
-            guard !isCancelled else { return false }
+            guard acquired, !isCancelled else { return false }
         }
         if backoffMs > 0 {
             try? await Task.sleep(for: .milliseconds(backoffMs))
@@ -48,7 +48,7 @@ actor AutomationThrottler {
         while !waiters.isEmpty && activeCount < maxConcurrency {
             activeCount += 1
             let next = waiters.removeFirst()
-            next.resume()
+            next.resume(returning: true)
         }
     }
 
@@ -72,7 +72,7 @@ actor AutomationThrottler {
         let pending = waiters
         waiters.removeAll()
         for waiter in pending {
-            waiter.resume()
+            waiter.resume(returning: false)
         }
     }
 
@@ -84,7 +84,7 @@ actor AutomationThrottler {
         let pending = waiters
         waiters.removeAll()
         for waiter in pending {
-            waiter.resume()
+            waiter.resume(returning: false)
         }
     }
 }

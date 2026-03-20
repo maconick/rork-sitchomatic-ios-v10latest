@@ -19,6 +19,17 @@ class BPointWebSession: NSObject {
     var onFingerprintLog: ((String, PPSRLogEntry.Level) -> Void)?
     private let logger = DebugLogger.shared
 
+    private func resolvePageLoad(_ result: Bool, errorMessage: String? = nil) {
+        guard let cont = pageLoadContinuation else { return }
+        pageLoadContinuation = nil
+        if let errorMessage {
+            lastNavigationError = lastNavigationError ?? errorMessage
+        }
+        loadTimeoutTask?.cancel()
+        loadTimeoutTask = nil
+        cont.resume(returning: result)
+    }
+
     static let targetURL = URL(string: "https://www.bpoint.com.au/payments/DepartmentOfFinance")!
     static let billerLookupURL = URL(string: "https://www.bpoint.com.au/payments/billpayment/Payment/Index")!
     private static let blockResourcesRuleListID = "SitchomaticBlockHeavyResources"
@@ -169,10 +180,8 @@ class BPointWebSession: NSObject {
             self.pageLoadContinuation = continuation
             self.loadTimeoutTask = Task {
                 try? await Task.sleep(for: .seconds(timeout))
-                if self.pageLoadContinuation != nil {
-                    self.pageLoadContinuation = nil
-                    self.lastNavigationError = self.lastNavigationError ?? "Page load timed out after \(Int(timeout))s"
-                    continuation.resume(returning: false)
+                await MainActor.run {
+                    self.resolvePageLoad(false, errorMessage: "Page load timed out after \(Int(timeout))s")
                 }
             }
         }
@@ -212,9 +221,8 @@ class BPointWebSession: NSObject {
             self.pageLoadContinuation = continuation
             self.loadTimeoutTask = Task {
                 try? await Task.sleep(for: .seconds(timeout))
-                if self.pageLoadContinuation != nil {
-                    self.pageLoadContinuation = nil
-                    continuation.resume(returning: false)
+                await MainActor.run {
+                    self.resolvePageLoad(false, errorMessage: "Page load timed out after \(Int(timeout))s")
                 }
             }
         }
@@ -651,10 +659,8 @@ class BPointWebSession: NSObject {
             self.pageLoadContinuation = continuation
             self.loadTimeoutTask = Task {
                 try? await Task.sleep(for: .seconds(timeout))
-                if self.pageLoadContinuation != nil {
-                    self.pageLoadContinuation = nil
-                    self.lastNavigationError = self.lastNavigationError ?? "Biller lookup page timed out after \(Int(timeout))s"
-                    continuation.resume(returning: false)
+                await MainActor.run {
+                    self.resolvePageLoad(false, errorMessage: "Biller lookup page timed out after \(Int(timeout))s")
                 }
             }
         }
@@ -1051,30 +1057,21 @@ extension BPointWebSession: WKNavigationDelegate {
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor in
             self.isPageLoaded = true
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: true)
-            }
+            self.resolvePageLoad(true)
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             self.lastNavigationError = error.localizedDescription
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: false)
-            }
+            self.resolvePageLoad(false)
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             self.lastNavigationError = error.localizedDescription
-            if let cont = self.pageLoadContinuation {
-                self.pageLoadContinuation = nil
-                cont.resume(returning: false)
-            }
+            self.resolvePageLoad(false)
         }
     }
 
