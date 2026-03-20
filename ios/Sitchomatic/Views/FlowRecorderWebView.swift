@@ -1,5 +1,7 @@
+import Foundation
 import SwiftUI
 import WebKit
+import UIKit
 
 struct FlowRecorderWebView: UIViewRepresentable {
     let url: URL

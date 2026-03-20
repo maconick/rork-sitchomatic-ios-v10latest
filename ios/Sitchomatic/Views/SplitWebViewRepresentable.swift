@@ -1,5 +1,7 @@
+import Foundation
 import SwiftUI
 import WebKit
+import UIKit
 
 struct SplitWebViewRepresentable: UIViewRepresentable {
     let url: URL

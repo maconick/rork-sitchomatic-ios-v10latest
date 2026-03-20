@@ -1,5 +1,7 @@
+import Foundation
 import SwiftUI
 import AVKit
+import UIKit
 
 struct IntroVideoView: View {
     @Binding var isFinished: Bool
