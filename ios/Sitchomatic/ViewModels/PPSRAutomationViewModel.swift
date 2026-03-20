@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import UIKit
 
 nonisolated struct BatchResult: Sendable {
     let working: Int

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LoginSessionMonitorContentView: View {
     let vm: LoginViewModel

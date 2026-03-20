@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Observation
 
 @Observable
 class EvidenceBundle: Identifiable {

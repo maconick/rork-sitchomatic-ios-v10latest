@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct BlacklistView: View {
     let vm: LoginViewModel

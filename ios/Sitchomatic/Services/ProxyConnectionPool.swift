@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Observation
 
 nonisolated struct PooledConnectionInfo: Sendable {
     let id: UUID

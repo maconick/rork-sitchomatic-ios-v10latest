@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ScreenshotFlipbookView: View {
     let screenshots: [PPSRDebugScreenshot]

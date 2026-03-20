@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LoginDebugScreenshotsView: View {
     @Bindable var vm: LoginViewModel

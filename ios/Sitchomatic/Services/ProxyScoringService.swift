@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 nonisolated struct ProxyScore: Sendable {
     let proxyId: UUID

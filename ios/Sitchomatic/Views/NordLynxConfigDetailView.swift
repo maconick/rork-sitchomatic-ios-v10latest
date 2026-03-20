@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NordLynxConfigDetailView: View {
     let config: NordLynxGeneratedConfig

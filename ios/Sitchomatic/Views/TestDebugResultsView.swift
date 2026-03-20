@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct TestDebugResultsView: View {
     @Bindable var vm: TestDebugViewModel
