@@ -88,7 +88,6 @@ class PersistentFileStorageService {
 
         var appState = AppStateSnapshot()
         appState.activeAppMode = UserDefaults.standard.string(forKey: "activeAppMode") ?? ""
-        appState.introVideoEnabled = UserDefaults.standard.bool(forKey: "introVideoEnabled")
         appState.hasSelectedMode = UserDefaults.standard.bool(forKey: "hasSelectedMode")
         appState.productMode = UserDefaults.standard.string(forKey: "productMode") ?? ""
         appState.defaultSettingsApplied = UserDefaults.standard.bool(forKey: "default_settings_applied_v2")
@@ -396,7 +395,6 @@ class PersistentFileStorageService {
     private func saveAppState() {
         var state = AppStateSnapshot()
         state.activeAppMode = UserDefaults.standard.string(forKey: "activeAppMode") ?? ""
-        state.introVideoEnabled = UserDefaults.standard.bool(forKey: "introVideoEnabled")
         state.hasSelectedMode = UserDefaults.standard.bool(forKey: "hasSelectedMode")
         state.productMode = UserDefaults.standard.string(forKey: "productMode") ?? ""
         state.defaultSettingsApplied = UserDefaults.standard.bool(forKey: "default_settings_applied_v2")
@@ -420,7 +418,6 @@ class PersistentFileStorageService {
         if !state.activeAppMode.isEmpty {
             UserDefaults.standard.set(state.activeAppMode, forKey: "activeAppMode")
         }
-        UserDefaults.standard.set(state.introVideoEnabled, forKey: "introVideoEnabled")
         if state.defaultSettingsApplied {
             UserDefaults.standard.set(true, forKey: "default_settings_applied_v2")
         }
@@ -629,7 +626,6 @@ nonisolated struct NetworkFileState: Codable, Sendable {
 
 nonisolated struct AppStateSnapshot: Codable, Sendable {
     var activeAppMode: String = ""
-    var introVideoEnabled: Bool = false
     var hasSelectedMode: Bool = false
     var productMode: String = ""
     var defaultSettingsApplied: Bool = false
