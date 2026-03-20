@@ -21,6 +21,35 @@ class BPointWebSession: NSObject {
 
     static let targetURL = URL(string: "https://www.bpoint.com.au/payments/DepartmentOfFinance")!
     static let billerLookupURL = URL(string: "https://www.bpoint.com.au/payments/billpayment/Payment/Index")!
+    private static let blockResourcesRuleListID = "SitchomaticBlockHeavyResources"
+    private static let blockResourcesRuleListJSON = """
+    [
+      {
+        "trigger": {
+          "url-filter": ".*",
+          "resource-type": ["image", "media", "font", "style-sheet"]
+        },
+        "action": {
+          "type": "block"
+        }
+      }
+    ]
+    """
+
+    private func installBlockContentRules(on contentController: WKUserContentController) {
+        guard blockImages else { return }
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: Self.blockResourcesRuleListID,
+            encodedContentRuleList: Self.blockResourcesRuleListJSON
+        ) { [weak self] ruleList, error in
+            guard let self else { return }
+            if let ruleList {
+                contentController.add(ruleList)
+            } else if let error {
+                self.logger.log("BPointWebSession: failed to compile block content rules (\(error.localizedDescription))", category: .webView, level: .warning)
+            }
+        }
+    }
 
     func setUp() {
         logger.log("BPointWebSession: setUp (stealth=\(stealthEnabled), network=\(networkConfig.label))", category: .webView, level: .debug)
@@ -63,6 +92,7 @@ class BPointWebSession: NSObject {
             """, injectionTime: .atDocumentStart, forMainFrameOnly: false)
             config.userContentController.addUserScript(blockScript)
         }
+        installBlockContentRules(on: config.userContentController)
 
         let proxyApplied = NetworkSessionFactory.shared.configureWKWebView(config: config, networkConfig: networkConfig, target: .ppsr)
         isProtectedRouteBlocked = networkConfig.requiresProtectedRoute && !proxyApplied

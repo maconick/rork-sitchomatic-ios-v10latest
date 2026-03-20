@@ -22,6 +22,20 @@ class LoginWebSession: NSObject {
     private let logger = DebugLogger.shared
 
     static let targetURL = URL(string: "https://transact.ppsr.gov.au/CarCheck/")!
+    private static let blockResourcesRuleListID = "SitchomaticBlockHeavyResources"
+    private static let blockResourcesRuleListJSON = """
+    [
+      {
+        "trigger": {
+          "url-filter": ".*",
+          "resource-type": ["image", "media", "font", "style-sheet"]
+        },
+        "action": {
+          "type": "block"
+        }
+      }
+    ]
+    """
 
     private var blockImagesScript: WKUserScript? {
         guard blockImages else { return nil }
@@ -67,6 +81,21 @@ class LoginWebSession: NSObject {
         }
     }
 
+    private func installBlockContentRules(on contentController: WKUserContentController) {
+        guard blockImages else { return }
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: Self.blockResourcesRuleListID,
+            encodedContentRuleList: Self.blockResourcesRuleListJSON
+        ) { [weak self] ruleList, error in
+            guard let self else { return }
+            if let ruleList {
+                contentController.add(ruleList)
+            } else if let error {
+                self.logger.log("LoginWebSession: failed to compile block content rules (\(error.localizedDescription))", category: .webView, level: .warning)
+            }
+        }
+    }
+
     func setUp() {
         logger.log("LoginWebSession: setUp (stealth=\(stealthEnabled), network=\(networkConfig.label))", category: .webView, level: .debug)
         if webView != nil {
@@ -81,6 +110,7 @@ class LoginWebSession: NSObject {
         if let blockScript = blockImagesScript {
             config.userContentController.addUserScript(blockScript)
         }
+        installBlockContentRules(on: config.userContentController)
 
         let proxyApplied = NetworkSessionFactory.shared.configureWKWebView(config: config, networkConfig: networkConfig, target: .ppsr)
         isProtectedRouteBlocked = networkConfig.requiresProtectedRoute && !proxyApplied
