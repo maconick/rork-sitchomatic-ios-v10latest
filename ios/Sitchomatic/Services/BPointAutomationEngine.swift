@@ -8,6 +8,7 @@ class BPointAutomationEngine {
     let maxConcurrency: Int = 8
     var debugMode: Bool = false
     var stealthEnabled: Bool = false
+    var speedMultiplier: Double = 1.0
     var screenshotCropRect: CGRect = .zero
     private let logger = DebugLogger.shared
     private let billerPool = BPointBillerPoolService.shared
@@ -75,6 +76,8 @@ class BPointAutomationEngine {
 
         let session = BPointWebSession()
         session.stealthEnabled = stealthEnabled
+        session.speedMultiplier = speedMultiplier
+        session.blockImages = speedMultiplier <= 0.5
         session.networkConfig = networkFactory.appWideConfig(for: .ppsr)
 
         session.onFingerprintLog = { [weak self] msg, level in
@@ -145,6 +148,8 @@ class BPointAutomationEngine {
                 } else {
                     session.tearDown()
                     session.stealthEnabled = stealthEnabled
+                    session.speedMultiplier = speedMultiplier
+                    session.blockImages = speedMultiplier <= 0.5
                     session.setUp()
                     loaded = await session.loadBillerLookupPage(timeout: AutomationSettings.minimumTimeoutSeconds)
                 }
@@ -164,7 +169,7 @@ class BPointAutomationEngine {
             }
 
             guard !isTimedOut(deadline) else { return .timeout }
-            try? await Task.sleep(for: .seconds(1))
+            await speedDelay(seconds: 1)
 
             advanceTo(.fillingVIN, check: check, message: "Entering biller code: \(billerCode)")
             let searchResult = await session.enterBillerCodeAndSearch(billerCode)
@@ -183,7 +188,7 @@ class BPointAutomationEngine {
                 blacklistBiller(billerCode, reason: "No content change after search")
                 continue
             }
-            try? await Task.sleep(for: .seconds(1.5))
+            await speedDelay(seconds: 1.5)
 
             let validationCheck1 = await session.checkForValidationErrors()
             if validationCheck1.hasErrors {
@@ -203,7 +208,7 @@ class BPointAutomationEngine {
             }
             check.logs.append(PPSRLogEntry(message: "Form filled: \(fillResult.detail)", level: .success))
 
-            try? await Task.sleep(for: .seconds(1))
+            await speedDelay(seconds: 1)
 
             let validationCheck2 = await session.checkForValidationErrors()
             if validationCheck2.hasErrors {
@@ -226,7 +231,7 @@ class BPointAutomationEngine {
                     break
                 }
                 check.logs.append(PPSRLogEntry(message: "\(brandName) click attempt \(attempt)/3 failed: \(brandResult.detail)", level: .warning))
-                if attempt < 3 { try? await Task.sleep(for: .seconds(1)) }
+                if attempt < 3 { await speedDelay(seconds: 1) }
             }
 
             if !brandClicked {
@@ -234,7 +239,7 @@ class BPointAutomationEngine {
             }
 
             guard !isTimedOut(deadline) else { return .timeout }
-            try? await Task.sleep(for: .seconds(2))
+            await speedDelay(seconds: 2)
 
             let remainingForNav = max(5, deadline.timeIntervalSinceNow - 5)
             let navigated = await session.waitForNavigation(timeout: min(TimeoutResolver.resolveAutomationTimeout(15), remainingForNav))
@@ -245,7 +250,7 @@ class BPointAutomationEngine {
             }
 
             guard !isTimedOut(deadline) else { return .timeout }
-            try? await Task.sleep(for: .seconds(2))
+            await speedDelay(seconds: 2)
 
             let emailCheck = await session.detectEmailFieldOnPaymentPage()
             if emailCheck.hasEmail {
@@ -286,7 +291,7 @@ class BPointAutomationEngine {
             await captureScreenshotForCheck(session: session, check: check, step: "card_fill_failed", note: "Card fill failed", autoResult: .fail)
             return .connectionFailure
         }
-        try? await Task.sleep(for: .milliseconds(300))
+        await speedDelay(milliseconds: 300)
 
         let expiryStr = "\(check.expiryMonth)/\(check.expiryYear)"
         let expiryResult = await session.fillExpiry(expiryStr)
@@ -303,7 +308,7 @@ class BPointAutomationEngine {
             }
             guard yearResult else { return .connectionFailure }
         }
-        try? await Task.sleep(for: .milliseconds(200))
+        await speedDelay(milliseconds: 200)
 
         let cvvResult = await retryFill(session: session, check: check, fieldName: "CVV") {
             await session.fillCVV(check.cvv)
@@ -313,7 +318,7 @@ class BPointAutomationEngine {
             return .connectionFailure
         }
         guard !isTimedOut(deadline) else { return .timeout }
-        try? await Task.sleep(for: .milliseconds(500))
+        await speedDelay(milliseconds: 500)
 
         await captureScreenshotForCheck(session: session, check: check, step: "pre_submit", note: "Card details filled — pre-submit", autoResult: .unknown)
 
@@ -329,7 +334,7 @@ class BPointAutomationEngine {
                 break
             }
             check.logs.append(PPSRLogEntry(message: "Submit attempt \(attempt)/3 failed: \(submitResult.detail)", level: .warning))
-            if attempt < 3 { try? await Task.sleep(for: .seconds(Double(attempt))) }
+            if attempt < 3 { await speedDelay(seconds: Double(attempt)) }
         }
 
         guard submitResult.success else {
@@ -344,7 +349,7 @@ class BPointAutomationEngine {
         if !postNavigated {
             check.logs.append(PPSRLogEntry(message: "Page did not navigate after submit — checking content", level: .warning))
         }
-        try? await Task.sleep(for: .seconds(2))
+        await speedDelay(seconds: 2)
 
         let postSubmitURL = await session.getCurrentURL()
         let urlChanged = postSubmitURL != preSubmitURL
@@ -361,7 +366,7 @@ class BPointAutomationEngine {
         if evaluation.outcome == .uncertain {
             check.logs.append(PPSRLogEntry(message: "Initial eval uncertain — polling for result (up to 10s)...", level: .warning))
             for pollIdx in 1...5 {
-                try? await Task.sleep(for: .seconds(2))
+                await speedDelay(seconds: 2)
                 let pollContent = await session.getPageContent()
                 let pollLower = pollContent.lowercased()
                 let pollURL = await session.getCurrentURL()
@@ -520,7 +525,7 @@ class BPointAutomationEngine {
             if attempt < 3 {
                 let baseMs = 500 * (1 << (attempt - 1))
                 let jitter = Int.random(in: 0...Int(Double(baseMs) * 0.3))
-                try? await Task.sleep(for: .milliseconds(baseMs + jitter))
+                await speedDelay(milliseconds: baseMs + jitter)
             }
         }
         failCheck(check, message: "\(fieldName) FILL FAILED after 3 attempts")
@@ -530,6 +535,16 @@ class BPointAutomationEngine {
     private func advanceTo(_ status: PPSRCheckStatus, check: PPSRCheck, message: String) {
         check.status = status
         check.logs.append(PPSRLogEntry(message: message, level: status == .completed ? .success : .info))
+    }
+
+    private func speedDelay(seconds: Double) async {
+        let adjusted = max(0.05, seconds * speedMultiplier)
+        try? await Task.sleep(for: .seconds(adjusted))
+    }
+
+    private func speedDelay(milliseconds: Int) async {
+        let adjusted = max(50, Int(Double(milliseconds) * speedMultiplier))
+        try? await Task.sleep(for: .milliseconds(adjusted))
     }
 
     private func failCheck(_ check: PPSRCheck, message: String) {

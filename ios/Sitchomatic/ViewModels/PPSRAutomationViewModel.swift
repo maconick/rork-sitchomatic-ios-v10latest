@@ -73,6 +73,45 @@ class PPSRAutomationViewModel {
     var cardSortAscending: Bool = UserDefaults.standard.bool(forKey: "ppsr_card_sort_ascending") {
         didSet { UserDefaults.standard.set(cardSortAscending, forKey: "ppsr_card_sort_ascending") }
     }
+    var speedMultiplier: SpeedMultiplier = {
+        if let raw = UserDefaults.standard.string(forKey: "ppsr_speed_multiplier"),
+           let speed = SpeedMultiplier(rawValue: raw) { return speed }
+        return .normal
+    }() {
+        didSet { UserDefaults.standard.set(speedMultiplier.rawValue, forKey: "ppsr_speed_multiplier") }
+    }
+
+    nonisolated enum SpeedMultiplier: String, CaseIterable, Identifiable, Sendable {
+        case half = "0.5×"
+        case normal = "1.0×"
+        case fast = "1.5×"
+        case turbo = "2.0×"
+        case max = "3.0×"
+
+        var id: String { rawValue }
+
+        var multiplier: Double {
+            switch self {
+            case .half: 2.0
+            case .normal: 1.0
+            case .fast: 0.67
+            case .turbo: 0.5
+            case .max: 0.33
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .half: "tortoise.fill"
+            case .normal: "figure.walk"
+            case .fast: "hare.fill"
+            case .turbo: "bolt.fill"
+            case .max: "bolt.horizontal.fill"
+            }
+        }
+
+        var blocksImages: Bool { multiplier <= 0.5 }
+    }
 
     nonisolated enum CardSortOption: String, CaseIterable, Identifiable, Sendable {
         case dateAdded = "Date Added"
@@ -795,6 +834,7 @@ class PPSRAutomationViewModel {
         bpointEngine.debugMode = debugMode
         bpointEngine.stealthEnabled = stealthEnabled
         bpointEngine.screenshotCropRect = screenshotCropRect
+        bpointEngine.speedMultiplier = speedMultiplier.multiplier
     }
 
     private func configureEngine() {
@@ -802,6 +842,7 @@ class PPSRAutomationViewModel {
         engine.stealthEnabled = stealthEnabled
         engine.retrySubmitOnFail = retrySubmitOnFail
         engine.screenshotCropRect = screenshotCropRect
+        engine.speedMultiplier = speedMultiplier.multiplier
     }
 
     private func handleOutcome(_ outcome: CheckOutcome, card: PPSRCard, check: PPSRCheck, vin: String) {

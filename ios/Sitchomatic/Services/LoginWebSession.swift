@@ -10,6 +10,8 @@ class LoginWebSession: NSObject {
     private var isPageLoaded: Bool = false
     private var loadTimeoutTask: Task<Void, Never>?
     var stealthEnabled: Bool = false
+    var speedMultiplier: Double = 1.0
+    var blockImages: Bool = false
     var lastNavigationError: String?
     var lastHTTPStatusCode: Int?
     var networkConfig: ActiveNetworkConfig = .direct
@@ -20,6 +22,79 @@ class LoginWebSession: NSObject {
     private let logger = DebugLogger.shared
 
     static let targetURL = URL(string: "https://transact.ppsr.gov.au/CarCheck/")!
+    private static let blockResourcesRuleListID = "SitchomaticBlockHeavyResources"
+    private static let blockResourcesRuleListJSON = """
+    [
+      {
+        "trigger": {
+          "url-filter": ".*",
+          "resource-type": ["image", "media", "font", "style-sheet"]
+        },
+        "action": {
+          "type": "block"
+        }
+      }
+    ]
+    """
+
+    private var blockImagesScript: WKUserScript? {
+        guard blockImages else { return nil }
+        return WKUserScript(source: """
+        (function() {
+            var style = document.createElement('style');
+            style.textContent = 'img, video, audio, source, svg, picture, iframe, object, embed, canvas, [style*="background-image"], link[rel="stylesheet"], style { display: none !important; visibility: hidden !important; } * { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; }';
+            (document.head || document.documentElement).appendChild(style);
+            var observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(m) {
+                    m.addedNodes.forEach(function(node) {
+                        if (!node || !node.tagName) return;
+                        var tag = node.tagName.toUpperCase();
+                        if (tag === 'IMG' || tag === 'VIDEO' || tag === 'AUDIO' || tag === 'SOURCE' || tag === 'SVG' || tag === 'PICTURE' || tag === 'IFRAME' || tag === 'OBJECT' || tag === 'EMBED' || tag === 'CANVAS') {
+                            node.style.display = 'none';
+                            if (tag === 'IMG' || tag === 'VIDEO' || tag === 'AUDIO' || tag === 'SOURCE') {
+                                try { node.src = ''; } catch (e) {}
+                            }
+                        }
+                        if (tag === 'LINK' && ((node.rel || '').toLowerCase() === 'stylesheet' || ((node.as || '').toLowerCase() === 'font'))) {
+                            try { node.href = 'about:blank'; } catch (e) {}
+                            try { node.remove(); } catch (e) {}
+                        }
+                        if (tag === 'STYLE') {
+                            try { node.textContent = ''; } catch (e) {}
+                        }
+                    });
+                });
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+        })();
+        """, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+    }
+
+    private func installActiveUserScripts(stealthScript: WKUserScript?) {
+        guard let contentController = webView?.configuration.userContentController else { return }
+        contentController.removeAllUserScripts()
+        if let blockScript = blockImagesScript {
+            contentController.addUserScript(blockScript)
+        }
+        if let stealthScript {
+            contentController.addUserScript(stealthScript)
+        }
+    }
+
+    private func installBlockContentRules(on contentController: WKUserContentController) {
+        guard blockImages else { return }
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: Self.blockResourcesRuleListID,
+            encodedContentRuleList: Self.blockResourcesRuleListJSON
+        ) { [weak self] ruleList, error in
+            guard let self else { return }
+            if let ruleList {
+                contentController.add(ruleList)
+            } else if let error {
+                self.logger.log("LoginWebSession: failed to compile block content rules (\(error.localizedDescription))", category: .webView, level: .warning)
+            }
+        }
+    }
 
     func setUp() {
         logger.log("LoginWebSession: setUp (stealth=\(stealthEnabled), network=\(networkConfig.label))", category: .webView, level: .debug)
@@ -31,6 +106,11 @@ class LoginWebSession: NSObject {
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+
+        if let blockScript = blockImagesScript {
+            config.userContentController.addUserScript(blockScript)
+        }
+        installBlockContentRules(on: config.userContentController)
 
         let proxyApplied = NetworkSessionFactory.shared.configureWKWebView(config: config, networkConfig: networkConfig, target: .ppsr)
         isProtectedRouteBlocked = networkConfig.requiresProtectedRoute && !proxyApplied
@@ -84,8 +164,7 @@ class LoginWebSession: NSObject {
 
     func applyNewStealthProfile(userAgent: String, userScript: WKUserScript) {
         webView?.customUserAgent = userAgent
-        webView?.configuration.userContentController.removeAllUserScripts()
-        webView?.configuration.userContentController.addUserScript(userScript)
+        installActiveUserScripts(stealthScript: userScript)
     }
 
     func injectFingerprint() async {
@@ -116,8 +195,7 @@ class LoginWebSession: NSObject {
                 self.stealthProfile = newProfile
                 webView?.customUserAgent = newProfile.userAgent
                 let newJS = stealth.createStealthUserScript(profile: newProfile)
-                webView?.configuration.userContentController.removeAllUserScripts()
-                webView?.configuration.userContentController.addUserScript(newJS)
+                installActiveUserScripts(stealthScript: newJS)
                 _ = await executeJS(PPSRStealthService.shared.buildComprehensiveStealthJSPublic(profile: newProfile))
                 try? await Task.sleep(for: .milliseconds(500))
             }
@@ -511,68 +589,94 @@ class LoginWebSession: NSObject {
     func clickShowMyResults() async -> (success: Bool, detail: String) {
         let findBtnJS = """
         (function() {
+            function humanClick(el, tag) {
+                el.scrollIntoView({behavior:'instant',block:'center'});
+                var r = el.getBoundingClientRect();
+                var cx = r.left + r.width * (0.3 + Math.random() * 0.4);
+                var cy = r.top + r.height * (0.3 + Math.random() * 0.4);
+                el.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'}));
+                el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,clientX:cx,clientY:cy}));
+                el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
+                el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                el.click();
+                if (el.focus) el.focus();
+                return tag;
+            }
             var strategies = [
+                function() {
+                    var el = document.querySelector('button[data-type="submit"]') || document.querySelector('input[data-type="submit"]');
+                    if (el) return humanClick(el, 'DATA_TYPE_SUBMIT');
+                    return null;
+                },
+                function() {
+                    var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"], a[href*="submit"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
+                        if (text.indexOf('show my results') !== -1) return humanClick(btns[i], 'TEXT_EXACT');
+                    }
+                    return null;
+                },
                 function() {
                     var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
                     for (var i = 0; i < btns.length; i++) {
                         var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                        if (text.indexOf('show my results') !== -1) return { el: btns[i], tag: 'TEXT' };
+                        if (text.indexOf('show') !== -1 && text.indexOf('result') !== -1) return humanClick(btns[i], 'TEXT_PARTIAL');
                     }
                     return null;
                 },
                 function() {
-                    var btns = document.querySelectorAll('button, input[type="submit"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                        if (text.indexOf('show') !== -1 && text.indexOf('result') !== -1) return { el: btns[i], tag: 'PARTIAL' };
-                    }
+                    var el = document.querySelector('[aria-label*="show" i][aria-label*="result" i]') ||
+                             document.querySelector('[title*="show" i][title*="result" i]');
+                    if (el) return humanClick(el, 'ARIA_TITLE');
                     return null;
                 },
                 function() {
-                    var btn = document.getElementById('submit');
-                    if (btn) return { el: btn, tag: 'ID' };
+                    var btn = document.getElementById('submit') || document.getElementById('Submit') ||
+                             document.getElementById('btnSubmit') || document.getElementById('btn-submit');
+                    if (btn) return humanClick(btn, 'ID_SUBMIT');
+                    return null;
+                },
+                function() {
+                    var el = document.querySelector('button.btn-primary[type="submit"]') ||
+                             document.querySelector('button.btn-primary') ||
+                             document.querySelector('input.btn-primary[type="submit"]');
+                    if (el) return humanClick(el, 'BTN_PRIMARY');
                     return null;
                 },
                 function() {
                     var btns = document.querySelectorAll('button[type="submit"], input[type="submit"]');
-                    if (btns.length > 0) return { el: btns[btns.length - 1], tag: 'SUBMIT' };
+                    if (btns.length > 0) return humanClick(btns[btns.length - 1], 'LAST_SUBMIT');
+                    return null;
+                },
+                function() {
+                    var forms = document.querySelectorAll('form');
+                    if (forms.length > 0) { forms[0].submit(); return 'FORM_SUBMITTED'; }
                     return null;
                 }
             ];
             for (var i = 0; i < strategies.length; i++) {
-                var result = strategies[i]();
-                if (result) {
-                    var btn = result.el;
-                    btn.scrollIntoView({behavior:'instant',block:'center'});
-                    var r = btn.getBoundingClientRect();
-                    function tripleClick(el, rect) {
-                        for (var c = 0; c < 3; c++) {
-                            var cx = rect.left + rect.width * (0.3 + Math.random() * 0.4);
-                            var cy = rect.top + rect.height * (0.3 + Math.random() * 0.4);
-                            el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
-                            el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
-                            el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
-                            el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
-                            el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,detail:c+1}));
-                        }
-                        el.click();
-                        var form = el.closest('form');
-                        if (form) { try { form.requestSubmit(); } catch(e) { try { form.submit(); } catch(e2) {} } }
-                    }
-                    tripleClick(btn, r);
-                    return 'TRIPLE_CLICKED_' + result.tag;
-                }
+                try {
+                    var result = strategies[i]();
+                    if (result) return result;
+                } catch(e) {}
             }
-            var forms = document.querySelectorAll('form');
-            if (forms.length > 0) { forms[0].submit(); return 'FORM_SUBMITTED'; }
             return 'NOT_FOUND';
         })();
         """
-        let result = await executeJS(findBtnJS)
-        if let result, result != "NOT_FOUND" {
-            return (true, "Submit triple-clicked via strategy: \(result)")
+
+        for attempt in 1...3 {
+            let result = await executeJS(findBtnJS)
+            if let result, result != "NOT_FOUND" {
+                return (true, "Submit clicked via: \(result) (attempt \(attempt))")
+            }
+            if attempt < 3 {
+                let backoff = Double(attempt) * max(0.5, 1.0 * speedMultiplier)
+                try? await Task.sleep(for: .seconds(backoff))
+            }
         }
-        return (false, "Submit button not found")
+        return (false, "Submit button not found after 3 attempts")
     }
 
     func verifyFieldsExist() async -> (found: Int, missing: [String], details: [String: String]) {

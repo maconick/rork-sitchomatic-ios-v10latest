@@ -17,6 +17,7 @@ class PPSRAutomationEngine {
     var debugMode: Bool = false
     var stealthEnabled: Bool = false
     var retrySubmitOnFail: Bool = false
+    var speedMultiplier: Double = 1.0
     var screenshotCropRect: CGRect = .zero
     private let logger = DebugLogger.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
@@ -91,6 +92,8 @@ class PPSRAutomationEngine {
 
         let session = LoginWebSession()
         session.stealthEnabled = stealthEnabled
+        session.speedMultiplier = speedMultiplier
+        session.blockImages = speedMultiplier <= 0.5
         session.networkConfig = networkFactory.appWideConfig(for: .ppsr)
         logger.log("PPSR session network: \(session.networkConfig.label)", category: .network, level: .info, sessionId: sessionId)
 
@@ -165,11 +168,13 @@ class PPSRAutomationEngine {
             if attempt < 3 {
                 let waitTime = Double(attempt) * 2
                 check.logs.append(PPSRLogEntry(message: "Healing: waiting \(Int(waitTime))s before retry...", level: .info))
-                try? await Task.sleep(for: .seconds(waitTime))
+                await speedDelay(seconds: waitTime)
                 if attempt == 2 {
                     logger.log("Full session reset before final attempt", category: .webView, level: .debug, sessionId: sessionId)
                     session.tearDown()
                     session.stealthEnabled = stealthEnabled
+                    session.speedMultiplier = speedMultiplier
+                    session.blockImages = speedMultiplier <= 0.5
                     session.setUp()
                 }
             }
@@ -276,7 +281,7 @@ class PPSRAutomationEngine {
         if !interactiveCheck.hasElements {
             check.logs.append(PPSRLogEntry(message: "NO INTERACTIVE ELEMENTS: page loaded but \(interactiveCheck.detail) — treating as blank", level: .warning))
             logger.log("No interactive elements after load for \(check.card.displayNumber): \(interactiveCheck.detail)", category: .automation, level: .error, sessionId: sessionId)
-            try? await Task.sleep(for: .seconds(3))
+            await speedDelay(seconds: 3)
             let retryInteractive = await checkInteractiveElementsExist(session: session, sessionId: sessionId)
             if !retryInteractive.hasElements {
                 failCheck(check, message: "No interactive elements found after extended wait")
@@ -302,14 +307,14 @@ class PPSRAutomationEngine {
             await session.fillVIN(check.vin)
         }
         guard vinResult else { return .connectionFailure }
-        try? await Task.sleep(for: .milliseconds(300))
+        await speedDelay(milliseconds: 300)
 
         advanceTo(.submittingSearch, check: check, message: "Filling email: \(check.email)")
         let emailResult = await retryFill(session: session, check: check, fieldName: "Email") {
             await session.fillEmail(check.email)
         }
         guard emailResult else { return .connectionFailure }
-        try? await Task.sleep(for: .milliseconds(300))
+        await speedDelay(milliseconds: 300)
 
         logger.log("Phase: FILL PAYMENT", category: .automation, level: .info, sessionId: sessionId)
         advanceTo(.enteringPayment, check: check, message: "Filling card: \(check.card.brand) \(check.card.displayNumber)")
@@ -317,7 +322,7 @@ class PPSRAutomationEngine {
             await session.fillCardNumber(check.card.number)
         }
         guard cardResult else { return .connectionFailure }
-        try? await Task.sleep(for: .milliseconds(200))
+        await speedDelay(milliseconds: 200)
 
         let monthResult = await retryFill(session: session, check: check, fieldName: "Exp Month") {
             await session.fillExpMonth(check.expiryMonth)
@@ -333,7 +338,7 @@ class PPSRAutomationEngine {
             await session.fillCVV(check.cvv)
         }
         guard cvvResult else { return .connectionFailure }
-        try? await Task.sleep(for: .milliseconds(500))
+        await speedDelay(milliseconds: 500)
 
         logger.log("Phase: SUBMIT", category: .automation, level: .info, sessionId: sessionId)
         advanceTo(.processingPayment, check: check, message: "Clicking 'Show My Results' button")
@@ -350,7 +355,7 @@ class PPSRAutomationEngine {
             check.logs.append(PPSRLogEntry(message: "Submit attempt \(attempt)/3 failed: \(submitResult.detail)", level: .warning))
             logger.log("Submit attempt \(attempt)/3 FAILED: \(submitResult.detail)", category: .automation, level: .warning, sessionId: sessionId, durationMs: submitMs)
             if attempt < 3 {
-                try? await Task.sleep(for: .seconds(Double(attempt)))
+                await speedDelay(seconds: Double(attempt))
             }
         }
         guard submitResult.success else {
@@ -366,7 +371,7 @@ class PPSRAutomationEngine {
         if !navigated {
             check.logs.append(PPSRLogEntry(message: "Page did not navigate after submit — checking content anyway", level: .warning))
         }
-        try? await Task.sleep(for: .seconds(1))
+        await speedDelay(seconds: 1)
 
         let postSubmitURL = await session.getCurrentURL()
         let urlChanged = postSubmitURL != preSubmitURL
@@ -436,7 +441,7 @@ class PPSRAutomationEngine {
         if evaluation.outcome == .uncertain {
             check.logs.append(PPSRLogEntry(message: "Initial eval uncertain — polling for redirect/content change (up to 10s)...", level: .warning))
             for pollIdx in 1...5 {
-                try? await Task.sleep(for: .seconds(2))
+                await speedDelay(seconds: 2)
                 let pollURL = await session.getCurrentURL()
                 let pollContent = await session.getPageContent()
                 let pollLower = pollContent.lowercased()
@@ -463,7 +468,7 @@ class PPSRAutomationEngine {
                 if !retryNav {
                     check.logs.append(PPSRLogEntry(message: "Retry: page did not navigate", level: .warning))
                 }
-                try? await Task.sleep(for: .seconds(2))
+                await speedDelay(seconds: 2)
                 pageContent = await session.getPageContent()
                 contentLower = pageContent.lowercased()
                 currentURL = await session.getCurrentURL()
@@ -695,7 +700,7 @@ class PPSRAutomationEngine {
                 let jitter = Int.random(in: 0...Int(Double(baseMs) * 0.3))
                 let delayMs = baseMs + jitter
                 check.logs.append(PPSRLogEntry(message: "\(fieldName): backoff \(delayMs)ms before retry \(attempt + 1)", level: .info))
-                try? await Task.sleep(for: .milliseconds(delayMs))
+                await speedDelay(milliseconds: delayMs)
             }
         }
         failCheck(check, message: "\(fieldName) FILL FAILED after 3 attempts")
@@ -705,6 +710,16 @@ class PPSRAutomationEngine {
     private func advanceTo(_ status: PPSRCheckStatus, check: PPSRCheck, message: String) {
         check.status = status
         check.logs.append(PPSRLogEntry(message: message, level: status == .completed ? .success : .info))
+    }
+
+    private func speedDelay(seconds: Double) async {
+        let adjusted = max(0.05, seconds * speedMultiplier)
+        try? await Task.sleep(for: .seconds(adjusted))
+    }
+
+    private func speedDelay(milliseconds: Int) async {
+        let adjusted = max(50, Int(Double(milliseconds) * speedMultiplier))
+        try? await Task.sleep(for: .milliseconds(adjusted))
     }
 
     private func failCheck(_ check: PPSRCheck, message: String) {
