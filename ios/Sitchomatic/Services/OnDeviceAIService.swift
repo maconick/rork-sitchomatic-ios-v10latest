@@ -46,16 +46,14 @@ class OnDeviceAIService {
 
     var isAvailable: Bool {
         #if canImport(FoundationModels)
-        if #available(iOS 26.0, *) {
-            return SystemLanguageModel.default.isAvailable
-        }
-        #endif
+        return SystemLanguageModel.default.isAvailable
+        #else
         return false
+        #endif
     }
 
     func analyzePPSRResponse(pageContent: String) async -> AIAnalysisPPSRResult? {
         #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *) else { return nil }
         guard SystemLanguageModel.default.isAvailable else {
             logger.log("OnDeviceAI: model not available on this device", category: .automation, level: .warning)
             return nil
@@ -85,7 +83,6 @@ class OnDeviceAIService {
 
     func analyzeLoginPage(pageContent: String, ocrTexts: [String]) async -> AIAnalysisLoginResult? {
         #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *) else { return nil }
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
         let truncatedContent = String(pageContent.prefix(1500))
@@ -109,7 +106,6 @@ class OnDeviceAIService {
 
     func mapOCRToFields(ocrTexts: [String]) async -> AIFieldMappingResult? {
         #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *) else { return nil }
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
         let textList = ocrTexts.prefix(40).joined(separator: "\n")
@@ -131,7 +127,6 @@ class OnDeviceAIService {
 
     func predictFlowOutcome(currentStep: String, pageContent: String, previousActions: [String]) async -> AIFlowPredictionResult? {
         #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *) else { return nil }
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
         let truncated = String(pageContent.prefix(1000))
@@ -154,7 +149,6 @@ class OnDeviceAIService {
 
     func generateVariantEmail(base: String) async -> String? {
         #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *) else { return nil }
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
         do {

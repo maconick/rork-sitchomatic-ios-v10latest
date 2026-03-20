@@ -4,8 +4,6 @@ import UIKit
 @main
 struct SitchomaticApp: App {
     @AppStorage("activeAppMode") private var activeModeRaw: String = ""
-    @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
-    @State private var introFinished: Bool = false
     @State private var nordInitialized: Bool = false
     @State private var hasEverOpenedJoe: Bool = false
     @State private var hasEverOpenedIgnition: Bool = false
@@ -71,16 +69,12 @@ struct SitchomaticApp: App {
         LoginViewModel.shared.isRunning || PPSRAutomationViewModel.shared.isRunning
     }
 
-    private var showingIntro: Bool {
-        introVideoEnabled && !introFinished && IntroVideoDownloadService.shared.isVideoCached
-    }
-
     private var showingProfileSelect: Bool {
-        !showingIntro && !NordVPNService.shared.hasSelectedProfile
+        !NordVPNService.shared.hasSelectedProfile
     }
 
     private var showingMenu: Bool {
-        !showingIntro && !showingProfileSelect && activeMode == nil
+        !showingProfileSelect && activeMode == nil
     }
 
     private var persistentModes: Set<ActiveAppMode> {
@@ -90,10 +84,7 @@ struct SitchomaticApp: App {
     var body: some Scene {
         WindowGroup {
             ZStack {
-                if showingIntro {
-                    IntroVideoView(isFinished: $introFinished)
-                        .transition(.opacity)
-                } else if showingProfileSelect {
+                if showingProfileSelect {
                     MainMenuView(
                         activeMode: Binding(
                             get: { activeMode },

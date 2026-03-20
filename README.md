@@ -59,11 +59,10 @@ The root app flow is in `SitchomaticApp.swift`.
 
 Launch sequence:
 
-1. Optional intro video
-2. Nord profile selection gate (`Nick` / `Poli`)
-3. Main menu mode selection
-4. Mode-specific root view launch
-5. Background initialization:
+1. Nord profile selection gate (`Nick` / `Poli`)
+2. Main menu mode selection
+3. Mode-specific root view launch
+4. Background initialization:
    - memory pressure monitoring
    - vault restore
    - default settings application
@@ -263,7 +262,6 @@ Sections:
   - Vault
 - App Settings
   - Appearance mode (System/Light/Dark)
-  - Intro Video toggle
 - About
   - Version, Profile, Engine, Storage, Connection, Mode
 
@@ -703,7 +701,6 @@ The generated `Config.swift` exposes public keys:
 - `LoginContentView.swift`
 - `ProductMode.swift`
 - `Sitchomatic.entitlements`
-- `intro_video.mp4`
 
 ### Views (74 files)
 
@@ -728,7 +725,6 @@ The generated `Config.swift` exposes public keys:
 - `FlowRecorderWebView.swift`
 - `IPScoreTestView.swift`
 - `IntroPageLink.swift`
-- `IntroVideoView.swift`
 - `LoginCalibrationView.swift`
 - `LoginCredentialDetailView.swift`
 - `LoginCredentialsListView.swift`

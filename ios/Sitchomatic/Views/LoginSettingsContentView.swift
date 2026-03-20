@@ -5,8 +5,6 @@ struct LoginSettingsContentView: View {
     @State private var showDebugScreenshots: Bool = false
     @State private var showSelectTesting: Bool = false
     @State private var selectedCredentialIds: Set<String> = []
-    @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
-    @State private var videoService = IntroVideoDownloadService.shared
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -22,7 +20,6 @@ struct LoginSettingsContentView: View {
             concurrencySection
             debugSection
             appearanceSection
-            introVideoSection
             iCloudSection
             aboutSection
         }
@@ -157,54 +154,6 @@ struct LoginSettingsContentView: View {
             Text("Stealth")
         } footer: {
             Text(vm.stealthEnabled ? "Each session uses a unique browser identity. Complete history wipe between tests." : "Enable to rotate browser fingerprints across sessions.")
-        }
-    }
-
-    private var introVideoSection: some View {
-        Section {
-            Toggle(isOn: $introVideoEnabled) {
-                HStack(spacing: 10) {
-                    Image(systemName: "film.fill").foregroundStyle(.pink)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Intro Video").font(.body)
-                        Text(introVideoEnabled ? (videoService.isVideoCached ? "Video cached — plays on launch" : "Video will download when available") : "Disabled — no video on launch").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .tint(.pink)
-            .onChange(of: introVideoEnabled) { _, enabled in
-                if enabled && !videoService.isVideoCached {
-                    Task { await videoService.downloadIfNeeded() }
-                }
-                if !enabled { videoService.deleteCache() }
-            }
-
-            if introVideoEnabled {
-                if videoService.isDownloading {
-                    HStack(spacing: 10) {
-                        ProgressView().tint(.pink)
-                        Text("Downloading intro video...").font(.caption).foregroundStyle(.secondary)
-                    }
-                } else if let error = videoService.lastError {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        Text(error).font(.caption).foregroundStyle(.orange)
-                    }
-                    Button {
-                        Task { await videoService.downloadIfNeeded() }
-                    } label: {
-                        Label("Retry Download", systemImage: "arrow.clockwise")
-                            .font(.caption)
-                    }
-                } else if videoService.isVideoCached {
-                    HStack(spacing: 10) {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text("Video ready").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        } header: {
-            Text("Startup")
         }
     }
 
