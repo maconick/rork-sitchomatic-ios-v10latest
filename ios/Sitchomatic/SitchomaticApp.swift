@@ -63,7 +63,7 @@ struct SitchomaticApp: App {
 
     private var activeMode: ActiveAppMode? {
         guard NordVPNService.shared.hasSelectedProfile else { return nil }
-        ActiveAppMode(rawValue: activeModeRaw)
+        return ActiveAppMode(rawValue: activeModeRaw)
     }
 
     private var isAnyTestRunning: Bool {
