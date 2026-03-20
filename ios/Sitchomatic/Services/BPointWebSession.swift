@@ -511,9 +511,9 @@ class BPointWebSession: NSObject {
                 el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,detail:1}));
                 el.click();
                 if (el.focus) el.focus();
-                var form = el.closest('form');
-                if (form) { try { form.requestSubmit(); } catch(e) { try { form.submit(); } catch(e2) {} } }
                 return tag;
+            }
+            var strategies = [
             }
             var strategies = [
                 function() {
