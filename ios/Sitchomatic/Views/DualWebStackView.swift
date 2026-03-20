@@ -1,6 +1,7 @@
 import SwiftUI
 import WebKit
 import UniformTypeIdentifiers
+import UIKit
 
 struct DualWebStackView: View {
     @State private var vm = LoginViewModel()

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct EvidenceBundleListView: View {
     @State private var vm = EvidenceBundleViewModel.shared

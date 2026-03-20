@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct BatchAlertModifier: ViewModifier {
     @Binding var showBatchResult: Bool

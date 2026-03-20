@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct ConsolidatedImportExportView: View {
     @State private var showExportSheet: Bool = false

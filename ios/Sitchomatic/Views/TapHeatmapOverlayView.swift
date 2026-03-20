@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct TapHeatmapOverlayView: View {
     let vm: LoginViewModel

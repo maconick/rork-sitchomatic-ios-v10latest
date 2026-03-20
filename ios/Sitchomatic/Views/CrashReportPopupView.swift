@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct CrashReportPopupView: View {
     let report: CrashReport

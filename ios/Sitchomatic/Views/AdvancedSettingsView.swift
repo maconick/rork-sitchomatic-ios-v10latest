@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct AdvancedSettingsView: View {
     @State private var showCopiedToast: Bool = false

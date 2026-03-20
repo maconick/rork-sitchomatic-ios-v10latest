@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import SwiftUI
 import UserNotifications
+import UIKit
 
 @Observable
 @MainActor

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LoginCredentialDetailView: View {
     let credential: LoginCredential

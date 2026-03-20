@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Observation
 
 @Observable
 @MainActor

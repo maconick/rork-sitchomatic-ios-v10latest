@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import UIKit
 
 struct DebugLogView: View {
     private let logger = DebugLogger.shared
