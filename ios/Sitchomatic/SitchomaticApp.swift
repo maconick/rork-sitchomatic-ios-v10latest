@@ -6,7 +6,6 @@ struct SitchomaticApp: App {
     @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
     @State private var introFinished: Bool = false
     @State private var nordInitialized: Bool = false
-    @State private var nordService = NordVPNService.shared
     @State private var hasEverOpenedJoe: Bool = false
     @State private var hasEverOpenedIgnition: Bool = false
     @State private var hasEverOpenedPPSR: Bool = false
@@ -16,6 +15,9 @@ struct SitchomaticApp: App {
 
     init() {
         Self.performEarlySafeBootCheck()
+        if !NordVPNService.shared.hasSelectedProfile {
+            UserDefaults.standard.removeObject(forKey: "activeAppMode")
+        }
     }
 
     private static func performEarlySafeBootCheck() {
@@ -75,7 +77,7 @@ struct SitchomaticApp: App {
     }
 
     private var showingProfileSelect: Bool {
-        !showingIntro && !nordService.hasSelectedProfile
+        !showingIntro && !NordVPNService.shared.hasSelectedProfile
     }
 
     private var showingMenu: Bool {
@@ -206,9 +208,10 @@ struct SitchomaticApp: App {
                         DebugLogger.shared.log("App launched — restored state from vault", category: .persistence, level: .success)
                     }
                     DefaultSettingsService.shared.applyDefaultsIfNeeded()
-                    let nord = nordService
-                    await nord.ensureProfileNetworkPoolsReady()
-                    if !nord.hasSelectedProfile {
+                    let nord = NordVPNService.shared
+                    let hasRestoredProfile = await nord.ensureProfileNetworkPoolsReady()
+                    if !hasRestoredProfile {
+                        nord.hasSelectedProfile = false
                         activeModeRaw = ""
                     }
                     if nord.isTokenExpired {
@@ -220,14 +223,6 @@ struct SitchomaticApp: App {
                         await nord.autoPopulateConfigs(forceRefresh: false)
                     }
 
-                    if let mode = activeMode {
-                        switch mode {
-                        case .joe: hasEverOpenedJoe = true
-                        case .ignition: hasEverOpenedIgnition = true
-                        case .ppsr: hasEverOpenedPPSR = true
-                        default: break
-                        }
-                    }
                 }
             }
             .sheet(isPresented: $showCrashReport) {
