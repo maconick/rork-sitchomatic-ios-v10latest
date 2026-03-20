@@ -396,7 +396,7 @@ class AICredentialTriageService {
 
             lastDomain = domain
 
-            for key in similarCooldowns.keys {
+            for key in Array(similarCooldowns.keys) {
                 if let value = similarCooldowns[key], value > 0 {
                     similarCooldowns[key] = value - 1
                 }
