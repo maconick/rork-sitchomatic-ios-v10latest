@@ -304,11 +304,11 @@ class BPointWebSession: NSObject {
         let brandName = isVisa ? "visa" : "mastercard"
         let altBrandName = isVisa ? "visa" : "master"
         let titleName = isVisa ? "Visa" : "MasterCard"
-        let typingDelay = Int(max(10, 30.0 * speedMultiplier))
         let js = """
         (function() {
             function humanClick(el, tag) {
                 el.scrollIntoView({behavior:'instant',block:'center'});
+                var r = el.getBoundingClientRect();
                 var r = el.getBoundingClientRect();
                 var cx = r.left + r.width * (0.3 + Math.random() * 0.4);
                 var cy = r.top + r.height * (0.3 + Math.random() * 0.4);
